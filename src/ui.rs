@@ -1,6 +1,6 @@
 use crate::{
     App, Result,
-    session::{Block, Kind},
+    session::{Block, Kind, Tool, ToolStatus},
 };
 use crossterm::{
     cursor,
@@ -173,38 +173,103 @@ fn count(n: u64) -> String {
     }
 }
 
-type Line = (String, Color);
+struct Line {
+    text: String,
+    color: Color,
+    bullet: Option<Color>,
+}
+impl Line {
+    fn new(text: impl Into<String>, color: Color) -> Self {
+        Self { text: text.into(), color, bullet: None }
+    }
+}
+
+fn ellipsis(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        text.into()
+    } else if width <= 1 {
+        "…".repeat(width)
+    } else {
+        format!("{}…", clip(text, width - 1))
+    }
+}
+
+fn tool_lines(command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<Line> {
+    let color = match tool.status {
+        ToolStatus::Running | ToolStatus::TimedOut(_) | ToolStatus::Cancelled => Color::Yellow,
+        ToolStatus::Exited(0) => Color::Green,
+        ToolStatus::Exited(_) | ToolStatus::Error => Color::Red,
+        ToolStatus::Pending => GRAY,
+    };
+    let text = clean(command);
+    let command_width = width.saturating_sub(2);
+    let summary = text.lines().map(str::trim).collect::<Vec<_>>().join(" ↵ ");
+    let hidden_input = text.contains('\n') || summary.width() > command_width;
+    let command = if expanded { wrap(&text, command_width) } else { vec![ellipsis(&summary, command_width)] };
+    let mut result = vec![];
+    for (i, line) in command.into_iter().enumerate() {
+        result.push(Line {
+            text: format!("{}{line}", if i == 0 { "● " } else { "  " }),
+            color: Color::Reset,
+            bullet: (i == 0).then_some(color),
+        });
+    }
+    let output = clean(&tool.output.text);
+    let output = output.trim_end_matches('\n');
+    let lines = if output.is_empty() { vec![] } else { wrap(output, width.saturating_sub(4)) };
+    let hidden_output = !expanded && lines.len() > 3;
+    let start = if expanded { 0 } else { lines.len().saturating_sub(3) };
+    if !expanded && (hidden_input || hidden_output) {
+        result.push(Line::new("  │ … Ctrl+O to expand", GRAY));
+    }
+    for line in &lines[start..] {
+        result.push(Line::new(format!("  │ {line}"), GRAY));
+    }
+    let mut footer: Vec<_> = tool.status.summary().into_iter().collect();
+    if tool.output.truncated {
+        footer.push("preview only; overflow in temp file".into());
+    }
+    let mut footer = footer.join(" · ");
+    if expanded
+        && tool.output.truncated
+        && let Some(log) = &tool.output.log
+    {
+        footer.push_str(&format!("\noutput log (temporary): {}", clean(&log.to_string_lossy())));
+    }
+    if !footer.is_empty() {
+        let footer_width = width.saturating_sub(4);
+        let lines = if expanded { wrap(&footer, footer_width) } else { vec![ellipsis(&footer, footer_width)] };
+        for (i, line) in lines.into_iter().enumerate() {
+            result.push(Line::new(format!("  {} {line}", if i == 0 { "└" } else { " " }), GRAY));
+        }
+    }
+    result.push(Line::new("", GRAY));
+    result
+}
+
 fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
-    let (label, color) = match block.kind {
-        Kind::User => ("›", ACCENT),
-        Kind::Agent => ("", Color::Reset),
-        Kind::Thought => ("", GRAY),
-        Kind::Call => ("$", ACCENT),
-        Kind::Output => ("│", GRAY),
-        Kind::Notice => ("!", Color::Yellow),
+    let (label, color, limit) = match block.kind {
+        Kind::Call => return tool_lines(&block.text, block.tool.as_ref().unwrap(), width, expanded),
+        Kind::Notice => {
+            return wrap(&format!("! {}", clean(&block.text)), width)
+                .into_iter()
+                .map(|line| Line::new(line, Color::Yellow))
+                .collect();
+        }
+        Kind::User => ("›", ACCENT, usize::MAX),
+        Kind::Agent => ("", Color::Reset, usize::MAX),
+        Kind::Thought => ("", GRAY, 2),
     };
     let text = clean(&block.text);
-    if block.kind == Kind::Notice {
-        return wrap(&format!("! {text}"), width).into_iter().map(|line| (line, color)).collect();
-    }
     if text.is_empty() && block.kind == Kind::Thought {
         return vec![];
     }
     let mut lines = wrap(&text, width.saturating_sub(2));
-    let limit = match block.kind {
-        Kind::Thought => 2,
-        Kind::Call | Kind::Output => 6,
-        _ => usize::MAX,
-    };
     let collapsed = !expanded && lines.len() > limit;
     if collapsed {
         lines.truncate(limit);
     }
-    let mut result = if matches!(block.kind, Kind::User | Kind::Agent | Kind::Thought | Kind::Call | Kind::Output) {
-        vec![]
-    } else {
-        vec![(label.into(), color)]
-    };
+    let mut result = vec![];
     let mut code = false;
     for (i, line) in lines.into_iter().enumerate() {
         let trimmed = line.trim_start();
@@ -220,19 +285,19 @@ fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
         } else {
             color
         };
-        let prefix = if matches!(block.kind, Kind::User | Kind::Call | Kind::Output) && i == 0 {
-            format!("{label} ")
-        } else if matches!(block.kind, Kind::Agent | Kind::Thought) {
+        let prefix = if label.is_empty() {
             String::new()
+        } else if i == 0 {
+            format!("{label} ")
         } else {
             "  ".into()
         };
-        result.push((format!("{prefix}{line}"), md_color));
+        result.push(Line::new(format!("{prefix}{line}"), md_color));
     }
     if collapsed {
-        result.push((format!("{}… Ctrl+O to expand", if block.kind == Kind::Thought { "" } else { "  " }), GRAY));
+        result.push(Line::new(format!("{}… Ctrl+O to expand", if label.is_empty() { "" } else { "  " }), GRAY));
     }
-    result.push((String::new(), GRAY));
+    result.push(Line::new("", GRAY));
     result
 }
 
@@ -255,10 +320,10 @@ pub fn draw(app: &mut App) -> Result<()> {
     let mut out = io::BufWriter::new(io::stdout().lock());
     queue!(out, cursor::Hide, cursor::MoveTo(0, 0))?;
     let lines = if let Some(picker) = &app.picker {
-        let mut lines = vec![(format!("{} · ↑/↓ Enter · Esc", picker.title), ACCENT)];
+        let mut lines = vec![Line::new(format!("{} · ↑/↓ Enter · Esc", picker.title), ACCENT)];
         let start = (picker.selected + 1).saturating_sub(transcript_height.saturating_sub(1));
         for (i, (_, label)) in picker.entries.iter().enumerate().skip(start).take(transcript_height.saturating_sub(1)) {
-            lines.push((
+            lines.push(Line::new(
                 format!("{} {}", if i == picker.selected { "›" } else { " " }, label),
                 if i == picker.selected { ACCENT } else { GRAY },
             ));
@@ -291,8 +356,19 @@ pub fn draw(app: &mut App) -> Result<()> {
     };
     for row in 0..transcript_height {
         queue!(out, cursor::MoveTo(0, row as u16), Clear(ClearType::CurrentLine))?;
-        if let Some((s, color)) = lines.get(row) {
-            queue!(out, SetForegroundColor(*color), Print(clip(s, width.saturating_sub(1))))?;
+        if let Some(line) = lines.get(row) {
+            let text = clip(&line.text, width.saturating_sub(1));
+            if let Some(color) = line.bullet {
+                queue!(
+                    out,
+                    SetForegroundColor(color),
+                    Print("●"),
+                    SetForegroundColor(line.color),
+                    Print(&text["●".len()..])
+                )?;
+            } else {
+                queue!(out, SetForegroundColor(line.color), Print(text))?;
+            }
         }
     }
     if app.picker.is_none()

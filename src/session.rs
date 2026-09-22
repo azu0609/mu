@@ -14,7 +14,6 @@ pub enum Kind {
     Agent,
     Thought,
     Call,
-    Output,
     Notice,
 }
 
@@ -22,10 +21,48 @@ pub enum Kind {
 pub struct Block {
     pub kind: Kind,
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<Tool>,
 }
 impl Block {
     pub fn new(kind: Kind, text: impl Into<String>) -> Self {
-        Self { kind, text: text.into() }
+        Self { kind, text: text.into(), tool: None }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Tool {
+    pub call_id: String,
+    pub status: ToolStatus,
+    pub output: ToolOutput,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct ToolOutput {
+    pub text: String,
+    pub log: Option<PathBuf>,
+    pub truncated: bool,
+}
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub enum ToolStatus {
+    Pending,
+    Running,
+    Exited(i32),
+    TimedOut(u64),
+    Cancelled,
+    Error,
+}
+impl ToolStatus {
+    pub fn summary(self) -> Option<String> {
+        Some(match self {
+            Self::Exited(0) | Self::Error => return None,
+            Self::Pending => "pending".into(),
+            Self::Running => "running".into(),
+            Self::Exited(code) => format!("exit {code}"),
+            Self::TimedOut(ms) => format!("timed out after {ms} ms; process group killed"),
+            Self::Cancelled => "cancelled; process group killed".into(),
+        })
     }
 }
 

@@ -31,6 +31,7 @@ pub struct Exit {
     pub cancelled: bool,
 }
 
+// Empty stdout chunks are idle ticks, allowing callers to flush coalesced updates.
 pub fn run(
     command: &mut Command,
     input: Option<Vec<u8>>,
@@ -85,21 +86,35 @@ pub fn run(
     reader(child.0.stderr.take().unwrap(), true, tx.clone());
     drop(tx);
     let start = Instant::now();
+    let mut stopped = None;
     loop {
         let cancelled = cancel.load(Ordering::Relaxed);
         let timed_out = start.elapsed() >= timeout;
-        if cancelled || timed_out {
-            return Ok(Exit { code: -1, timed_out, cancelled });
+        if stopped.is_none() && (cancelled || timed_out) {
+            unsafe {
+                libc::kill(-(child.0.id() as i32), libc::SIGKILL);
+            }
+            stopped = Some((Exit { code: -1, timed_out, cancelled }, Instant::now()));
+        }
+        // Drain pipe buffers after killing the group so a cancelled/timed-out
+        // command's log doesn't lose already-written output. Don't hang on an
+        // escaped descendant that still holds a pipe open.
+        if stopped.as_ref().is_some_and(|(_, at)| at.elapsed() >= Duration::from_millis(250)) {
+            return Ok(stopped.unwrap().0);
         }
         match rx.recv_timeout(Duration::from_millis(25)) {
             Ok(data) => {
                 let (stderr, bytes) = data?;
                 chunk(stderr, &bytes)?;
             }
-            Err(mpsc::RecvTimeoutError::Timeout) => (),
+            Err(mpsc::RecvTimeoutError::Timeout) => chunk(false, &[])?,
             Err(mpsc::RecvTimeoutError::Disconnected) => {
+                chunk(false, &[])?;
                 if let Some(status) = child.0.try_wait()? {
                     child.1 = false;
+                    if let Some((exit, _)) = stopped {
+                        return Ok(exit);
+                    }
                     return Ok(Exit { code: status.code().unwrap_or(-1), timed_out: false, cancelled: false });
                 }
                 thread::sleep(Duration::from_millis(25));

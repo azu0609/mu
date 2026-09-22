@@ -1,19 +1,88 @@
-use crate::{Result, process, session::unique_id};
+use crate::{
+    Result, process,
+    session::{ToolOutput, ToolStatus, unique_id},
+};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
+    collections::VecDeque,
     env, fs,
-    io::Write,
-    os::unix::fs::PermissionsExt,
+    io::{BufWriter, Write},
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, atomic::AtomicBool},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
-const OUTPUT_LIMIT: usize = 64 * 1024;
+const PREVIEW_LIMIT: usize = 64 * 1024;
 const IMAGE_LIMIT: u64 = 20 * 1024 * 1024;
+
+pub struct BashResult {
+    pub output: ToolOutput,
+    pub status: ToolStatus,
+    pub images: Vec<Value>,
+}
+
+// Small results stay in the session. Only overflow needs a separate, temporary
+// file; retain the beginning and a rolling tail in the transcript.
+#[derive(Default)]
+struct Capture {
+    head: Vec<u8>,
+    tail: VecDeque<u8>,
+    total: usize,
+    log: Option<(PathBuf, BufWriter<fs::File>)>,
+}
+impl Capture {
+    fn push(&mut self, bytes: &[u8]) -> Result<()> {
+        if self.log.is_none() && self.total.saturating_add(bytes.len()) > PREVIEW_LIMIT {
+            let path = env::temp_dir().canonicalize()?.join(format!("mu-output-{}.log", unique_id()));
+            let mut file = BufWriter::new(fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?);
+            // Spill the entire prefix before discarding any bytes from memory.
+            file.write_all(&self.head)?;
+            let (a, b) = self.tail.as_slices();
+            file.write_all(a)?;
+            file.write_all(b)?;
+            self.log = Some((path, file));
+        }
+        if let Some((_, file)) = &mut self.log {
+            file.write_all(bytes)?;
+        }
+        self.total = self.total.saturating_add(bytes.len());
+        let n = bytes.len().min(PREVIEW_LIMIT / 2 - self.head.len());
+        self.head.extend_from_slice(&bytes[..n]);
+        let rest = &bytes[n..];
+        if rest.len() >= PREVIEW_LIMIT / 2 {
+            self.tail.clear();
+            self.tail.extend(&rest[rest.len() - PREVIEW_LIMIT / 2..]);
+        } else {
+            let excess = (self.tail.len() + rest.len()).saturating_sub(PREVIEW_LIMIT / 2);
+            self.tail.drain(..excess);
+            self.tail.extend(rest);
+        }
+        Ok(())
+    }
+    fn flush(&mut self) -> Result<()> {
+        if let Some((_, file)) = &mut self.log {
+            file.flush()?;
+        }
+        Ok(())
+    }
+    fn preview(&self) -> ToolOutput {
+        let truncated = self.total > PREVIEW_LIMIT;
+        let mut bytes = self.head.clone();
+        if truncated {
+            bytes.extend_from_slice(format!("\n[… {} bytes omitted …]\n", self.total - PREVIEW_LIMIT).as_bytes());
+        }
+        bytes.extend(&self.tail);
+        ToolOutput {
+            text: String::from_utf8_lossy(&bytes).into_owned(),
+            log: self.log.as_ref().map(|(path, _)| path.clone()),
+            truncated,
+        }
+    }
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -68,8 +137,8 @@ pub fn bash(
     arguments: &str,
     cwd: &Path,
     cancel: &Arc<AtomicBool>,
-    mut delta: impl FnMut(&str),
-) -> Result<(String, Vec<Value>)> {
+    mut progress: impl FnMut(ToolOutput),
+) -> Result<BashResult> {
     let args: Args = serde_json::from_str(arguments)?;
     let timeout = args.timeout_ms.unwrap_or(120_000);
     if timeout == 0 {
@@ -83,8 +152,9 @@ pub fn bash(
     fs::set_permissions(&bridge, fs::Permissions::from_mode(0o700))?;
     let manifest = dir.0.join("images");
     let path = format!("{}:{}", dir.0.display(), env::var("PATH").unwrap_or_default());
-    let mut bytes = vec![];
-    let mut truncated = false;
+    let mut capture = Capture::default();
+    let mut updated = Instant::now();
+    let mut published = 0;
     let exit = process::run(
         Command::new("bash")
             .args(["-c", &args.command])
@@ -96,26 +166,30 @@ pub fn bash(
         Duration::from_millis(timeout),
         cancel,
         |_, chunk| {
-            let n = chunk.len().min(OUTPUT_LIMIT - bytes.len());
-            bytes.extend_from_slice(&chunk[..n]);
-            if n > 0 {
-                delta(&String::from_utf8_lossy(&chunk[..n]));
+            capture.push(chunk)?;
+            // Replace a bounded preview instead of accumulating unbounded UI
+            // deltas. Raw bytes are decoded together, not at pipe boundaries.
+            if capture.total != published && (published == 0 || updated.elapsed() >= Duration::from_millis(100)) {
+                capture.flush()?;
+                progress(capture.preview());
+                published = capture.total;
+                updated = Instant::now();
             }
-            truncated |= n < chunk.len();
             Ok(())
         },
-    )?;
-    let mut output = String::from_utf8_lossy(&bytes).into_owned();
-    if truncated {
-        output.push_str("\n[output truncated at 64 KiB]");
-    }
-    if exit.timed_out {
-        output.push_str(&format!("\n[timed out after {timeout} ms; process group killed]"));
-    }
-    if exit.cancelled {
-        output.push_str("\n[cancelled; process group killed]");
-    }
-    output.push_str(&format!("\n[exit {}]", exit.code));
+    );
+    let flushed = capture.flush();
+    let mut output = capture.preview();
+    progress(output.clone());
+    flushed.map_err(|e| format!("Cannot flush output log: {e}"))?;
+    let exit = exit?;
+    let status = if exit.cancelled {
+        ToolStatus::Cancelled
+    } else if exit.timed_out {
+        ToolStatus::TimedOut(timeout)
+    } else {
+        ToolStatus::Exited(exit.code)
+    };
     let mut images = vec![];
     if let Ok(file) = fs::File::open(manifest) {
         use std::io::{BufRead, BufReader, Read};
@@ -129,9 +203,9 @@ pub fn bash(
                 Ok((path, value)) => {
                     images.push(json!({"role":"user", "content":[{"type":"input_text", "text":format!("view_image: {}", path.display())}, value]}));
                 }
-                Err(e) => output.push_str(&format!("\n[view_image: {e}]")),
+                Err(e) => output.text.push_str(&format!("\n[view_image: {e}]")),
             }
         }
     }
-    Ok((output, images))
+    Ok(BashResult { output, status, images })
 }

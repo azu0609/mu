@@ -430,6 +430,11 @@ impl App {
                             *slot = b;
                         }
                     }
+                    api::Event::ToolOutput(i, output) => {
+                        if let Some(tool) = self.live.get_mut(i).and_then(|b| b.tool.as_mut()) {
+                            tool.output = output;
+                        }
+                    }
                     api::Event::Done(result) => self.finish(result),
                 }
                 dirty = true;

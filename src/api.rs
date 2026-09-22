@@ -1,6 +1,6 @@
 use crate::{
     Result, process,
-    session::{Block, Kind, Usage},
+    session::{Block, Kind, Tool, ToolOutput, ToolStatus, Usage},
     tools,
 };
 use serde_json::{Value, json};
@@ -14,6 +14,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
         mpsc::Sender,
     },
+    thread,
     time::Duration,
 };
 
@@ -21,6 +22,7 @@ pub enum Event {
     Push(Block),
     Delta(usize, String),
     Set(usize, Block),
+    ToolOutput(usize, ToolOutput),
     Done(Result<Step>),
 }
 pub struct Step {
@@ -41,6 +43,7 @@ impl Request {
         let mut body = json!({
             "model": self.model, "instructions": self.instructions, "input": self.input,
             "stream": true, "store": false, "include": ["reasoning.encrypted_content"],
+            "parallel_tool_calls": true,
             "tools": [{"type":"function", "name":"bash", "description":"Special bash commands: view_image",
                 "parameters":{"type":"object", "properties":{"command":{"type":"string"}, "timeoutMs":{"type":"integer"}}, "required":["command"], "additionalProperties":false}, "strict":false}]
         });
@@ -57,7 +60,9 @@ struct Live<'a> {
 }
 impl Live<'_> {
     fn push(&mut self, kind: Kind, text: impl Into<String>) -> usize {
-        let b = Block::new(kind, text);
+        self.push_block(Block::new(kind, text))
+    }
+    fn push_block(&mut self, b: Block) -> usize {
         let i = self.blocks.len();
         self.blocks.push(b.clone());
         let _ = self.tx.send(Event::Push(b));
@@ -67,8 +72,7 @@ impl Live<'_> {
         self.blocks[i].text.push_str(text);
         let _ = self.tx.send(Event::Delta(i, text.into()));
     }
-    fn set(&mut self, i: usize, kind: Kind, text: String) {
-        let b = Block::new(kind, text);
+    fn set(&mut self, i: usize, b: Block) {
         self.blocks[i] = b.clone();
         let _ = self.tx.send(Event::Set(i, b));
     }
@@ -105,7 +109,7 @@ impl Sse {
     }
 }
 
-fn display(item: &Value) -> Option<(Kind, String)> {
+fn display(item: &Value, partial: bool) -> Option<Block> {
     let texts = |field: &str, typ: &str| {
         item[field]
             .as_array()
@@ -124,14 +128,25 @@ fn display(item: &Value) -> Option<(Kind, String)> {
                     }
                 }
             }
-            Some((Kind::Agent, text))
+            Some(Block::new(Kind::Agent, text))
         }
-        "reasoning" => Some((Kind::Thought, texts("summary", "summary_text"))),
+        "reasoning" => Some(Block::new(Kind::Thought, texts("summary", "summary_text"))),
         "function_call" => {
+            let name = item["name"].as_str().unwrap_or("tool");
             let raw = item["arguments"].as_str().unwrap_or("");
             let args: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
-            let command = args["command"].as_str().unwrap_or(raw);
-            Some((Kind::Call, format!("{}: {}", item["name"].as_str().unwrap_or("tool"), command)))
+            let text = if name == "bash" {
+                args["command"].as_str().unwrap_or(if partial || raw.is_empty() { "bash …" } else { raw }).to_owned()
+            } else {
+                format!("{name} {raw}")
+            };
+            let mut block = Block::new(Kind::Call, text);
+            block.tool = Some(Tool {
+                call_id: item["call_id"].as_str().unwrap_or("").into(),
+                status: ToolStatus::Pending,
+                output: ToolOutput::default(),
+            });
+            Some(block)
         }
         _ => None,
     }
@@ -190,14 +205,14 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
                 match event["type"].as_str().unwrap_or("") {
                     "response.output_item.added" | "response.output_item.done" => {
                         let item = &event["item"];
-                        if let Some((kind, text)) = display(item) {
+                        if let Some(block) = display(item, event["type"] == "response.output_item.added") {
                             if let Some(&slot) = slots.get(&index) {
                                 // Some proxies omit summaries in item.done; don't erase received thoughts.
-                                if !text.is_empty() {
-                                    live.set(slot, kind, text);
+                                if block.kind != Kind::Thought || !block.text.is_empty() {
+                                    live.set(slot, block);
                                 }
                             } else {
-                                slots.insert(index, live.push(kind, text));
+                                slots.insert(index, live.push_block(block));
                             }
                         }
                         items.insert(index, item.clone());
@@ -205,18 +220,24 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
                     "response.output_text.delta"
                     | "response.refusal.delta"
                     | "response.reasoning_summary_text.delta"
-                    | "response.reasoning_text.delta"
-                    | "response.function_call_arguments.delta" => {
+                    | "response.reasoning_text.delta" => {
                         let typ = event["type"].as_str().unwrap();
-                        let kind = if typ.contains("reasoning") {
-                            Kind::Thought
-                        } else if typ.contains("arguments") {
-                            Kind::Call
-                        } else {
-                            Kind::Agent
-                        };
+                        let kind = if typ.contains("reasoning") { Kind::Thought } else { Kind::Agent };
                         let slot = *slots.entry(index).or_insert_with(|| live.push(kind, ""));
                         live.delta(slot, event["delta"].as_str().unwrap_or(""));
+                    }
+                    "response.function_call_arguments.delta" => {
+                        let item = items.entry(index).or_insert_with(|| json!({"type":"function_call"}));
+                        let mut raw = item["arguments"].as_str().unwrap_or("").to_owned();
+                        raw.push_str(event["delta"].as_str().unwrap_or(""));
+                        item["arguments"] = raw.into();
+                        if let Some(block) = display(item, true) {
+                            if let Some(&slot) = slots.get(&index) {
+                                live.set(slot, block);
+                            } else {
+                                slots.insert(index, live.push_block(block));
+                            }
+                        }
                     }
                     "response.completed" => {
                         completed = Some(event["response"].clone());
@@ -249,34 +270,81 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
         response["output"].as_array().cloned().unwrap_or_else(|| items.into_values().collect());
     // Final items are authoritative; preserve ids and opaque reasoning for replay.
     for (index, item) in output.iter().enumerate() {
-        if let Some((kind, text)) = display(item) {
+        if let Some(block) = display(item, false) {
             if let Some(&slot) = slots.get(&index) {
-                if !text.is_empty() {
-                    live.set(slot, kind, text);
+                if block.kind != Kind::Thought || !block.text.is_empty() {
+                    live.set(slot, block);
                 }
             } else {
-                live.push(kind, text);
+                slots.insert(index, live.push_block(block));
             }
         }
     }
-    let calls: Vec<_> = output.iter().filter(|v| v["type"] == "function_call").cloned().collect();
+    let calls: Vec<_> = output
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v["type"] == "function_call")
+        .map(|(index, call)| (slots[&index], call.clone()))
+        .collect();
+    let results = thread::scope(|scope| {
+        // Every task owns its call block and streams to that stable slot. A slow
+        // first command cannot delay another command's execution or UI updates.
+        let handles: Vec<_> = calls
+            .iter()
+            .map(|(slot, call)| {
+                let mut block = live.blocks[*slot].clone();
+                let cwd = &request.cwd;
+                let cancel = &cancel;
+                scope.spawn(move || {
+                    block.tool.as_mut().unwrap().status = ToolStatus::Running;
+                    let _ = tx.send(Event::Set(*slot, block.clone()));
+                    let tool = block.tool.as_mut().unwrap();
+                    let result = if call["name"] != "bash" {
+                        Err("Unknown tool (only bash is available)".into())
+                    } else {
+                        tools::bash(call["arguments"].as_str().unwrap_or(""), cwd, cancel, |output| {
+                            tool.output = output.clone();
+                            let _ = tx.send(Event::ToolOutput(*slot, output));
+                        })
+                    };
+                    let mut images = vec![];
+                    match result {
+                        Ok(result) => {
+                            tool.output = result.output;
+                            tool.status = result.status;
+                            images = result.images;
+                        }
+                        Err(e) => {
+                            tool.output.text.push_str(&format!("\n[tool error: {e}]"));
+                            tool.status = ToolStatus::Error;
+                        }
+                    }
+                    let mut text = tool.output.text.clone();
+                    if let Some(summary) = tool.status.summary() {
+                        text.push_str(&format!("\n[{summary}]"));
+                    }
+                    if tool.output.truncated
+                        && let Some(log) = &tool.output.log
+                    {
+                        text.push_str(&format!(
+                            "\n[Output log (temporary): {} — read needed ranges with sed, tail, or grep]",
+                            log.display()
+                        ));
+                    }
+                    let item = json!({"type":"function_call_output", "call_id":tool.call_id, "output":text});
+                    let _ = tx.send(Event::Set(*slot, block.clone()));
+                    (*slot, block, item, images)
+                })
+            })
+            .collect();
+        // Keep replay/results in model call order, regardless of completion order.
+        handles.into_iter().map(|h| h.join().map_err(|_| "Tool worker panicked".into())).collect::<Result<Vec<_>>>()
+    })?;
     let mut images = vec![];
-    for call in &calls {
-        let slot = live.push(Kind::Output, "");
-        let result = if call["name"] != "bash" {
-            Err("Unknown tool (only bash is available)".into())
-        } else {
-            tools::bash(call["arguments"].as_str().unwrap_or(""), &request.cwd, &cancel, |s| live.delta(slot, s))
-        };
-        let text = match result {
-            Ok((text, attached)) => {
-                images.extend(attached);
-                text
-            }
-            Err(e) => format!("bash error: {e}"),
-        };
-        live.set(slot, Kind::Output, text.clone());
-        output.push(json!({"type":"function_call_output", "call_id":call["call_id"], "output":text}));
+    for (slot, block, item, attached) in results {
+        live.blocks[slot] = block;
+        output.push(item);
+        images.extend(attached);
     }
     output.extend(images);
     Ok(Step { items: output, blocks: live.blocks, usage, again: !calls.is_empty() && !cancel.load(Ordering::Relaxed) })
