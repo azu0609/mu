@@ -117,16 +117,22 @@ fn home() -> PathBuf {
 }
 
 impl Session {
-    pub fn new(cwd: PathBuf, model: String, effort: Option<String>) -> Self {
-        Self { id: unique_id(), instructions: instructions(&cwd), cwd, model, effort, nodes: vec![], cursor: None }
+    pub fn new(cwd: PathBuf, model: String, effort: Option<String>, skills: &[Skill]) -> Self {
+        Self {
+            id: unique_id(),
+            instructions: instructions(&cwd, skills),
+            cwd,
+            model,
+            effort,
+            nodes: vec![],
+            cursor: None,
+        }
+    }
+    fn ancestors(&self) -> impl Iterator<Item = usize> + '_ {
+        std::iter::successors(self.cursor, |&i| self.nodes[i].parent)
     }
     pub fn path(&self) -> Vec<usize> {
-        let mut path = vec![];
-        let mut cursor = self.cursor;
-        while let Some(i) = cursor {
-            path.push(i);
-            cursor = self.nodes[i].parent;
-        }
+        let mut path: Vec<_> = self.ancestors().collect();
         path.reverse();
         path
     }
@@ -134,7 +140,7 @@ impl Session {
         self.path().iter().flat_map(|&i| self.nodes[i].items.clone()).collect()
     }
     pub fn usage(&self) -> Usage {
-        self.path().iter().rev().find_map(|&i| self.nodes[i].usage).unwrap_or_default()
+        self.ancestors().find_map(|i| self.nodes[i].usage).unwrap_or_default()
     }
     pub fn push(&mut self, items: Vec<Value>, blocks: Vec<Block>, usage: Option<Usage>) {
         self.nodes.push(Node { parent: self.cursor, items, blocks, usage });
@@ -182,10 +188,8 @@ impl Session {
         Ok(s)
     }
     pub fn last_text(&self, kind: Kind) -> Option<String> {
-        self.path()
-            .iter()
-            .rev()
-            .flat_map(|&i| self.nodes[i].blocks.iter().rev())
+        self.ancestors()
+            .flat_map(|i| self.nodes[i].blocks.iter().rev())
             .find(|b| b.kind == kind)
             .map(|b| b.text.clone())
     }
@@ -352,7 +356,7 @@ fn skills_in(home: &Path, cwd: &Path) -> Vec<Skill> {
         .collect()
 }
 
-fn instructions(cwd: &Path) -> String {
+fn instructions(cwd: &Path, skills: &[Skill]) -> String {
     let mut s = "You are coding agent".to_string();
     let ancestors: Vec<_> = cwd.ancestors().collect();
     let project: Vec<_> = ancestors.iter().rev().filter_map(|p| fs::read_to_string(p.join("AGENTS.md")).ok()).collect();
@@ -360,7 +364,7 @@ fn instructions(cwd: &Path) -> String {
         s.push_str("\n\nProject Instructions:\n");
         s.push_str(&project.join("\n\n"));
     }
-    let entries: Vec<_> = skills(cwd).iter().map(|s| format!("{}: {}", s.path.display(), s.description)).collect();
+    let entries: Vec<_> = skills.iter().map(|s| format!("{}: {}", s.path.display(), s.description)).collect();
     if !entries.is_empty() {
         s.push_str("\n\nSkills:\n");
         s.push_str(&entries.join("\n"));

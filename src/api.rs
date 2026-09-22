@@ -27,7 +27,6 @@ pub enum Event {
 }
 pub struct Step {
     pub items: Vec<Value>,
-    pub blocks: Vec<Block>,
     pub usage: Usage,
     pub again: bool,
 }
@@ -54,27 +53,29 @@ impl Request {
     }
 }
 
+// App owns the rendered blocks; API output indices map to stable UI slots.
 struct Live<'a> {
     tx: &'a Sender<Event>,
-    blocks: Vec<Block>,
+    slots: BTreeMap<usize, usize>,
 }
 impl Live<'_> {
-    fn push(&mut self, kind: Kind, text: impl Into<String>) -> usize {
-        self.push_block(Block::new(kind, text))
+    fn upsert(&mut self, index: usize, block: Block) {
+        if let Some(&slot) = self.slots.get(&index) {
+            // Some proxies omit final summaries; don't erase received thoughts.
+            if block.kind != Kind::Thought || !block.text.is_empty() {
+                let _ = self.tx.send(Event::Set(slot, block));
+            }
+        } else {
+            let slot = self.slots.len();
+            self.slots.insert(index, slot);
+            let _ = self.tx.send(Event::Push(block));
+        }
     }
-    fn push_block(&mut self, b: Block) -> usize {
-        let i = self.blocks.len();
-        self.blocks.push(b.clone());
-        let _ = self.tx.send(Event::Push(b));
-        i
-    }
-    fn delta(&mut self, i: usize, text: &str) {
-        self.blocks[i].text.push_str(text);
-        let _ = self.tx.send(Event::Delta(i, text.into()));
-    }
-    fn set(&mut self, i: usize, b: Block) {
-        self.blocks[i] = b.clone();
-        let _ = self.tx.send(Event::Set(i, b));
+    fn delta(&mut self, index: usize, kind: Kind, text: &str) {
+        if !self.slots.contains_key(&index) {
+            self.upsert(index, Block::new(kind, ""));
+        }
+        let _ = self.tx.send(Event::Delta(self.slots[&index], text.into()));
     }
 }
 
@@ -153,8 +154,7 @@ fn display(item: &Value, partial: bool) -> Option<Block> {
 }
 
 pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Result<Step> {
-    let mut live = Live { tx, blocks: vec![] };
-    let mut slots = BTreeMap::new();
+    let mut live = Live { tx, slots: BTreeMap::new() };
     let mut items = BTreeMap::new();
     let mut completed = None;
     let mut sse = Sse::default();
@@ -206,14 +206,7 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
                     "response.output_item.added" | "response.output_item.done" => {
                         let item = &event["item"];
                         if let Some(block) = display(item, event["type"] == "response.output_item.added") {
-                            if let Some(&slot) = slots.get(&index) {
-                                // Some proxies omit summaries in item.done; don't erase received thoughts.
-                                if block.kind != Kind::Thought || !block.text.is_empty() {
-                                    live.set(slot, block);
-                                }
-                            } else {
-                                slots.insert(index, live.push_block(block));
-                            }
+                            live.upsert(index, block);
                         }
                         items.insert(index, item.clone());
                     }
@@ -223,8 +216,7 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
                     | "response.reasoning_text.delta" => {
                         let typ = event["type"].as_str().unwrap();
                         let kind = if typ.contains("reasoning") { Kind::Thought } else { Kind::Agent };
-                        let slot = *slots.entry(index).or_insert_with(|| live.push(kind, ""));
-                        live.delta(slot, event["delta"].as_str().unwrap_or(""));
+                        live.delta(index, kind, event["delta"].as_str().unwrap_or(""));
                     }
                     "response.function_call_arguments.delta" => {
                         let item = items.entry(index).or_insert_with(|| json!({"type":"function_call"}));
@@ -232,11 +224,7 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
                         raw.push_str(event["delta"].as_str().unwrap_or(""));
                         item["arguments"] = raw.into();
                         if let Some(block) = display(item, true) {
-                            if let Some(&slot) = slots.get(&index) {
-                                live.set(slot, block);
-                            } else {
-                                slots.insert(index, live.push_block(block));
-                            }
+                            live.upsert(index, block);
                         }
                     }
                     "response.completed" => {
@@ -271,40 +259,31 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
     // Final items are authoritative; preserve ids and opaque reasoning for replay.
     for (index, item) in output.iter().enumerate() {
         if let Some(block) = display(item, false) {
-            if let Some(&slot) = slots.get(&index) {
-                if block.kind != Kind::Thought || !block.text.is_empty() {
-                    live.set(slot, block);
-                }
-            } else {
-                slots.insert(index, live.push_block(block));
-            }
+            live.upsert(index, block);
         }
     }
-    let calls: Vec<_> = output
-        .iter()
-        .enumerate()
-        .filter(|(_, v)| v["type"] == "function_call")
-        .map(|(index, call)| (slots[&index], call.clone()))
-        .collect();
     let results = thread::scope(|scope| {
         // Every task owns its call block and streams to that stable slot. A slow
         // first command cannot delay another command's execution or UI updates.
-        let handles: Vec<_> = calls
+        let handles: Vec<_> = output
             .iter()
-            .map(|(slot, call)| {
-                let mut block = live.blocks[*slot].clone();
+            .enumerate()
+            .filter(|(_, call)| call["type"] == "function_call")
+            .map(|(index, call)| {
+                let slot = live.slots[&index];
+                let mut block = display(call, false).unwrap();
                 let cwd = &request.cwd;
                 let cancel = &cancel;
                 scope.spawn(move || {
                     block.tool.as_mut().unwrap().status = ToolStatus::Running;
-                    let _ = tx.send(Event::Set(*slot, block.clone()));
+                    let _ = tx.send(Event::Set(slot, block.clone()));
                     let tool = block.tool.as_mut().unwrap();
                     let result = if call["name"] != "bash" {
                         Err("Unknown tool (only bash is available)".into())
                     } else {
                         tools::bash(call["arguments"].as_str().unwrap_or(""), cwd, cancel, |output| {
                             tool.output = output.clone();
-                            let _ = tx.send(Event::ToolOutput(*slot, output));
+                            let _ = tx.send(Event::ToolOutput(slot, output));
                         })
                     };
                     let mut images = vec![];
@@ -332,20 +311,20 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
                         ));
                     }
                     let item = json!({"type":"function_call_output", "call_id":tool.call_id, "output":text});
-                    let _ = tx.send(Event::Set(*slot, block.clone()));
-                    (*slot, block, item, images)
+                    let _ = tx.send(Event::Set(slot, block));
+                    (item, images)
                 })
             })
             .collect();
         // Keep replay/results in model call order, regardless of completion order.
         handles.into_iter().map(|h| h.join().map_err(|_| "Tool worker panicked".into())).collect::<Result<Vec<_>>>()
     })?;
+    let again = !results.is_empty() && !cancel.load(Ordering::Relaxed);
     let mut images = vec![];
-    for (slot, block, item, attached) in results {
-        live.blocks[slot] = block;
+    for (item, attached) in results {
         output.push(item);
         images.extend(attached);
     }
     output.extend(images);
-    Ok(Step { items: output, blocks: live.blocks, usage, again: !calls.is_empty() && !cancel.load(Ordering::Relaxed) })
+    Ok(Step { items: output, usage, again })
 }

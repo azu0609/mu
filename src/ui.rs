@@ -57,20 +57,15 @@ impl Editor {
         self.chars.iter().collect()
     }
     pub fn insert(&mut self, text: &str) {
-        for ch in clean(text).chars() {
-            self.chars.insert(self.cursor, ch);
-            self.cursor += 1;
-        }
+        self.replace(self.cursor..self.cursor, &clean(text));
     }
     pub fn replace(&mut self, range: std::ops::Range<usize>, text: &str) {
         self.cursor = range.start + text.chars().count();
         self.chars.splice(range, text.chars());
     }
-    pub fn take(&mut self) -> String {
-        let s = self.text();
+    pub fn clear(&mut self) {
         self.chars.clear();
         self.cursor = 0;
-        s
     }
     pub fn backspace(&mut self) {
         if self.cursor > 0 {
@@ -335,16 +330,15 @@ pub fn draw(app: &mut App) -> Result<()> {
         let pending: Vec<_> =
             app.queued.iter().map(|s| Block::new(Kind::Notice, format!("queued: {}", s.text))).collect();
         let welcome = [Block::new(Kind::Notice, "mu · Ctrl+O to expand/collapse · PgUp/PgDn to scroll")];
-        let blocks: Vec<_> = welcome
+        let blocks = welcome
             .iter()
             .chain(path.iter().flat_map(|&i| app.session.nodes[i].blocks.iter()))
             .chain(app.live.iter())
             .chain(app.notices.iter())
-            .chain(pending.iter())
-            .collect();
+            .chain(pending.iter());
         let need = transcript_height.saturating_add(app.scroll);
         let mut reversed = vec![];
-        for block in blocks.into_iter().rev() {
+        for block in blocks.rev() {
             reversed.extend(block_lines(block, width - 1, app.expanded).into_iter().rev());
             if reversed.len() >= need {
                 break;

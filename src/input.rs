@@ -9,7 +9,6 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc,
     },
     thread,
     time::Duration,
@@ -278,8 +277,7 @@ pub fn menu(text: &str, cursor: usize, cwd: &Path, skills: &[Skill], files: &[St
 pub struct FileSearch {
     cwd: Option<PathBuf>,
     pub files: Vec<String>,
-    rx: Option<mpsc::Receiver<Result<Vec<String>>>>,
-    handle: Option<thread::JoinHandle<()>>,
+    handle: Option<thread::JoinHandle<Result<Vec<String>>>>,
     cancel: Arc<AtomicBool>,
 }
 impl Drop for FileSearch {
@@ -292,7 +290,7 @@ impl Drop for FileSearch {
 }
 impl FileSearch {
     pub fn pending(&self) -> bool {
-        self.rx.is_some()
+        self.handle.is_some()
     }
     pub fn start(&mut self, cwd: &Path) {
         if self.cwd.as_deref() == Some(cwd) {
@@ -302,47 +300,44 @@ impl FileSearch {
         self.cwd = Some(cwd.into());
         let cwd = cwd.to_path_buf();
         let cancel = self.cancel.clone();
-        let (tx, rx) = mpsc::channel();
-        self.rx = Some(rx);
         self.handle = Some(thread::spawn(move || {
-            let result = (|| -> Result<Vec<String>> {
-                let mut data = vec![];
-                let exit = process::run(
-                    Command::new("rg")
-                        .args(["--files", "--hidden", "--no-require-git", "-0", "-g", "!.git"])
-                        .current_dir(cwd),
-                    None,
-                    Duration::from_secs(10),
-                    &cancel,
-                    |stderr, bytes| {
-                        if !stderr {
-                            if data.len() + bytes.len() > 8 * 1024 * 1024 {
-                                return Err("File index exceeds 8 MiB; use @./directory/ instead".into());
-                            }
-                            data.extend_from_slice(bytes);
+            let mut data = vec![];
+            let exit = process::run(
+                Command::new("rg")
+                    .args(["--files", "--hidden", "--no-require-git", "-0", "-g", "!.git"])
+                    .current_dir(cwd),
+                None,
+                Duration::from_secs(10),
+                &cancel,
+                |stderr, bytes| {
+                    if !stderr {
+                        if data.len() + bytes.len() > 8 * 1024 * 1024 {
+                            return Err("File index exceeds 8 MiB; use @./directory/ instead".into());
                         }
-                        Ok(())
-                    },
-                )?;
-                if exit.timed_out || exit.code > 1 {
-                    return Err("File search failed; check ripgrep (rg) or use an explicit path".into());
-                }
-                let mut files: Vec<_> = data
-                    .split(|&b| b == 0)
-                    .filter_map(|b| std::str::from_utf8(b).ok())
-                    .filter(|s| !s.is_empty() && !s.chars().any(char::is_control))
-                    .map(str::to_string)
-                    .collect();
-                files.sort();
-                files.dedup();
-                Ok(files)
-            })();
-            let _ = tx.send(result);
+                        data.extend_from_slice(bytes);
+                    }
+                    Ok(())
+                },
+            )?;
+            if exit.timed_out || exit.code > 1 {
+                return Err("File search failed; check ripgrep (rg) or use an explicit path".into());
+            }
+            let mut files: Vec<_> = data
+                .split(|&b| b == 0)
+                .filter_map(|b| std::str::from_utf8(b).ok())
+                .filter(|s| !s.is_empty() && !s.chars().any(char::is_control))
+                .map(str::to_string)
+                .collect();
+            files.sort();
+            files.dedup();
+            Ok(files)
         }));
     }
     pub fn poll(&mut self) -> Option<Result<()>> {
-        let result = self.rx.as_ref()?.try_recv().ok()?;
-        self.rx = None;
+        if !self.handle.as_ref()?.is_finished() {
+            return None;
+        }
+        let result = self.handle.take().unwrap().join().unwrap_or_else(|_| Err("File search worker panicked".into()));
         Some(result.map(|files| self.files = files))
     }
 }

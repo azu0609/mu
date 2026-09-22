@@ -58,6 +58,17 @@ struct App {
     quitting: bool,
 }
 impl App {
+    fn reset_view(&mut self) {
+        self.live.clear();
+        self.notices.clear();
+        self.queued.clear();
+        self.scroll = 0;
+    }
+    fn drain_queue(&mut self) {
+        for message in self.queued.drain(..) {
+            self.session.user(message.text, message.content);
+        }
+    }
     fn notice(&mut self, text: impl Into<String>) {
         self.notices.push(Block::new(Kind::Notice, text));
         if self.notices.len() > 20 {
@@ -94,6 +105,7 @@ impl App {
         let tx = self.tx.clone();
         let handle = thread::spawn(move || {
             let result = api::step(request, flag, &tx);
+            // All streaming sends finish before Done; the UI can commit its live blocks.
             let _ = tx.send(api::Event::Done(result));
         });
         self.worker = Some(Worker { cancel, handle });
@@ -108,18 +120,15 @@ impl App {
         let cancelled = w.cancel.load(Ordering::Relaxed);
         let _ = w.handle.join();
         match result {
-            Ok(mut step) => {
+            Ok(step) => {
                 if step.usage.cache_miss(self.session.usage()) {
-                    step.blocks.push(Block::new(Kind::Notice, "cache miss · previously cached prefix was not read"));
+                    self.live.push(Block::new(Kind::Notice, "cache miss · previously cached prefix was not read"));
                 }
-                self.live.clear();
-                self.session.push(step.items, step.blocks, Some(step.usage));
+                self.session.push(step.items, std::mem::take(&mut self.live), Some(step.usage));
                 let mut again = step.again;
                 if !cancelled && !self.quitting {
                     again |= !self.queued.is_empty();
-                    for message in self.queued.drain(..) {
-                        self.session.user(message.text, message.content);
-                    }
+                    self.drain_queue();
                 }
                 if cancelled {
                     self.notice("Stopped. Tool side effects are not undone. Enter to continue.");
@@ -171,14 +180,15 @@ impl App {
                 self.save();
             }
             "/new" => {
-                self.session =
-                    Session::new(self.session.cwd.clone(), self.session.model.clone(), self.session.effort.clone());
                 self.skills = session::skills(&self.session.cwd);
+                self.session = Session::new(
+                    self.session.cwd.clone(),
+                    self.session.model.clone(),
+                    self.session.effort.clone(),
+                    &self.skills,
+                );
                 self.files = input::FileSearch::default();
-                self.live.clear();
-                self.notices.clear();
-                self.queued.clear();
-                self.scroll = 0;
+                self.reset_view();
             }
             "/tree" => {
                 let entries: Vec<_> = self
@@ -232,26 +242,20 @@ impl App {
             text = format!("{}{}", name, &text.trim_start()[word.len()..]);
             if input::COMMANDS.iter().any(|(command, _)| *command == name) {
                 let result = self.command(&text);
-                self.editor.take();
+                self.editor.clear();
                 return result;
             }
             skill = self.skills.iter().rev().find(|s| format!("/{}", s.name) == name);
         }
         // Snapshot all attachments before clearing the draft or touching the queue.
         let message = input::prepare(text, &self.session.cwd, skill)?;
-        self.editor.take();
-        if self.worker.is_some() {
-            if !message.text.trim().is_empty() {
-                self.queued.push(message);
-            }
-        } else {
+        self.editor.clear();
+        if !message.text.trim().is_empty() {
+            self.queued.push(message);
+        }
+        if self.worker.is_none() {
             self.notices.clear();
-            for message in self.queued.drain(..) {
-                self.session.user(message.text, message.content);
-            }
-            if !message.text.trim().is_empty() {
-                self.session.user(message.text, message.content);
-            }
+            self.drain_queue();
             self.start();
         }
         Ok(())
@@ -308,10 +312,7 @@ impl App {
                     false
                 }
             };
-            self.live.clear();
-            self.notices.clear();
-            self.queued.clear();
-            self.scroll = 0;
+            self.reset_view();
             if save_cursor {
                 self.save();
             }
@@ -382,7 +383,7 @@ impl App {
                 if self.worker.is_some() {
                     self.stop();
                 } else if !self.editor.chars.is_empty() {
-                    self.editor.take();
+                    self.editor.clear();
                 } else {
                     self.quitting = true;
                 }
@@ -403,9 +404,7 @@ impl App {
             Key::End => self.editor.end(),
             Key::Char('a') if ctrl => self.editor.home(),
             Key::Char('e') if ctrl => self.editor.end(),
-            Key::Char('u') if ctrl => {
-                self.editor.take();
-            }
+            Key::Char('u') if ctrl => self.editor.clear(),
             Key::Char('w') if ctrl => self.editor.word_backspace(),
             Key::Backspace => self.editor.backspace(),
             Key::Delete => self.editor.delete(),
@@ -530,7 +529,12 @@ fn main() -> Result<()> {
     let cwd = env::current_dir()?;
     let skills = session::skills(&cwd);
     let mut app = App {
-        session: Session::new(cwd, env::var("MU_MODEL").unwrap_or_else(|_| "gpt-5".into()), env::var("MU_EFFORT").ok()),
+        session: Session::new(
+            cwd,
+            env::var("MU_MODEL").unwrap_or_else(|_| "gpt-5".into()),
+            env::var("MU_EFFORT").ok(),
+            &skills,
+        ),
         skills,
         completion: None,
         dismissed: false,
