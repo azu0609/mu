@@ -6,7 +6,7 @@ use crossterm::{
     cursor,
     event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
     execute, queue,
-    style::{Color, Print, ResetColor, SetForegroundColor},
+    style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use std::io::{self, Write};
@@ -33,6 +33,7 @@ fn restore() {
     let _ = execute!(
         io::stdout(),
         ResetColor,
+        SetAttribute(Attribute::Reset),
         cursor::Show,
         DisableMouseCapture,
         DisableBracketedPaste,
@@ -177,10 +178,11 @@ struct Line {
     text: String,
     color: Color,
     bullet: Option<Color>,
+    italic: bool,
 }
 impl Line {
     fn new(text: impl Into<String>, color: Color) -> Self {
-        Self { text: text.into(), color, bullet: None }
+        Self { text: text.into(), color, bullet: None, italic: false }
     }
 }
 
@@ -212,6 +214,7 @@ fn tool_lines(command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<L
             text: format!("{}{line}", if i == 0 { "● " } else { "  " }),
             color: Color::Reset,
             bullet: (i == 0).then_some(color),
+            italic: false,
         });
     }
     let output = clean(&tool.output.text);
@@ -248,7 +251,7 @@ fn tool_lines(command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<L
 }
 
 fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
-    let (label, color, limit) = match block.kind {
+    let (first_prefix, color, limit) = match block.kind {
         Kind::Call => return tool_lines(&block.text, block.tool.as_ref().unwrap(), width, expanded),
         Kind::Notice => {
             return wrap(&format!("! {}", clean(&block.text)), width)
@@ -256,9 +259,9 @@ fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
                 .map(|line| Line::new(line, Color::Yellow))
                 .collect();
         }
-        Kind::User => ("›", ACCENT, usize::MAX),
-        Kind::Agent => ("", Color::Reset, usize::MAX),
-        Kind::Thought => ("", GRAY, 2),
+        Kind::User => ("› ", ACCENT, usize::MAX),
+        Kind::Agent => ("  ", Color::Reset, usize::MAX),
+        Kind::Thought => ("  ", GRAY, 2),
     };
     let text = clean(&block.text);
     if text.is_empty() && block.kind == Kind::Thought {
@@ -285,17 +288,15 @@ fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
         } else {
             color
         };
-        let prefix = if label.is_empty() {
-            String::new()
-        } else if i == 0 {
-            format!("{label} ")
-        } else {
-            "  ".into()
-        };
-        result.push(Line::new(format!("{prefix}{line}"), md_color));
+        let prefix = if i == 0 { first_prefix } else { "  " };
+        let mut rendered = Line::new(format!("{prefix}{line}"), md_color);
+        rendered.italic = block.kind == Kind::Thought;
+        result.push(rendered);
     }
     if collapsed {
-        result.push(Line::new(format!("{}… Ctrl+O to expand", if label.is_empty() { "" } else { "  " }), GRAY));
+        let mut line = Line::new("  … Ctrl+O to expand", GRAY);
+        line.italic = block.kind == Kind::Thought;
+        result.push(line);
     }
     result.push(Line::new("", GRAY));
     result
@@ -309,7 +310,7 @@ pub fn draw(app: &mut App) -> Result<()> {
     }
     let text = app.editor.text();
     let prefix: String = app.editor.chars[..app.editor.cursor].iter().collect();
-    let prompt_width = width - 2;
+    let prompt_width = width - 3;
     let cursor_lines = wrap(&format!("{prefix} "), prompt_width);
     let cursor_row = cursor_lines.len() - 1;
     let cursor_col = cursor_lines.last().unwrap().width().saturating_sub(1);
@@ -358,6 +359,7 @@ pub fn draw(app: &mut App) -> Result<()> {
         queue!(out, cursor::MoveTo(0, row as u16), Clear(ClearType::CurrentLine))?;
         if let Some(line) = lines.get(row) {
             let text = clip(&line.text, width.saturating_sub(1));
+            queue!(out, SetAttribute(if line.italic { Attribute::Italic } else { Attribute::NoItalic }))?;
             if let Some(color) = line.bullet {
                 queue!(
                     out,
@@ -374,6 +376,7 @@ pub fn draw(app: &mut App) -> Result<()> {
     if app.picker.is_none()
         && let Some(menu) = &app.completion
     {
+        queue!(out, SetAttribute(Attribute::NoItalic))?;
         let height = menu.entries.len().min(7).min(transcript_height);
         let top = transcript_height - height;
         let start = (menu.selected + 1).saturating_sub(height);
@@ -387,20 +390,23 @@ pub fn draw(app: &mut App) -> Result<()> {
     }
     queue!(
         out,
+        SetAttribute(Attribute::NoItalic),
         cursor::MoveTo(0, transcript_height as u16),
         SetForegroundColor(GRAY),
         Clear(ClearType::CurrentLine),
         Print("─".repeat(width - 1))
     )?;
     for row in 0..input_height {
+        let line = input_top + row;
         queue!(
             out,
             cursor::MoveTo(0, (transcript_height + 1 + row) as u16),
             Clear(ClearType::CurrentLine),
-            SetForegroundColor(Color::Reset),
-            Print(" ")
+            SetForegroundColor(if line == 0 { ACCENT } else { Color::Reset }),
+            Print(if line == 0 { "› " } else { "  " }),
+            SetForegroundColor(Color::Reset)
         )?;
-        if let Some(s) = input.get(input_top + row) {
+        if let Some(s) = input.get(line) {
             queue!(out, Print(clip(s, prompt_width)))?;
         }
     }
@@ -445,12 +451,13 @@ pub fn draw(app: &mut App) -> Result<()> {
         cursor::MoveTo((width - right.width()) as u16, h - 1),
         SetForegroundColor(GRAY),
         Print(right),
-        ResetColor
+        ResetColor,
+        SetAttribute(Attribute::Reset)
     )?;
     if app.picker.is_none() {
         queue!(
             out,
-            cursor::MoveTo((1 + cursor_col) as u16, (transcript_height + 1 + cursor_row - input_top) as u16),
+            cursor::MoveTo((2 + cursor_col) as u16, (transcript_height + 1 + cursor_row - input_top) as u16),
             cursor::Show
         )?;
     }
