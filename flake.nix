@@ -28,7 +28,7 @@
         let pkgs = import nixpkgs { inherit system; };
         in {
           default = pkgs.mkShell {
-            packages = with pkgs; [ cargo rustc rustfmt clippy bash curl ripgrep python3 ];
+            packages = with pkgs; [ cargo rustc rust-analyzer rustfmt clippy bash curl ripgrep ];
           };
         });
     };

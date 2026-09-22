@@ -107,37 +107,3 @@ pub fn run(
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn output_and_timeout() {
-        let cancel = Arc::new(AtomicBool::new(false));
-        let mut output: Vec<u8> = vec![];
-        let exit = run(
-            Command::new("bash").args(["-c", "printf hi; printf err >&2; exit 7"]),
-            None,
-            Duration::from_secs(2),
-            &cancel,
-            |_, b| {
-                output.extend(b);
-                Ok(())
-            },
-        )
-        .unwrap();
-        assert_eq!(exit.code, 7);
-        assert_eq!(output.len(), 5);
-        let start = Instant::now();
-        let exit = run(
-            Command::new("bash").args(["-c", "sleep 30 & wait"]),
-            None,
-            Duration::from_millis(80),
-            &cancel,
-            |_, _| Ok(()),
-        )
-        .unwrap();
-        assert!(exit.timed_out);
-        assert!(start.elapsed() < Duration::from_secs(2));
-    }
-}

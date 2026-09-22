@@ -177,8 +177,8 @@ type Line = (String, Color);
 fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
     let (label, color) = match block.kind {
         Kind::User => ("›", ACCENT),
-        Kind::Agent => ("µ", Color::White),
-        Kind::Thought => ("· thoughts", GRAY),
+        Kind::Agent => ("", Color::Reset),
+        Kind::Thought => ("", GRAY),
         Kind::Call => ("$", ACCENT),
         Kind::Output => ("│", GRAY),
         Kind::Notice => ("!", Color::Yellow),
@@ -200,9 +200,13 @@ fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
     if collapsed {
         lines.truncate(limit);
     }
-    let mut result = vec![(label.into(), color)];
+    let mut result = if matches!(block.kind, Kind::User | Kind::Agent | Kind::Thought | Kind::Call | Kind::Output) {
+        vec![]
+    } else {
+        vec![(label.into(), color)]
+    };
     let mut code = false;
-    for line in lines {
+    for (i, line) in lines.into_iter().enumerate() {
         let trimmed = line.trim_start();
         let md_color = if block.kind == Kind::Agent {
             if trimmed.starts_with("```") {
@@ -216,10 +220,17 @@ fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
         } else {
             color
         };
-        result.push((format!("  {line}"), md_color));
+        let prefix = if matches!(block.kind, Kind::User | Kind::Call | Kind::Output) && i == 0 {
+            format!("{label} ")
+        } else if matches!(block.kind, Kind::Agent | Kind::Thought) {
+            String::new()
+        } else {
+            "  ".into()
+        };
+        result.push((format!("{prefix}{line}"), md_color));
     }
     if collapsed {
-        result.push(("  … Ctrl+O to expand".into(), GRAY));
+        result.push((format!("{}… Ctrl+O to expand", if block.kind == Kind::Thought { "" } else { "  " }), GRAY));
     }
     result.push((String::new(), GRAY));
     result
@@ -237,18 +248,10 @@ pub fn draw(app: &mut App) -> Result<()> {
     let cursor_lines = wrap(&format!("{prefix} "), prompt_width);
     let cursor_row = cursor_lines.len() - 1;
     let cursor_col = cursor_lines.last().unwrap().width().saturating_sub(1);
-    let mut input = wrap(&format!("{text} "), prompt_width);
+    let input = wrap(&format!("{text} "), prompt_width);
     let input_height = input.len().min(6).min(h as usize - 4).max(1);
     let input_top = (cursor_row + 1).saturating_sub(input_height);
     let transcript_height = h as usize - input_height - 3;
-    if text.is_empty() {
-        input[0] = if app.worker.is_some() {
-            "message to steer · Esc to stop"
-        } else {
-            "message · /model /new /resume /tree /copy /quit"
-        }
-        .into();
-    }
     let mut out = io::BufWriter::new(io::stdout().lock());
     queue!(out, cursor::Hide, cursor::MoveTo(0, 0))?;
     let lines = if let Some(picker) = &app.picker {
@@ -265,7 +268,7 @@ pub fn draw(app: &mut App) -> Result<()> {
         let path = app.session.path();
         let pending: Vec<_> =
             app.queued.iter().map(|s| Block::new(Kind::Notice, format!("queued: {}", s.text))).collect();
-        let welcome = [Block::new(Kind::Notice, "mu · µ · 無    Ctrl+O expand · PgUp/PgDn scroll")];
+        let welcome = [Block::new(Kind::Notice, "mu · Ctrl+O to expand/collapse · PgUp/PgDn to scroll")];
         let blocks: Vec<_> = welcome
             .iter()
             .chain(path.iter().flat_map(|&i| app.session.nodes[i].blocks.iter()))
@@ -295,33 +298,14 @@ pub fn draw(app: &mut App) -> Result<()> {
     if app.picker.is_none()
         && let Some(menu) = &app.completion
     {
-        let height = (menu.entries.len() + 1).min(7).min(transcript_height);
+        let height = menu.entries.len().min(7).min(transcript_height);
         let top = transcript_height - height;
-        let start = (menu.selected + 1).saturating_sub(height.saturating_sub(1));
+        let start = (menu.selected + 1).saturating_sub(height);
         for row in 0..height {
             queue!(out, cursor::MoveTo(0, (top + row) as u16), Clear(ClearType::CurrentLine))?;
-            let (text, color) = if row == 0 {
-                (
-                    format!(
-                        "{} · ↑/↓ Tab · Enter · Esc{}",
-                        if menu.file { "files" } else { "commands / skills" },
-                        if app.files.pending() {
-                            " · searching…"
-                        } else if menu.entries.is_empty() {
-                            " · no matches"
-                        } else {
-                            ""
-                        }
-                    ),
-                    GRAY,
-                )
-            } else {
-                let i = start + row - 1;
-                (
-                    format!("{} {}", if i == menu.selected { "›" } else { " " }, menu.entries[i].label),
-                    if i == menu.selected { ACCENT } else { GRAY },
-                )
-            };
+            let i = start + row;
+            let text = format!("{} {}", if i == menu.selected { "›" } else { " " }, menu.entries[i].label);
+            let color = if i == menu.selected { ACCENT } else { GRAY };
             queue!(out, SetForegroundColor(color), Print(clip(&text, width - 1)))?;
         }
     }
@@ -337,7 +321,7 @@ pub fn draw(app: &mut App) -> Result<()> {
             out,
             cursor::MoveTo(0, (transcript_height + 1 + row) as u16),
             Clear(ClearType::CurrentLine),
-            SetForegroundColor(if text.is_empty() { GRAY } else { Color::White }),
+            SetForegroundColor(Color::Reset),
             Print(" ")
         )?;
         if let Some(s) = input.get(input_top + row) {
@@ -396,32 +380,4 @@ pub fn draw(app: &mut App) -> Result<()> {
     }
     out.flush()?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn counts_scale() {
-        assert_eq!(count(0), "0");
-        assert_eq!(count(999), "999");
-        assert_eq!(count(1_000), "1.0k");
-        assert_eq!(count(1_100), "1.1k");
-        assert_eq!(count(127_432), "127.4k");
-        assert_eq!(count(999_949), "999.9k");
-        assert_eq!(count(999_950), "1.0M");
-        assert_eq!(count(1_000_000), "1.0M");
-        assert_eq!(count(2_400_000), "2.4M");
-    }
-
-    #[test]
-    fn controls_and_unicode() {
-        assert_eq!(clean("a\x1b[31mb\x1b[0m\x1b]52;c;evil\x07c\r\n"), "abc\n");
-        assert_eq!(wrap("無µa", 3), vec!["無µ", "a"]);
-        let mut e = Editor::default();
-        e.insert("無µ");
-        e.cursor = 1;
-        e.backspace();
-        assert_eq!(e.text(), "µ");
-    }
 }

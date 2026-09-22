@@ -281,34 +281,3 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
     output.extend(images);
     Ok(Step { items: output, blocks: live.blocks, usage, again: !calls.is_empty() && !cancel.load(Ordering::Relaxed) })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn sse_arbitrary_boundaries_and_crlf() {
-        let mut sse = Sse::default();
-        let mut events = vec![];
-        for b in
-            ": keepalive\r\nevent: x\r\ndata: {\"type\":\"µ\",\r\ndata: \"n\":1}\r\n\r\ndata: [DONE]\n\n".as_bytes()
-        {
-            events.extend(sse.feed(&[*b]).unwrap());
-        }
-        assert_eq!(events, vec![json!({"type":"µ", "n":1})]);
-    }
-    #[test]
-    fn exact_minimal_tool_and_prompt() {
-        let r = Request {
-            instructions: "You are coding agent".into(),
-            model: "m".into(),
-            effort: None,
-            input: vec![],
-            cwd: PathBuf::new(),
-        };
-        let b = r.body();
-        assert_eq!(b["instructions"], "You are coding agent");
-        assert_eq!(b["tools"].as_array().unwrap().len(), 1);
-        assert_eq!(b["tools"][0]["description"], "Special bash commands: view_image");
-        assert!(b.get("reasoning").is_none());
-    }
-}

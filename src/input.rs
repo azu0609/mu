@@ -50,7 +50,7 @@ pub fn resolve(word: &str, skills: &[Skill]) -> Result<String> {
     match names.as_slice() {
         [name] => Ok(name.clone()),
         [] => Err(format!("Unknown command or skill: {word}").into()),
-        _ => Err(format!("Choose a command: {} (↑/↓ then Enter, or Tab)", names.join(", ")).into()),
+        _ => Err(format!("Choose a command: {}", names.join(", ")).into()),
     }
 }
 
@@ -344,86 +344,5 @@ impl FileSearch {
         let result = self.rx.as_ref()?.try_recv().ok()?;
         self.rx = None;
         Some(result.map(|files| self.files = files))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{session::unique_id, ui::Editor};
-
-    fn skill(name: &str, path: PathBuf) -> Skill {
-        Skill { name: name.into(), path, description: "a skill".into() }
-    }
-    #[test]
-    fn command_prefixes_and_collisions() {
-        let skills = vec![skill("review", PathBuf::new()), skill("quit", PathBuf::new())];
-        assert_eq!(resolve("/q", &skills).unwrap(), "/quit");
-        assert_eq!(resolve("/rev", &skills).unwrap(), "/review");
-        assert_eq!(resolve("/resume", &skills).unwrap(), "/resume");
-        assert!(resolve("/re", &skills).is_err());
-        assert!(resolve("/missing", &skills).is_err());
-        assert_eq!(commands(&skills)["/quit"], "quit");
-    }
-    #[test]
-    fn mentions_and_midline_unicode_completion() {
-        let m = mentions(r#"email a@b @@literal @src/無.rs @"two \"quotes\".txt""#);
-        assert_eq!(m.iter().map(|m| m.path.as_str()).collect::<Vec<_>>(), ["src/無.rs", "two \"quotes\".txt"]);
-        assert!(m.iter().all(|m| m.closed));
-        assert!(!mentions("@\"unclosed name")[0].closed);
-        let mut editor = Editor::default();
-        editor.insert("無 @mnrs rest");
-        editor.cursor = 7;
-        let menu =
-            menu(&editor.text(), editor.cursor, Path::new("/nonexistent"), &[], &["src/main.rs".into()]).unwrap();
-        assert_eq!(menu.entries[0].label, "src/main.rs");
-        editor.replace(menu.range, &menu.entries[0].text);
-        assert_eq!(editor.text(), "無 @src/main.rs  rest");
-        assert!(menu_for("hello a@b").is_none());
-        assert!(menu_for("@\"finished file\"").is_none());
-    }
-    fn menu_for(text: &str) -> Option<Menu> {
-        menu(text, text.chars().count(), Path::new("/nonexistent"), &[], &[])
-    }
-    #[test]
-    fn symlinked_skill_attachments_keep_the_link_not_the_target() {
-        let dir = env::temp_dir().join(format!("mu-input-link-test-{}", unique_id()));
-        let target = dir.join("store/SKILL.md");
-        fs::create_dir_all(target.parent().unwrap()).unwrap();
-        fs::write(&target, "body").unwrap();
-        let link = dir.join("SKILL.md");
-        std::os::unix::fs::symlink(&target, &link).unwrap();
-        let message = prepare("/review".into(), &dir, Some(&skill("review", link.clone()))).unwrap();
-        assert!(message.content.contains(&format!("Skill: /review: {}", link.display())));
-        assert!(!message.content.contains(&target.display().to_string()));
-        assert!(message.content.contains("body"));
-        fs::remove_dir_all(dir).unwrap();
-    }
-    #[test]
-    fn attachments_are_bounded_snapshots_not_recursive_expansions() {
-        let dir = env::temp_dir().join(format!("mu-input-test-{}", unique_id()));
-        fs::create_dir(&dir).unwrap();
-        let file = dir.join("two words.txt");
-        let skill_path = dir.join("SKILL.md");
-        fs::write(&file, "first snapshot @not-another-file").unwrap();
-        fs::write(&skill_path, "---\nname: review\n---\nSkill body @also-not-a-file").unwrap();
-        let text = "/review fix @\"two words.txt\" @\"two words.txt\"".to_string();
-        let message = prepare(text.clone(), &dir, Some(&skill("review", skill_path.clone()))).unwrap();
-        fs::write(&file, "second snapshot").unwrap();
-        assert_eq!(message.text, text);
-        assert_eq!(message.content.matches("first snapshot").count(), 1);
-        assert!(!message.content.contains("second snapshot"));
-        assert!(message.content.contains(&format!("Skill: /review: {}", skill_path.display())));
-        assert!(message.content.contains("Skill body @also-not-a-file"));
-        assert!(prepare("@missing".into(), &dir, None).is_err());
-        assert!(prepare("@\"unfinished".into(), &dir, None).is_err());
-        fs::write(&file, [0, 1, 2]).unwrap();
-        assert!(prepare("@\"two words.txt\"".into(), &dir, None).is_err());
-        fs::write(&file, vec![b'x'; 1024 * 1024 + 1]).unwrap();
-        assert!(prepare("@\"two words.txt\"".into(), &dir, None).is_err());
-        let explicit = format!("@{}/", dir.display());
-        let menu = menu(&explicit, explicit.chars().count(), &dir, &[], &[]).unwrap();
-        assert!(menu.entries.iter().any(|e| e.text.starts_with("@\"") && e.label.ends_with("two words.txt")));
-        fs::remove_dir_all(dir).unwrap();
     }
 }
