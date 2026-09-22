@@ -288,8 +288,12 @@ pub struct Skill {
 }
 
 pub fn skills(cwd: &Path) -> Vec<Skill> {
+    skills_in(&home(), cwd)
+}
+
+fn skills_in(home: &Path, cwd: &Path) -> Vec<Skill> {
     let mut paths = vec![];
-    discover_skills(&home().join(".agents/skills"), &mut paths, 0);
+    discover_skills(&home.join(".agents/skills"), &mut paths, 0);
     for dir in cwd.ancestors().collect::<Vec<_>>().iter().rev() {
         discover_skills(&dir.join(".agents/skills"), &mut paths, 0);
     }
@@ -297,8 +301,9 @@ pub fn skills(cwd: &Path) -> Vec<Skill> {
     paths
         .into_iter()
         .filter_map(|path| {
-            let path = path.canonicalize().ok()?;
-            if !seen.insert(path.clone()) {
+            // Deduplicate by target, but keep the discovered path: instructions should show
+            // the symlink the user set up, not the (often store-hashed) path it points to.
+            if !seen.insert(path.canonicalize().ok()?) {
                 return None;
             }
             let text = fs::read_to_string(&path).ok()?;
@@ -384,6 +389,23 @@ mod tests {
         write_json(&empty_path, &empty, false).unwrap();
         assert_eq!(sessions_in(&dir).unwrap().len(), 1);
         assert!(empty_path.exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn symlinked_skills_keep_discovered_paths() {
+        let dir = env::temp_dir().join(format!("mu-skills-test-{}", unique_id()));
+        let target = dir.join("store/skill");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("SKILL.md"), "---\nname: review\ndescription: linked\n---\nbody").unwrap();
+        let home = dir.join("home");
+        fs::create_dir_all(home.join(".agents/skills")).unwrap();
+        std::os::unix::fs::symlink(&target, home.join(".agents/skills/linked")).unwrap();
+        // A second link to the same target deduplicates without replacing the first path.
+        std::os::unix::fs::symlink(&target, home.join(".agents/skills/linked-copy")).unwrap();
+        let found = skills_in(&home, &dir.join("project"));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].path, home.join(".agents/skills/linked/SKILL.md"));
+        assert_eq!(found[0].description, "linked");
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]

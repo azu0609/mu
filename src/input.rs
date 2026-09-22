@@ -125,9 +125,11 @@ fn read_text(path: &Path) -> Result<String> {
 pub fn prepare(text: String, cwd: &Path, skill: Option<&Skill>) -> Result<Message> {
     let mut content = text.clone();
     let mut seen = HashSet::new();
-    let mut attachments = vec![];
+    // (label, path, keep): skills keep the discovered path so the model sees the same
+    // possibly symlinked path as in the instructions; @ file mentions are shown resolved.
+    let mut attachments: Vec<(String, PathBuf, bool)> = vec![];
     if let Some(skill) = skill {
-        attachments.push((format!("Skill: /{}", skill.name), skill.path.clone()));
+        attachments.push((format!("Skill: /{}", skill.name), skill.path.clone(), true));
     }
     for mention in mentions(&text) {
         if !mention.closed {
@@ -136,18 +138,19 @@ pub fn prepare(text: String, cwd: &Path, skill: Option<&Skill>) -> Result<Messag
         if mention.path.is_empty() {
             continue;
         }
-        attachments.push(("File".into(), path(cwd, &mention.path)));
+        attachments.push(("File".into(), path(cwd, &mention.path), false));
     }
-    for (kind, path) in attachments {
-        let path = path.canonicalize().map_err(|e| format!("{}: {e}", path.display()))?;
-        if !seen.insert(path.clone()) {
+    for (kind, path, keep) in attachments {
+        let canonical = path.canonicalize().map_err(|e| format!("{}: {e}", path.display()))?;
+        if !seen.insert(canonical.clone()) {
             continue;
         }
         let body = read_text(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         if content.len() + body.len() > 4 * 1024 * 1024 {
             return Err("Attached context exceeds 4 MiB".into());
         }
-        content.push_str(&format!("\n\n{kind}: {}\n{body}", path.display()));
+        let shown = if keep { &path } else { &canonical };
+        content.push_str(&format!("\n\n{kind}: {}\n{body}", shown.display()));
     }
     Ok(Message { text, content })
 }
@@ -381,6 +384,20 @@ mod tests {
     }
     fn menu_for(text: &str) -> Option<Menu> {
         menu(text, text.chars().count(), Path::new("/nonexistent"), &[], &[])
+    }
+    #[test]
+    fn symlinked_skill_attachments_keep_the_link_not_the_target() {
+        let dir = env::temp_dir().join(format!("mu-input-link-test-{}", unique_id()));
+        let target = dir.join("store/SKILL.md");
+        fs::create_dir_all(target.parent().unwrap()).unwrap();
+        fs::write(&target, "body").unwrap();
+        let link = dir.join("SKILL.md");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let message = prepare("/review".into(), &dir, Some(&skill("review", link.clone()))).unwrap();
+        assert!(message.content.contains(&format!("Skill: /review: {}", link.display())));
+        assert!(!message.content.contains(&target.display().to_string()));
+        assert!(message.content.contains("body"));
+        fs::remove_dir_all(dir).unwrap();
     }
     #[test]
     fn attachments_are_bounded_snapshots_not_recursive_expansions() {

@@ -151,11 +151,12 @@ textual tool result, then attaches Responses `input_image` content in a user
 message after the tool results. The selected model must support images.
 
 The status line shows the **last response's** input/output tokens, cached input
-and read percentage, then `(input + output) / MU_CONTEXT` in thousands. `?` means
-cache telemetry was omitted. Capacity is not inferred from a model name and no
-context trimming happens. A one-line cache-miss warning appears only when an
-explicitly zero cache read follows a nonzero read on a growing context; a first
-request or missing telemetry is not called a miss.
+and read percentage, then `(input + output) / MU_CONTEXT`; all token counts are
+compact (`999`, `1.1k`, `1.0M`). `?` means cache telemetry was omitted. Capacity
+is not inferred from a model name and no context trimming happens. A one-line
+cache-miss warning appears only when an explicitly zero cache read follows a
+nonzero read on a growing context; a first request or missing telemetry is not
+called a miss.
 
 Markdown is intentionally just a colorizer. Clipboard uses `wl-copy`, then
 `xclip`, when available; otherwise OSC 52 (your terminal must allow it).

@@ -162,6 +162,17 @@ fn clip(s: &str, width: usize) -> String {
     wrap(&clean(s).replace('\n', " "), width).into_iter().next().unwrap_or_default()
 }
 
+// Compact counts for the status line: 999, 1.0k, 15.5k, 1.0M.
+fn count(n: u64) -> String {
+    if n < 1_000 {
+        n.to_string()
+    } else if n < 999_950 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    }
+}
+
 type Line = (String, Color);
 fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
     let (label, color) = match block.kind {
@@ -341,19 +352,19 @@ pub fn draw(app: &mut App) -> Result<()> {
         Print("─".repeat(width - 1))
     )?;
     let usage = app.session.usage();
-    let cache = usage.cached.map(|c| c.to_string()).unwrap_or_else(|| "?".into());
+    let cache = usage.cached.map(count).unwrap_or_else(|| "?".into());
     let read = usage
         .cached
         .map(|c| format!("{:.1}%", 100.0 * c as f64 / usage.input.max(1) as f64))
         .unwrap_or_else(|| "?".into());
     let left = format!(
-        " ↑{} ↓{} | cache {} read {} | ctx {:.1}/{}k ",
-        usage.input,
-        usage.output,
+        " ↑{} ↓{} | cache {} read {} | ctx {}/{} ",
+        count(usage.input),
+        count(usage.output),
         cache,
         read,
-        (usage.input + usage.output) as f64 / 1000.0,
-        app.context / 1000
+        count(usage.input + usage.output),
+        count(app.context)
     );
     let right = clip(
         &format!(
@@ -390,6 +401,19 @@ pub fn draw(app: &mut App) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn counts_scale() {
+        assert_eq!(count(0), "0");
+        assert_eq!(count(999), "999");
+        assert_eq!(count(1_000), "1.0k");
+        assert_eq!(count(1_100), "1.1k");
+        assert_eq!(count(127_432), "127.4k");
+        assert_eq!(count(999_949), "999.9k");
+        assert_eq!(count(999_950), "1.0M");
+        assert_eq!(count(1_000_000), "1.0M");
+        assert_eq!(count(2_400_000), "2.4M");
+    }
+
     #[test]
     fn controls_and_unicode() {
         assert_eq!(clean("a\x1b[31mb\x1b[0m\x1b]52;c;evil\x07c\r\n"), "abc\n");
