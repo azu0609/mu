@@ -61,10 +61,7 @@ struct Live<'a> {
 impl Live<'_> {
     fn upsert(&mut self, index: usize, block: Block) {
         if let Some(&slot) = self.slots.get(&index) {
-            // Some proxies omit final summaries; don't erase received thoughts.
-            if block.kind != Kind::Thought || !block.text.is_empty() {
-                let _ = self.tx.send(Event::Set(slot, block));
-            }
+            let _ = self.tx.send(Event::Set(slot, block));
         } else {
             let slot = self.slots.len();
             self.slots.insert(index, slot);
@@ -110,6 +107,41 @@ impl Sse {
     }
 }
 
+// Read only a top-level command, skipping complete fields before it. A partial
+// JSON string is display-only: execution still uses the final, validated args.
+fn command_prefix(raw: &str) -> Option<String> {
+    let mut rest = raw.trim_start().strip_prefix('{')?;
+    loop {
+        let mut key = serde_json::Deserializer::from_str(rest).into_iter::<String>();
+        let name = key.next()?.ok()?;
+        rest = rest[key.byte_offset()..].trim_start().strip_prefix(':')?.trim_start();
+        if name == "command" {
+            return string_prefix(rest);
+        }
+        let mut value = serde_json::Deserializer::from_str(rest).into_iter::<serde::de::IgnoredAny>();
+        value.next()?.ok()?;
+        rest = rest[value.byte_offset()..].trim_start().strip_prefix(',')?;
+    }
+}
+
+fn string_prefix(raw: &str) -> Option<String> {
+    match serde_json::Deserializer::from_str(raw).into_iter::<String>().next()? {
+        Ok(text) => return Some(text),
+        Err(e) if e.is_eof() => (),
+        Err(_) => return None,
+    }
+    // Supply the missing quote and let serde decode. On an unfinished escape,
+    // withhold it from the preview (and its high surrogate, if paired).
+    let mut prefix = raw.to_owned();
+    loop {
+        prefix.push('"');
+        if let Ok(text) = serde_json::from_str(&prefix) {
+            return Some(text);
+        }
+        prefix.truncate(prefix.rfind('\\')?);
+    }
+}
+
 fn display(item: &Value, partial: bool) -> Option<Block> {
     let texts = |field: &str, typ: &str| {
         item[field]
@@ -137,7 +169,11 @@ fn display(item: &Value, partial: bool) -> Option<Block> {
             let raw = item["arguments"].as_str().unwrap_or("");
             let args: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
             let text = if name == "bash" {
-                args["command"].as_str().unwrap_or(if partial || raw.is_empty() { "bash …" } else { raw }).to_owned()
+                args["command"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .or_else(|| partial.then(|| command_prefix(raw)).flatten())
+                    .unwrap_or_else(|| if partial || raw.is_empty() { "bash …" } else { raw }.to_owned())
             } else {
                 format!("{name} {raw}")
             };
@@ -224,6 +260,13 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
                         raw.push_str(event["delta"].as_str().unwrap_or(""));
                         item["arguments"] = raw.into();
                         if let Some(block) = display(item, true) {
+                            live.upsert(index, block);
+                        }
+                    }
+                    "response.function_call_arguments.done" => {
+                        let item = items.entry(index).or_insert_with(|| json!({"type":"function_call"}));
+                        item["arguments"] = event["arguments"].clone();
+                        if let Some(block) = display(item, false) {
                             live.upsert(index, block);
                         }
                     }

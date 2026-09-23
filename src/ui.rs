@@ -191,6 +191,26 @@ fn ellipsis(text: &str, width: usize) -> String {
     }
 }
 
+fn tail_ellipsis(text: &str, width: usize) -> String {
+    if text.width() <= width {
+        return text.into();
+    }
+    if width <= 1 {
+        return "…".repeat(width);
+    }
+    let mut start = text.len();
+    let mut used = 1; // Leading ellipsis.
+    for (i, ch) in text.char_indices().rev() {
+        let w = ch.width().unwrap_or(0);
+        if used + w > width {
+            break;
+        }
+        used += w;
+        start = i;
+    }
+    format!("…{}", &text[start..])
+}
+
 fn tool_lines(command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<Line> {
     let color = match tool.status {
         ToolStatus::Running | ToolStatus::TimedOut(_) | ToolStatus::Cancelled => Color::Yellow,
@@ -202,7 +222,14 @@ fn tool_lines(command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<L
     let command_width = width.saturating_sub(2);
     let summary = text.lines().map(str::trim).collect::<Vec<_>>().join(" ↵ ");
     let hidden_input = text.contains('\n') || summary.width() > command_width;
-    let command = if expanded { wrap(&text, command_width) } else { vec![ellipsis(&summary, command_width)] };
+    let command = if expanded {
+        wrap(&text, command_width)
+    } else if matches!(tool.status, ToolStatus::Pending) {
+        // Follow the newest input on one line while the model is generating it.
+        vec![tail_ellipsis(&summary, command_width)]
+    } else {
+        vec![ellipsis(&summary, command_width)]
+    };
     let mut result = vec![];
     for (i, line) in command.into_iter().enumerate() {
         result.push(Line {
