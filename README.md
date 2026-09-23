@@ -11,7 +11,7 @@
 #### With Nix
 
 ```bash
-nix run
+nix run # Starts the TUI
 ```
 
 #### Environment Variables
