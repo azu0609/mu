@@ -100,7 +100,7 @@ fn mentions(text: &str) -> Vec<Mention> {
 
 fn path(cwd: &Path, name: &str) -> PathBuf {
     if let Some(rest) = name.strip_prefix("~/") {
-        return env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(rest);
+        return env::home_dir().unwrap_or_default().join(rest);
     }
     cwd.join(name)
 }

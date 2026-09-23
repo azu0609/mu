@@ -40,6 +40,7 @@ struct Picker {
 }
 struct App {
     session: Session,
+    lock: session::Lock,
     editor: ui::Editor,
     live: Vec<Block>,
     notices: Vec<Block>,
@@ -181,12 +182,14 @@ impl App {
             }
             "/new" => {
                 self.skills = session::skills(&self.session.cwd);
-                self.session = Session::new(
+                let session = Session::new(
                     self.session.cwd.clone(),
                     self.session.model.clone(),
                     self.session.effort.clone(),
                     &self.skills,
                 );
+                self.lock = session::Lock::acquire(&session.id)?;
+                self.session = session;
                 self.files = input::FileSearch::default();
                 self.reset_view();
             }
@@ -306,7 +309,13 @@ impl App {
                     changed
                 }
                 Target::Session(path) => {
-                    self.session = Session::load(&path)?;
+                    // Strict single reader/writer: take ownership before reading the session.
+                    let id = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+                    if id != self.session.id {
+                        let lock = session::Lock::acquire(&id)?;
+                        self.session = Session::load(&path)?;
+                        self.lock = lock;
+                    }
                     self.skills = session::skills(&self.session.cwd);
                     self.files = input::FileSearch::default();
                     false
@@ -528,13 +537,12 @@ fn main() -> Result<()> {
     let (tx, rx) = mpsc::channel();
     let cwd = env::current_dir()?;
     let skills = session::skills(&cwd);
+    let session =
+        Session::new(cwd, env::var("MU_MODEL").unwrap_or_else(|_| "gpt-5".into()), env::var("MU_EFFORT").ok(), &skills);
+    let lock = session::Lock::acquire(&session.id)?;
     let mut app = App {
-        session: Session::new(
-            cwd,
-            env::var("MU_MODEL").unwrap_or_else(|_| "gpt-5".into()),
-            env::var("MU_EFFORT").ok(),
-            &skills,
-        ),
+        session,
+        lock,
         skills,
         completion: None,
         dismissed: false,

@@ -4,6 +4,7 @@ use serde_json::{Value, json};
 use std::{
     env, fs,
     io::{BufReader, BufWriter, Write},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -113,7 +114,27 @@ pub fn state_dir() -> PathBuf {
 }
 
 fn home() -> PathBuf {
-    env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+    env::home_dir().unwrap_or_else(|| PathBuf::from("."))
+}
+
+/// A session is read and written by at most one `mu` process at a time. The
+/// lock lives on the open file, so the kernel drops it when the process exits
+/// (even on crash): there is no stale-lock state to detect or clean up.
+pub struct Lock {
+    _file: fs::File,
+}
+
+impl Lock {
+    pub fn acquire(id: &str) -> Result<Self> {
+        let dir = state_dir();
+        fs::create_dir_all(&dir)?;
+        let file = fs::OpenOptions::new().write(true).create(true).mode(0o600).open(dir.join(format!("{id}.lock")))?;
+        match file.try_lock() {
+            Ok(()) => Ok(Self { _file: file }),
+            Err(fs::TryLockError::WouldBlock) => Err(format!("Session {id} is open in another mu process").into()),
+            Err(error) => Err(error.into()),
+        }
+    }
 }
 
 impl Session {
@@ -238,7 +259,6 @@ struct Summary {
 }
 
 fn write_json(path: &Path, value: &impl Serialize, durable: bool) -> Result<()> {
-    use std::os::unix::fs::OpenOptionsExt;
     let tmp = path.with_extension(format!("{}.tmp", path.extension().unwrap_or_default().to_string_lossy()));
     let mut file =
         BufWriter::new(fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?);

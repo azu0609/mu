@@ -388,7 +388,7 @@ pub fn draw(app: &mut App) -> Result<()> {
         cursor::MoveTo(0, transcript_height as u16),
         SetForegroundColor(GRAY),
         Clear(ClearType::CurrentLine),
-        Print("─".repeat(width - 1))
+        Print("─".repeat(width))
     )?;
     for row in 0..input_height {
         let line = input_top + row;
@@ -409,7 +409,7 @@ pub fn draw(app: &mut App) -> Result<()> {
         cursor::MoveTo(0, h - 2),
         SetForegroundColor(GRAY),
         Clear(ClearType::CurrentLine),
-        Print("─".repeat(width - 1))
+        Print("─".repeat(width))
     )?;
     let usage = app.session.usage();
     let cache = usage.cached.map(count).unwrap_or_else(|| "?".into());
