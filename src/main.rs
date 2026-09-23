@@ -144,7 +144,7 @@ impl App {
                 self.notices.append(&mut self.live);
                 self.notice(e.to_string());
                 if !self.queued.is_empty() {
-                    self.notice("Steering still queued. Enter to retry, /new to discard.");
+                    self.notice("Steering still queued. Send a message to retry, /new to discard.");
                 }
             }
         }
@@ -198,23 +198,15 @@ impl App {
                     .session
                     .tree()
                     .into_iter()
-                    .map(|(i, depth, label)| {
-                        (
-                            Target::Node(i),
-                            format!(
-                                "{}{}{}",
-                                if i == self.session.cursor { "● " } else { "  " },
-                                "  ".repeat(depth.min(16)),
-                                label
-                            ),
-                        )
+                    .map(|(i, label)| {
+                        (Target::Node(i), format!("{}{label}", if i == self.session.cursor { "● " } else { "  " }))
                     })
                     .collect();
                 let selected = entries
                     .iter()
                     .position(|(t, _)| matches!(t, Target::Node(i) if *i == self.session.cursor))
                     .unwrap_or(0);
-                self.picker = Some(Picker { title: "conversation tree (no filesystem rollback)", entries, selected });
+                self.picker = Some(Picker { title: "conversation tree", entries, selected });
             }
             "/resume" => {
                 let entries: Vec<_> =
@@ -231,6 +223,9 @@ impl App {
         Ok(())
     }
     fn submit(&mut self) {
+        if self.editor.text().trim().is_empty() {
+            return;
+        }
         if let Err(e) = self.send_input() {
             self.notice(e.to_string());
         }
@@ -304,8 +299,20 @@ impl App {
         if let Some((target, _)) = picker.entries.into_iter().nth(picker.selected) {
             let save_cursor = match target {
                 Target::Node(i) => {
-                    let changed = self.session.cursor != i;
-                    self.session.cursor = i;
+                    let mut cursor = i;
+                    let mut draft = None;
+                    if let Some(node) = i.map(|i| &self.session.nodes[i])
+                        && let Some(user) = node.blocks.iter().find(|b| b.kind == Kind::User)
+                    {
+                        cursor = node.parent;
+                        draft = Some(user.text.clone());
+                    }
+                    let changed = self.session.cursor != cursor;
+                    self.session.cursor = cursor;
+                    if let Some(text) = draft {
+                        self.editor.clear();
+                        self.editor.insert(&text);
+                    }
                     changed
                 }
                 Target::Session(path) => {

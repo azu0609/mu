@@ -343,7 +343,7 @@ pub fn draw(app: &mut App) -> Result<()> {
     let mut out = io::BufWriter::new(io::stdout().lock());
     queue!(out, cursor::Hide, cursor::MoveTo(0, 0))?;
     let lines = if let Some(picker) = &app.picker {
-        let mut lines = vec![Line::new(format!("{} · ↑/↓ Enter · Esc", picker.title), ACCENT)];
+        let mut lines = vec![Line::new(picker.title, ACCENT)];
         let start = (picker.selected + 1).saturating_sub(transcript_height.saturating_sub(1));
         for (i, (_, label)) in picker.entries.iter().enumerate().skip(start).take(transcript_height.saturating_sub(1)) {
             lines.push(Line::new(

@@ -222,28 +222,49 @@ impl Session {
             .map(|b| b.text.lines().next().unwrap_or("").chars().take(60).collect())
             .unwrap_or_else(|| "(empty)".into())
     }
-    // Iterative DFS: very deep tool loops don't consume the stack.
-    pub fn tree(&self) -> Vec<(Option<usize>, usize, String)> {
+    // Iterative DFS: very deep tool loops don't consume the stack. Linear
+    // paths stay flat; fork guides continue through their descendants.
+    pub fn tree(&self) -> Vec<(Option<usize>, String)> {
         let mut children = vec![vec![]; self.nodes.len() + 1];
         for (i, n) in self.nodes.iter().enumerate() {
             children[n.parent.map_or(0, |p| p + 1)].push(i);
         }
-        let mut result = vec![(None, 0, "root".into())];
-        let mut stack: Vec<_> = children[0].iter().rev().map(|&i| (i, 1)).collect();
-        while let Some((i, depth)) = stack.pop() {
-            let n = &self.nodes[i];
-            let b = n.blocks.iter().find(|b| matches!(b.kind, Kind::User | Kind::Agent | Kind::Call));
-            let label = b
-                .map(|b| {
-                    format!(
-                        "{:?}: {}",
-                        b.kind,
-                        b.text.lines().next().unwrap_or("").chars().take(80).collect::<String>()
-                    )
+        let mut result = vec![];
+        // (node, prefix for this line, prefix for its children, fork depth)
+        let mut stack: Vec<(Option<usize>, String, String, usize)> = vec![(None, String::new(), String::new(), 0)];
+        while let Some((node, line_prefix, continuation, depth)) = stack.pop() {
+            let label = node
+                .map(|i| {
+                    self.nodes[i]
+                        .blocks
+                        .iter()
+                        .find(|b| matches!(b.kind, Kind::User | Kind::Agent | Kind::Call))
+                        .map(|b| {
+                            format!(
+                                "{:?}: {}",
+                                b.kind,
+                                b.text.lines().next().unwrap_or("").chars().take(80).collect::<String>()
+                            )
+                        })
+                        .unwrap_or_else(|| "step".into())
                 })
-                .unwrap_or_else(|| "step".into());
-            result.push((Some(i), depth, label));
-            stack.extend(children[i + 1].iter().rev().map(|&j| (j, depth + 1)));
+                .unwrap_or_else(|| "root".into());
+            result.push((node, format!("{line_prefix}{label}")));
+            let siblings = &children[node.map_or(0, |i| i + 1)];
+            for (position, &child) in siblings.iter().enumerate().rev() {
+                if siblings.len() > 1 {
+                    let last = position == siblings.len() - 1;
+                    let line = format!("{continuation}{}", if last { "└─ " } else { "├─ " });
+                    let next = if depth < 16 {
+                        format!("{continuation}{}", if last { "     " } else { "│    " })
+                    } else {
+                        continuation.clone()
+                    };
+                    stack.push((Some(child), line, next, (depth + 1).min(16)));
+                } else {
+                    stack.push((Some(child), continuation.clone(), continuation.clone(), depth));
+                }
+            }
         }
         result
     }

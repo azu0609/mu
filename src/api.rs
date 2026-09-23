@@ -42,12 +42,13 @@ impl Request {
         let mut body = json!({
             "model": self.model, "instructions": self.instructions, "input": self.input,
             "stream": true, "store": false, "include": ["reasoning.encrypted_content"],
+            "reasoning": {"summary": "auto"},
             "parallel_tool_calls": true,
             "tools": [{"type":"function", "name":"bash", "description":"Special bash commands: view_image",
                 "parameters":{"type":"object", "properties":{"command":{"type":"string"}, "timeoutMs":{"type":"integer"}}, "required":["command"], "additionalProperties":false}, "strict":false}]
         });
         if let Some(effort) = &self.effort {
-            body["reasoning"] = json!({"effort":effort, "summary":"auto"});
+            body["reasoning"]["effort"] = effort.clone().into();
         }
         body
     }
@@ -61,6 +62,11 @@ struct Live<'a> {
 impl Live<'_> {
     fn upsert(&mut self, index: usize, block: Block) {
         if let Some(&slot) = self.slots.get(&index) {
+            // Final reasoning snapshots may contain only opaque replay data.
+            // Keep streamed thoughts in the UI instead of replacing them with nothing.
+            if block.kind == Kind::Thought && block.text.is_empty() {
+                return;
+            }
             let _ = self.tx.send(Event::Set(slot, block));
         } else {
             let slot = self.slots.len();
@@ -163,7 +169,13 @@ fn display(item: &Value, partial: bool) -> Option<Block> {
             }
             Some(Block::new(Kind::Agent, text))
         }
-        "reasoning" => Some(Block::new(Kind::Thought, texts("summary", "summary_text"))),
+        "reasoning" => {
+            let mut text = texts("summary", "summary_text");
+            if text.is_empty() {
+                text = texts("content", "reasoning_text");
+            }
+            Some(Block::new(Kind::Thought, text))
+        }
         "function_call" => {
             let name = item["name"].as_str().unwrap_or("tool");
             let raw = item["arguments"].as_str().unwrap_or("");
@@ -299,7 +311,8 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
     let usage = Usage::from_json(&response["usage"]);
     let mut output: Vec<Value> =
         response["output"].as_array().cloned().unwrap_or_else(|| items.into_values().collect());
-    // Final items are authoritative; preserve ids and opaque reasoning for replay.
+    // Keep the API's final items unchanged for the next request.
+    // The UI may still retain thoughts that were only sent while streaming.
     for (index, item) in output.iter().enumerate() {
         if let Some(block) = display(item, false) {
             live.upsert(index, block);
