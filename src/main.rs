@@ -30,15 +30,18 @@ struct Worker {
     cancel: Arc<AtomicBool>,
     handle: thread::JoinHandle<()>,
 }
+
 enum Target {
     Node(Option<usize>),
     Session(PathBuf),
 }
+
 struct Picker {
     title: &'static str,
     entries: Vec<(Target, String)>,
     selected: usize,
 }
+
 struct App {
     session: Session,
     editor: ui::Editor,
@@ -57,6 +60,7 @@ struct App {
     scroll: usize,
     quitting: bool,
 }
+
 impl App {
     fn reset_view(&mut self) {
         self.live.clear();
@@ -64,17 +68,20 @@ impl App {
         self.queued.clear();
         self.scroll = 0;
     }
+
     fn drain_queue(&mut self) {
         for message in self.queued.drain(..) {
             self.session.user(message.text, message.attachments);
         }
     }
+
     fn notice(&mut self, text: impl Into<String>) {
         self.notices.push(Block::new(Kind::Notice, text));
         if self.notices.len() > 20 {
             self.notices.remove(0);
         }
     }
+
     fn save(&mut self) -> bool {
         match self.session.save() {
             Ok(()) => true,
@@ -84,6 +91,7 @@ impl App {
             }
         }
     }
+
     fn start(&mut self) {
         if self.worker.is_some() || self.session.cursor().is_none() {
             return;
@@ -110,11 +118,13 @@ impl App {
         });
         self.worker = Some(Worker { cancel, handle });
     }
+
     fn stop(&mut self) {
         if let Some(w) = &self.worker {
             w.cancel.store(true, Ordering::Relaxed);
         }
     }
+
     fn finish(&mut self, result: Result<api::Step>) {
         let w = self.worker.take().unwrap();
         let cancelled = w.cancel.load(Ordering::Relaxed);
@@ -149,6 +159,7 @@ impl App {
             }
         }
     }
+
     fn command(&mut self, command: &commands::Builtin, text: &str) -> Result<()> {
         let args: Vec<_> = text.split_whitespace().collect();
         if !matches!(command.kind, commands::BuiltinKind::Quit | commands::BuiltinKind::Copy) && self.worker.is_some() {
@@ -223,6 +234,7 @@ impl App {
         }
         Ok(())
     }
+
     fn submit(&mut self) {
         if self.editor.text().trim().is_empty() {
             return;
@@ -232,6 +244,7 @@ impl App {
         }
         self.scroll = 0;
     }
+
     fn send_input(&mut self) -> Result<()> {
         let mut text = self.editor.text();
         let mut skill = None;
@@ -261,6 +274,7 @@ impl App {
         }
         Ok(())
     }
+
     fn complete(&mut self) {
         if let Some(menu) = &self.completion
             && let Some(text) = menu.replacement()
@@ -268,6 +282,7 @@ impl App {
             self.editor.replace(menu.range.clone(), &text);
         }
     }
+
     fn refresh_completion(&mut self) {
         if self.dismissed || self.picker.is_some() {
             self.completion = None;
@@ -300,6 +315,7 @@ impl App {
         }
         self.completion = menu;
     }
+
     fn select(&mut self) -> Result<()> {
         let Some(picker) = self.picker.take() else {
             return Ok(());
@@ -343,6 +359,7 @@ impl App {
         }
         Ok(())
     }
+
     fn key(&mut self, key: KeyEvent) {
         if key.kind == KeyEventKind::Release {
             return;
@@ -440,6 +457,7 @@ impl App {
             _ => (),
         }
     }
+
     fn run(&mut self) -> Result<()> {
         let _terminal = ui::Terminal::enter()?;
         let mut dirty = true;
@@ -506,6 +524,7 @@ impl App {
         Ok(())
     }
 }
+
 impl Drop for App {
     fn drop(&mut self) {
         if let Some(w) = self.worker.take() {

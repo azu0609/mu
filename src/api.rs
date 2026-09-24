@@ -25,11 +25,13 @@ pub enum Event {
     ToolOutput(usize, ToolOutput),
     Done(Result<Step>),
 }
+
 pub struct Step {
     pub entries: Vec<Record>,
     pub usage: Usage,
     pub again: bool,
 }
+
 pub struct Request {
     pub instructions: String,
     pub model: String,
@@ -37,6 +39,7 @@ pub struct Request {
     pub input: Vec<Value>,
     pub cwd: PathBuf,
 }
+
 impl Request {
     pub fn body(&self) -> Value {
         let mut body = json!({
@@ -59,6 +62,7 @@ struct Live<'a> {
     tx: &'a Sender<Event>,
     slots: BTreeMap<usize, usize>,
 }
+
 impl Live<'_> {
     fn upsert(&mut self, index: usize, block: Block) {
         if let Some(&slot) = self.slots.get(&index) {
@@ -69,6 +73,7 @@ impl Live<'_> {
             let _ = self.tx.send(Event::Push(block));
         }
     }
+
     fn delta(&mut self, index: usize, kind: Kind, text: &str) {
         if !self.slots.contains_key(&index) {
             self.upsert(index, Block::new(kind, ""));
@@ -82,6 +87,7 @@ struct Sse {
     pending: Vec<u8>,
     data: String,
 }
+
 impl Sse {
     fn feed(&mut self, bytes: &[u8]) -> Result<Vec<Value>> {
         self.pending.extend_from_slice(bytes);

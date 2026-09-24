@@ -24,10 +24,12 @@ pub struct Block {
     pub text: String,
     pub tool: Option<Tool>,
 }
+
 impl Block {
     pub fn new(kind: Kind, text: impl Into<String>) -> Self {
         Self { kind, text: text.into(), tool: None }
     }
+
     pub fn from_item(item: &Value, partial: bool) -> Option<Block> {
         if item["role"] == "user"
             && let Some(text) = item["content"].as_str()
@@ -149,6 +151,7 @@ pub enum ToolStatus {
     Cancelled,
     Error,
 }
+
 impl ToolStatus {
     pub fn summary(self) -> Option<String> {
         Some(match self {
@@ -168,6 +171,7 @@ pub struct Usage {
     pub output: u64,
     pub cached: Option<u64>,
 }
+
 impl Usage {
     pub fn from_json(v: &Value) -> Self {
         Self {
@@ -176,6 +180,7 @@ impl Usage {
             cached: v["input_tokens_details"]["cached_tokens"].as_u64(),
         }
     }
+
     pub fn cache_miss(self, previous: Self) -> bool {
         previous.cached.unwrap_or(0) > 0 && self.cached == Some(0) && self.input >= previous.input
     }
@@ -193,10 +198,12 @@ pub enum Record {
     Cursor { node: Option<usize> },
     Model(Model),
 }
+
 impl Record {
     fn is_entry(&self) -> bool {
         matches!(self, Self::Item { .. } | Self::Attachment { .. } | Self::Tool(_))
     }
+
     fn input(&self) -> Option<Value> {
         Some(match self {
             Self::Item { item } => item.clone(),
@@ -304,9 +311,11 @@ impl Session {
         };
         Self { header, records: vec![], file: None, saved: 0, offset: 0 }
     }
+
     pub fn header(&self) -> &Header {
         &self.header
     }
+
     pub fn model(&self) -> &Model {
         self.records
             .iter()
@@ -317,6 +326,7 @@ impl Session {
             })
             .unwrap_or(&self.header.model)
     }
+
     pub fn cursor(&self) -> Option<usize> {
         self.records
             .iter()
@@ -329,32 +339,39 @@ impl Session {
             })
             .flatten()
     }
+
     pub fn node(&self, i: usize) -> &Node {
         match &self.records[i] {
             Record::Node(node) => node,
             _ => unreachable!("validated node index"),
         }
     }
+
     fn nodes(&self) -> impl Iterator<Item = (usize, &Node)> {
         self.records.iter().enumerate().filter_map(|(i, r)| match r {
             Record::Node(node) => Some((i, node)),
             _ => None,
         })
     }
+
     fn ancestors(&self) -> impl Iterator<Item = usize> + '_ {
         std::iter::successors(self.cursor(), |&i| self.node(i).parent)
     }
+
     pub fn path(&self) -> Vec<usize> {
         let mut path: Vec<_> = self.ancestors().collect();
         path.reverse();
         path
     }
+
     pub fn input(&self) -> Vec<Value> {
         self.path().iter().flat_map(|&i| self.records[self.node(i).start..i].iter().filter_map(Record::input)).collect()
     }
+
     pub fn usage(&self) -> Usage {
         self.ancestors().find_map(|i| self.node(i).usage).unwrap_or_default()
     }
+
     pub fn total_usage(&self) -> Usage {
         let mut total = Usage { cached: Some(0), ..Usage::default() };
         for usage in self.ancestors().filter_map(|i| self.node(i).usage) {
@@ -364,17 +381,20 @@ impl Session {
         }
         total
     }
+
     pub fn uncached_input(&self) -> u64 {
-        self.ancestors().filter_map(|i| self.node(i).usage).fold(0u64, |total, usage| {
-            total.saturating_add(usage.input.saturating_sub(usage.cached.unwrap_or(0)))
-        })
+        self.ancestors()
+            .filter_map(|i| self.node(i).usage)
+            .fold(0u64, |total, usage| total.saturating_add(usage.input.saturating_sub(usage.cached.unwrap_or(0))))
     }
+
     pub fn push(&mut self, entries: Vec<Record>, usage: Option<Usage>) {
         let parent = self.cursor();
         debug_assert!(entries.iter().all(Record::is_entry));
         self.records.extend(entries);
         self.record(Record::Node(Node { parent, usage, ..Node::default() })).expect("valid cursor");
     }
+
     pub fn user(&mut self, text: String, attachments: Vec<Record>) {
         if self.file.is_none() && self.nodes().next().is_none() {
             self.header.title = text.lines().next().unwrap_or("").chars().take(60).collect();
@@ -383,6 +403,7 @@ impl Session {
         entries.extend(attachments);
         self.push(entries, None);
     }
+
     // Live changes and replay use the same path. Control records cannot split a
     // node, and every parent/cursor must point to an already committed node.
     pub fn record(&mut self, mut record: Record) -> Result<()> {
@@ -424,6 +445,7 @@ impl Session {
         self.records.push(record);
         Ok(())
     }
+
     pub fn save(&mut self) -> Result<()> {
         if self.saved == self.records.len() || self.nodes().next().is_none() {
             return Ok(());
@@ -457,6 +479,7 @@ impl Session {
         self.saved = self.records.len();
         Ok(())
     }
+
     pub fn load(path: &Path) -> Result<Self> {
         let file = fs::OpenOptions::new().read(true).write(true).open(path)?;
         lock(&file)?;
@@ -500,9 +523,11 @@ impl Session {
         session.file = Some(file);
         Ok(session)
     }
+
     pub fn last_text(&self, kind: Kind) -> Option<String> {
         self.ancestors().flat_map(|i| self.node(i).blocks.iter().rev()).find(|b| b.kind == kind).map(|b| b.text.clone())
     }
+
     // Iterative DFS: very deep tool loops don't consume the stack. Linear
     // paths stay flat; fork guides continue through their descendants.
     pub fn tree(&self) -> Vec<(Option<usize>, String)> {

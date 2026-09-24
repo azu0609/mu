@@ -34,6 +34,7 @@ struct Capture {
     total: usize,
     log: Option<(PathBuf, BufWriter<fs::File>)>,
 }
+
 impl Capture {
     fn push(&mut self, bytes: &[u8]) -> Result<()> {
         if self.log.is_none() && self.total.saturating_add(bytes.len()) > PREVIEW_LIMIT {
@@ -63,12 +64,14 @@ impl Capture {
         }
         Ok(())
     }
+
     fn flush(&mut self) -> Result<()> {
         if let Some((_, file)) = &mut self.log {
             file.flush()?;
         }
         Ok(())
     }
+
     fn preview(&self) -> ToolOutput {
         let truncated = self.total > PREVIEW_LIMIT;
         let mut bytes = self.head.clone();
@@ -91,7 +94,9 @@ struct Args {
     #[serde(rename = "timeoutMs")]
     timeout_ms: Option<u64>,
 }
+
 struct Temp(PathBuf);
+
 impl Drop for Temp {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);

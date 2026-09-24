@@ -129,6 +129,7 @@ pub struct Entry {
     pub text: String,
     pub label: String,
 }
+
 pub struct Menu {
     pub range: Range<usize>,
     pub query: String,
@@ -138,6 +139,7 @@ pub struct Menu {
     pub selected: usize,
     pub explicit: bool,
 }
+
 impl Menu {
     pub fn replacement(&self) -> Option<String> {
         self.entries.get(self.selected).map(|e| e.text.clone())
@@ -249,6 +251,7 @@ pub struct FileSearch {
     handle: Option<thread::JoinHandle<Result<Vec<String>>>>,
     cancel: Arc<AtomicBool>,
 }
+
 impl Drop for FileSearch {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
@@ -257,10 +260,12 @@ impl Drop for FileSearch {
         }
     }
 }
+
 impl FileSearch {
     pub fn pending(&self) -> bool {
         self.handle.is_some()
     }
+
     pub fn start(&mut self, cwd: &Path) {
         if self.cwd.as_deref() == Some(cwd) {
             return;
@@ -302,6 +307,7 @@ impl FileSearch {
             Ok(files)
         }));
     }
+
     pub fn poll(&mut self) -> Option<Result<()>> {
         if !self.handle.as_ref()?.is_finished() {
             return None;

@@ -13,6 +13,7 @@ use std::{
 };
 
 struct Group(Child, bool);
+
 impl Drop for Group {
     fn drop(&mut self) {
         // Include grandchildren, even when the shell has already exited.
@@ -58,6 +59,7 @@ pub fn run(
         });
     }
     let (tx, rx) = mpsc::sync_channel(32);
+
     fn reader(
         mut pipe: impl Read + Send + 'static,
         stderr: bool,

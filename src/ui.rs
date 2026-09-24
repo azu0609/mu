@@ -19,6 +19,7 @@ const GRAY: Color = Color::DarkGrey;
 const ACCENT: Color = Color::Cyan;
 
 pub struct Terminal;
+
 impl Terminal {
     pub fn enter() -> Result<Self> {
         let old = std::panic::take_hook();
@@ -39,6 +40,7 @@ impl Terminal {
         Ok(guard)
     }
 }
+
 fn restore() {
     let _ = execute!(
         io::stdout(),
@@ -52,6 +54,7 @@ fn restore() {
     );
     let _ = terminal::disable_raw_mode();
 }
+
 impl Drop for Terminal {
     fn drop(&mut self) {
         restore();
@@ -64,23 +67,28 @@ pub struct Editor {
     pub cursor: usize,
     preferred_col: Option<usize>,
 }
+
 impl Editor {
     pub fn text(&self) -> String {
         self.chars.iter().collect()
     }
+
     pub fn insert(&mut self, text: &str) {
         self.replace(self.cursor..self.cursor, &clean(text));
     }
+
     pub fn replace(&mut self, range: std::ops::Range<usize>, text: &str) {
         self.cursor = range.start + text.chars().count();
         self.chars.splice(range, text.chars());
         self.preferred_col = None;
     }
+
     pub fn clear(&mut self) {
         self.chars.clear();
         self.cursor = 0;
         self.preferred_col = None;
     }
+
     pub fn clear_line(&mut self) {
         let start = self.chars[..self.cursor].iter().rposition(|&ch| ch == '\n').map_or(0, |i| i + 1);
         let end =
@@ -100,6 +108,7 @@ impl Editor {
         }
         self.preferred_col = None;
     }
+
     pub fn backspace(&mut self) {
         self.preferred_col = None;
         if self.cursor > 0 {
@@ -107,32 +116,38 @@ impl Editor {
             self.chars.remove(self.cursor);
         }
     }
+
     pub fn delete(&mut self) {
         self.preferred_col = None;
         if self.cursor < self.chars.len() {
             self.chars.remove(self.cursor);
         }
     }
+
     pub fn home(&mut self) {
         self.preferred_col = None;
         while self.cursor > 0 && self.chars[self.cursor - 1] != '\n' {
             self.cursor -= 1;
         }
     }
+
     pub fn end(&mut self) {
         self.preferred_col = None;
         while self.cursor < self.chars.len() && self.chars[self.cursor] != '\n' {
             self.cursor += 1;
         }
     }
+
     pub fn left(&mut self) {
         self.cursor = self.cursor.saturating_sub(1);
         self.preferred_col = None;
     }
+
     pub fn right(&mut self) {
         self.cursor = (self.cursor + 1).min(self.chars.len());
         self.preferred_col = None;
     }
+
     // Each insertion point's screen row and column, using the same character
     // wrapping as the rendered input (including its trailing cursor space).
     fn positions(&self, width: usize) -> Vec<(usize, usize)> {
@@ -161,6 +176,7 @@ impl Editor {
         }
         positions
     }
+
     pub fn move_vertical(&mut self, width: usize, up: bool) {
         let positions = self.positions(width);
         let (row, col) = positions[self.cursor];
@@ -177,6 +193,7 @@ impl Editor {
             self.preferred_col = Some(preferred);
         }
     }
+
     pub fn word_backspace(&mut self) {
         while self.cursor > 0 && self.chars[self.cursor - 1].is_whitespace() {
             self.backspace();
@@ -243,6 +260,7 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
     }
     lines
 }
+
 fn clip(s: &str, width: usize) -> String {
     wrap(&clean(s).replace('\n', " "), width).into_iter().next().unwrap_or_default()
 }
@@ -253,6 +271,7 @@ struct Line {
     bullet: Option<Color>,
     italic: bool,
 }
+
 impl Line {
     fn new(text: impl Into<String>, color: Color) -> Self {
         Self { text: text.into(), color, bullet: None, italic: false }
