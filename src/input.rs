@@ -242,8 +242,6 @@ pub fn menu(text: &str, cursor: usize, cwd: &Path, skills: &[Skill], files: &[St
     })
 }
 
-// One bounded scan per active file mention, off the UI thread. No recursive
-// in-process walker, watcher, or permanent index; rg supplies ignore semantics.
 #[derive(Default)]
 pub struct FileSearch {
     cwd: Option<PathBuf>,

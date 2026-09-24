@@ -15,7 +15,6 @@ use std::{
     env,
     io::{self, Write},
     path::PathBuf,
-    process::{Command, Stdio},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -517,24 +516,7 @@ impl Drop for App {
 }
 
 fn copy(text: &str) -> Result<()> {
-    for (program, args, available) in [
-        ("wl-copy", vec![], env::var_os("WAYLAND_DISPLAY").is_some()),
-        ("xclip", vec!["-selection", "clipboard"], env::var_os("DISPLAY").is_some()),
-    ] {
-        if !available {
-            continue;
-        }
-        if let Ok(mut child) =
-            Command::new(program).args(args).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
-        {
-            let result = child.stdin.take().unwrap().write_all(text.as_bytes());
-            if child.wait()?.success() && result.is_ok() {
-                return Ok(());
-            }
-        }
-    }
     use base64::{Engine, engine::general_purpose::STANDARD};
-    // OSC 52 works over SSH too, if enabled by the terminal.
     print!("\x1b]52;c;{}\x07", STANDARD.encode(text));
     io::stdout().flush()?;
     Ok(())
