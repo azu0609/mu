@@ -1,5 +1,6 @@
 mod api;
 mod commands;
+mod counts;
 mod input;
 mod process;
 mod session;
@@ -175,7 +176,7 @@ impl App {
                 }
                 if let Some(context) = args.get(3) {
                     self.session.context =
-                        context.parse().ok().filter(|&n| n > 0).ok_or("Context must be a positive integer")?;
+                        counts::parse(context).ok_or("Context must be a positive token count (e.g. 128k or 1.5m)")?;
                 }
                 self.session.model = args[1].into();
                 self.session.effort = args.get(2).copied().filter(|&s| s != "-").map(Into::into);
@@ -365,7 +366,7 @@ impl App {
         }
         if let Some(menu) = &mut self.completion {
             match key.code {
-                Key::Up | Key::Down => {
+                Key::Up | Key::Down if !menu.entries.is_empty() => {
                     menu.selected = if key.code == Key::Up {
                         menu.selected.saturating_sub(1)
                     } else {
@@ -383,7 +384,7 @@ impl App {
                     self.complete();
                     return;
                 }
-                Key::Enter if !key.modifiers.intersects(Mod::ALT | Mod::SHIFT) => {
+                Key::Enter if !key.modifiers.contains(Mod::SHIFT) => {
                     if menu.file && (!menu.exact_file || menu.explicit) && !menu.entries.is_empty() {
                         self.complete();
                         return;
@@ -412,16 +413,20 @@ impl App {
             Key::Esc => self.stop(),
             Key::PageUp => self.scroll = self.scroll.saturating_add(10),
             Key::PageDown => self.scroll = self.scroll.saturating_sub(10),
-            Key::Enter if key.modifiers.intersects(Mod::ALT | Mod::SHIFT) => self.editor.insert("\n"),
+            Key::Enter if key.modifiers.contains(Mod::SHIFT) => self.editor.insert("\n"),
             Key::Char('j') if ctrl => self.editor.insert("\n"),
             Key::Enter => self.submit(),
-            Key::Left => self.editor.cursor = self.editor.cursor.saturating_sub(1),
-            Key::Right => self.editor.cursor = (self.editor.cursor + 1).min(self.editor.chars.len()),
+            Key::Left => self.editor.left(),
+            Key::Right => self.editor.right(),
+            Key::Up | Key::Down => {
+                let width = crossterm::terminal::size().map(|(w, _)| w.saturating_sub(3) as usize).unwrap_or(1);
+                self.editor.move_vertical(width, key.code == Key::Up);
+            }
             Key::Home => self.editor.home(),
             Key::End => self.editor.end(),
             Key::Char('a') if ctrl => self.editor.home(),
             Key::Char('e') if ctrl => self.editor.end(),
-            Key::Char('u') if ctrl => self.editor.clear(),
+            Key::Char('u') if ctrl => self.editor.clear_line(),
             Key::Char('w') if ctrl => self.editor.word_backspace(),
             Key::Backspace => self.editor.backspace(),
             Key::Delete => self.editor.delete(),
@@ -538,7 +543,7 @@ fn main() -> Result<()> {
     }
     if !args.is_empty() {
         println!(
-            "mu · µ · 無\n\nMU_BASE_URL=http://127.0.0.1:8317/v1 MU_API_KEY=… MU_MODEL=… mu\n\nType / in the TUI for commands.\nCtrl+O expand · Esc stop · Alt+Enter newline · PgUp/PgDn scroll"
+            "mu · µ · 無\n\nMU_BASE_URL=http://127.0.0.1:8317/v1 MU_API_KEY=… MU_MODEL=… mu\n\nType / in the TUI for commands.\nCtrl+O expand · Esc stop · Shift+Enter newline · PgUp/PgDn scroll"
         );
         return Ok(());
     }

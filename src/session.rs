@@ -165,6 +165,23 @@ impl Session {
     pub fn usage(&self) -> Usage {
         self.ancestors().find_map(|i| self.nodes[i].usage).unwrap_or_default()
     }
+    // Totals describe the active conversation path, not other branches.
+    pub fn total_usage(&self) -> Usage {
+        let mut total = Usage { cached: Some(0), ..Usage::default() };
+        for usage in self.ancestors().filter_map(|i| self.nodes[i].usage) {
+            total.input = total.input.saturating_add(usage.input);
+            total.output = total.output.saturating_add(usage.output);
+            // Missing cache details make the total unknown, not zero.
+            total.cached = total.cached.zip(usage.cached).map(|(a, b)| a.saturating_add(b));
+        }
+        total
+    }
+    pub fn uncached_input(&self) -> u64 {
+        self.ancestors().filter_map(|i| self.nodes[i].usage).fold(0u64, |total, usage| {
+            // Without cache details, conservatively count all input as uncached.
+            total.saturating_add(usage.input.saturating_sub(usage.cached.unwrap_or(0)))
+        })
+    }
     pub fn push(&mut self, items: Vec<Value>, blocks: Vec<Block>, usage: Option<Usage>) {
         self.nodes.push(Node { parent: self.cursor, items, blocks, usage });
         self.cursor = Some(self.nodes.len() - 1);

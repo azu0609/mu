@@ -1,10 +1,13 @@
 use crate::{
-    App, Result,
+    App, Result, counts,
     session::{Block, Kind, Tool, ToolStatus},
 };
 use crossterm::{
     cursor,
-    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
+    event::{
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
     execute, queue,
     style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
@@ -25,7 +28,16 @@ impl Terminal {
         }));
         terminal::enable_raw_mode()?;
         let guard = Self;
-        execute!(io::stdout(), EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture, cursor::Hide)?;
+        // Terminals with the kitty keyboard protocol can report Shift+Enter
+        // separately from Enter; unsupported terminals ignore the request.
+        execute!(
+            io::stdout(),
+            EnterAlternateScreen,
+            EnableBracketedPaste,
+            EnableMouseCapture,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
+            cursor::Hide
+        )?;
         Ok(guard)
     }
 }
@@ -37,6 +49,7 @@ fn restore() {
         cursor::Show,
         DisableMouseCapture,
         DisableBracketedPaste,
+        PopKeyboardEnhancementFlags,
         LeaveAlternateScreen
     );
     let _ = terminal::disable_raw_mode();
@@ -51,6 +64,7 @@ impl Drop for Terminal {
 pub struct Editor {
     pub chars: Vec<char>,
     pub cursor: usize,
+    preferred_col: Option<usize>,
 }
 impl Editor {
     pub fn text(&self) -> String {
@@ -62,30 +76,107 @@ impl Editor {
     pub fn replace(&mut self, range: std::ops::Range<usize>, text: &str) {
         self.cursor = range.start + text.chars().count();
         self.chars.splice(range, text.chars());
+        self.preferred_col = None;
     }
     pub fn clear(&mut self) {
         self.chars.clear();
         self.cursor = 0;
+        self.preferred_col = None;
+    }
+    pub fn clear_line(&mut self) {
+        let start = self.chars[..self.cursor].iter().rposition(|&ch| ch == '\n').map_or(0, |i| i + 1);
+        let end =
+            self.chars[self.cursor..].iter().position(|&ch| ch == '\n').map_or(self.chars.len(), |i| self.cursor + i);
+        if start < end {
+            self.chars.drain(start..end);
+            self.cursor = start;
+        } else if start > 0 {
+            // An empty line: remove the preceding newline and move to the
+            // previous line, so another Ctrl+U can clear it too.
+            self.chars.remove(start - 1);
+            self.cursor = start - 1;
+        } else if end < self.chars.len() {
+            // The first line has no preceding newline; join it with the next.
+            self.chars.remove(end);
+            self.cursor = 0;
+        }
+        self.preferred_col = None;
     }
     pub fn backspace(&mut self) {
+        self.preferred_col = None;
         if self.cursor > 0 {
             self.cursor -= 1;
             self.chars.remove(self.cursor);
         }
     }
     pub fn delete(&mut self) {
+        self.preferred_col = None;
         if self.cursor < self.chars.len() {
             self.chars.remove(self.cursor);
         }
     }
     pub fn home(&mut self) {
+        self.preferred_col = None;
         while self.cursor > 0 && self.chars[self.cursor - 1] != '\n' {
             self.cursor -= 1;
         }
     }
     pub fn end(&mut self) {
+        self.preferred_col = None;
         while self.cursor < self.chars.len() && self.chars[self.cursor] != '\n' {
             self.cursor += 1;
+        }
+    }
+    pub fn left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+        self.preferred_col = None;
+    }
+    pub fn right(&mut self) {
+        self.cursor = (self.cursor + 1).min(self.chars.len());
+        self.preferred_col = None;
+    }
+    // Each insertion point's screen row and column, using the same character
+    // wrapping as the rendered input (including its trailing cursor space).
+    fn positions(&self, width: usize) -> Vec<(usize, usize)> {
+        let width = width.max(1);
+        let mut positions = Vec::with_capacity(self.chars.len() + 1);
+        let (mut row, mut col) = (0, 0);
+        for ch in self.chars.iter().copied().map(Some).chain(std::iter::once(None)) {
+            positions.push(if col == width { (row + 1, 0) } else { (row, col) });
+            match ch {
+                Some('\n') => {
+                    row += 1;
+                    col = 0;
+                }
+                Some(ch) => {
+                    let char_width = ch.width().unwrap_or(0);
+                    if char_width <= width {
+                        if col + char_width > width && col > 0 {
+                            row += 1;
+                            col = 0;
+                        }
+                        col += char_width;
+                    }
+                }
+                None => (),
+            }
+        }
+        positions
+    }
+    pub fn move_vertical(&mut self, width: usize, up: bool) {
+        let positions = self.positions(width);
+        let (row, col) = positions[self.cursor];
+        let target = if up { row.checked_sub(1) } else { row.checked_add(1) };
+        let Some(target) = target else { return };
+        let preferred = self.preferred_col.unwrap_or(col);
+        let best = positions
+            .iter()
+            .enumerate()
+            .filter(|(_, (r, _))| *r == target)
+            .min_by_key(|(index, (_, c))| (c.abs_diff(preferred), std::cmp::Reverse(*index)));
+        if let Some((index, _)) = best {
+            self.cursor = index;
+            self.preferred_col = Some(preferred);
         }
     }
     pub fn word_backspace(&mut self) {
@@ -156,17 +247,6 @@ pub fn wrap(text: &str, width: usize) -> Vec<String> {
 }
 fn clip(s: &str, width: usize) -> String {
     wrap(&clean(s).replace('\n', " "), width).into_iter().next().unwrap_or_default()
-}
-
-// Compact counts for the status line: 999, 1.0k, 15.5k, 1.0M.
-fn count(n: u64) -> String {
-    if n < 1_000 {
-        n.to_string()
-    } else if n < 999_950 {
-        format!("{:.1}k", n as f64 / 1_000.0)
-    } else {
-        format!("{:.1}M", n as f64 / 1_000_000.0)
-    }
 }
 
 struct Line {
@@ -438,20 +518,21 @@ pub fn draw(app: &mut App) -> Result<()> {
         Clear(ClearType::CurrentLine),
         Print("─".repeat(width))
     )?;
-    let usage = app.session.usage();
-    let cache = usage.cached.map(count).unwrap_or_else(|| "?".into());
+    let usage = app.session.total_usage();
+    let context = app.session.usage();
+    let cache = usage.cached.map(counts::compact).unwrap_or_else(|| "?".into());
     let read = usage
         .cached
         .map(|c| format!("{:.1}%", 100.0 * c as f64 / usage.input.max(1) as f64))
         .unwrap_or_else(|| "?".into());
     let left = format!(
         " ↑{} ↓{} | cache {} read {} | ctx {}/{} ",
-        count(usage.input),
-        count(usage.output),
+        counts::compact(app.session.uncached_input()),
+        counts::compact(usage.output),
         cache,
         read,
-        count(usage.input + usage.output),
-        count(app.session.context)
+        counts::compact(context.input.saturating_add(context.output)),
+        counts::compact(app.session.context)
     );
     let right = clip(
         &format!(
