@@ -20,9 +20,9 @@ nix run # Starts the TUI
 | :--- | :--- |
 | `MU_BASE_URL` | `http://127.0.0.1:8317/v1` |
 | `MU_API_KEY` | *-* |
-| `MU_MODEL` | `gpt-5` |
-| `MU_EFFORT` | *-* |
-| `MU_CONTEXT` | `128000` |
+| `MU_MODEL` | `gpt-6-luna` |
+| `MU_EFFORT` | `xhigh` |
+| `MU_CONTEXT` | `272000` |
 
 #### Data Store
 

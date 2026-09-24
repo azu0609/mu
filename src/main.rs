@@ -552,9 +552,9 @@ fn main() -> Result<()> {
     let skills = session::skills(&cwd);
     let session = Session::new(
         cwd,
-        env::var("MU_MODEL").unwrap_or_else(|_| "gpt-5".into()),
-        env::var("MU_EFFORT").ok(),
-        env::var("MU_CONTEXT").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(128_000),
+        env::var("MU_MODEL").unwrap_or_else(|_| "gpt-6-luna".into()),
+        Some(env::var("MU_EFFORT").unwrap_or_else(|_| "xhigh".into())),
+        env::var("MU_CONTEXT").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(272_000),
         &skills,
     );
     let lock = session::Lock::acquire(&session.id)?;
