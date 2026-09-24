@@ -448,7 +448,7 @@ pub fn draw(app: &mut App) -> Result<()> {
         let welcome = [Block::new(Kind::Notice, "mu · Ctrl+O to expand/collapse · PgUp/PgDn to scroll")];
         let blocks = welcome
             .iter()
-            .chain(path.iter().flat_map(|&i| app.session.nodes[i].blocks.iter()))
+            .chain(path.iter().flat_map(|&i| app.session.node(i).blocks.iter()))
             .chain(app.live.iter())
             .chain(app.notices.iter())
             .chain(pending.iter());
@@ -527,6 +527,7 @@ pub fn draw(app: &mut App) -> Result<()> {
         Clear(ClearType::CurrentLine),
         Print("─".repeat(width))
     )?;
+    let model = app.session.model();
     let usage = app.session.total_usage();
     let context = app.session.usage();
     let cache = usage.cached.map(counts::compact).unwrap_or_else(|| "?".into());
@@ -541,14 +542,14 @@ pub fn draw(app: &mut App) -> Result<()> {
         cache,
         read,
         counts::compact(context.input.saturating_add(context.output)),
-        counts::compact(app.session.context)
+        counts::compact(model.context)
     );
     let right = clip(
         &format!(
             "{}{}{} ",
             if app.worker.is_some() { "· " } else { "" },
-            app.session.model,
-            app.session.effort.as_ref().map(|e| format!(" {e}")).unwrap_or_default()
+            model.name,
+            model.effort.as_ref().map(|e| format!(" {e}")).unwrap_or_default()
         ),
         width.saturating_sub(1),
     );

@@ -1,6 +1,6 @@
 use crate::{
     Result, process,
-    session::{Block, Kind, Tool, ToolOutput, ToolStatus, Usage},
+    session::{Block, Kind, Record, ToolOutput, ToolStatus, Usage},
     tools,
 };
 use serde_json::{Value, json};
@@ -26,7 +26,7 @@ pub enum Event {
     Done(Result<Step>),
 }
 pub struct Step {
-    pub items: Vec<Value>,
+    pub entries: Vec<Record>,
     pub usage: Usage,
     pub again: bool,
 }
@@ -62,11 +62,6 @@ struct Live<'a> {
 impl Live<'_> {
     fn upsert(&mut self, index: usize, block: Block) {
         if let Some(&slot) = self.slots.get(&index) {
-            // Final reasoning snapshots may contain only opaque replay data.
-            // Keep streamed thoughts in the UI instead of replacing them with nothing.
-            if block.kind == Kind::Thought && block.text.is_empty() {
-                return;
-            }
             let _ = self.tx.send(Event::Set(slot, block));
         } else {
             let slot = self.slots.len();
@@ -110,94 +105,6 @@ impl Sse {
             }
         }
         Ok(events)
-    }
-}
-
-// Read only a top-level command, skipping complete fields before it. A partial
-// JSON string is display-only: execution still uses the final, validated args.
-fn command_prefix(raw: &str) -> Option<String> {
-    let mut rest = raw.trim_start().strip_prefix('{')?;
-    loop {
-        let mut key = serde_json::Deserializer::from_str(rest).into_iter::<String>();
-        let name = key.next()?.ok()?;
-        rest = rest[key.byte_offset()..].trim_start().strip_prefix(':')?.trim_start();
-        if name == "command" {
-            return string_prefix(rest);
-        }
-        let mut value = serde_json::Deserializer::from_str(rest).into_iter::<serde::de::IgnoredAny>();
-        value.next()?.ok()?;
-        rest = rest[value.byte_offset()..].trim_start().strip_prefix(',')?;
-    }
-}
-
-fn string_prefix(raw: &str) -> Option<String> {
-    match serde_json::Deserializer::from_str(raw).into_iter::<String>().next()? {
-        Ok(text) => return Some(text),
-        Err(e) if e.is_eof() => (),
-        Err(_) => return None,
-    }
-    // Supply the missing quote and let serde decode. On an unfinished escape,
-    // withhold it from the preview (and its high surrogate, if paired).
-    let mut prefix = raw.to_owned();
-    loop {
-        prefix.push('"');
-        if let Ok(text) = serde_json::from_str(&prefix) {
-            return Some(text);
-        }
-        prefix.truncate(prefix.rfind('\\')?);
-    }
-}
-
-fn display(item: &Value, partial: bool) -> Option<Block> {
-    let texts = |field: &str, typ: &str| {
-        item[field]
-            .as_array()
-            .map(|a| {
-                a.iter().filter(|v| v["type"] == typ).filter_map(|v| v["text"].as_str()).collect::<Vec<_>>().join("\n")
-            })
-            .unwrap_or_default()
-    };
-    match item["type"].as_str()? {
-        "message" => {
-            let mut text = texts("content", "output_text");
-            if let Some(content) = item["content"].as_array() {
-                for part in content {
-                    if let Some(refusal) = part["refusal"].as_str() {
-                        text.push_str(refusal);
-                    }
-                }
-            }
-            Some(Block::new(Kind::Agent, text))
-        }
-        "reasoning" => {
-            let mut text = texts("summary", "summary_text");
-            if text.is_empty() {
-                text = texts("content", "reasoning_text");
-            }
-            Some(Block::new(Kind::Thought, text))
-        }
-        "function_call" => {
-            let name = item["name"].as_str().unwrap_or("tool");
-            let raw = item["arguments"].as_str().unwrap_or("");
-            let args: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
-            let text = if name == "bash" {
-                args["command"]
-                    .as_str()
-                    .map(str::to_owned)
-                    .or_else(|| partial.then(|| command_prefix(raw)).flatten())
-                    .unwrap_or_else(|| if partial || raw.is_empty() { "bash …" } else { raw }.to_owned())
-            } else {
-                format!("{name} {raw}")
-            };
-            let mut block = Block::new(Kind::Call, text);
-            block.tool = Some(Tool {
-                call_id: item["call_id"].as_str().unwrap_or("").into(),
-                status: ToolStatus::Pending,
-                output: ToolOutput::default(),
-            });
-            Some(block)
-        }
-        _ => None,
     }
 }
 
@@ -253,7 +160,7 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
                 match event["type"].as_str().unwrap_or("") {
                     "response.output_item.added" | "response.output_item.done" => {
                         let item = &event["item"];
-                        if let Some(block) = display(item, event["type"] == "response.output_item.added") {
+                        if let Some(block) = Block::from_item(item, event["type"] == "response.output_item.added") {
                             live.upsert(index, block);
                         }
                         items.insert(index, item.clone());
@@ -271,14 +178,14 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
                         let mut raw = item["arguments"].as_str().unwrap_or("").to_owned();
                         raw.push_str(event["delta"].as_str().unwrap_or(""));
                         item["arguments"] = raw.into();
-                        if let Some(block) = display(item, true) {
+                        if let Some(block) = Block::from_item(item, true) {
                             live.upsert(index, block);
                         }
                     }
                     "response.function_call_arguments.done" => {
                         let item = items.entry(index).or_insert_with(|| json!({"type":"function_call"}));
                         item["arguments"] = event["arguments"].clone();
-                        if let Some(block) = display(item, false) {
+                        if let Some(block) = Block::from_item(item, false) {
                             live.upsert(index, block);
                         }
                     }
@@ -309,12 +216,10 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
     let response = completed
         .ok_or_else(|| format!("Stream ended without response.completed: {}", String::from_utf8_lossy(&preview)))?;
     let usage = Usage::from_json(&response["usage"]);
-    let mut output: Vec<Value> =
-        response["output"].as_array().cloned().unwrap_or_else(|| items.into_values().collect());
+    let output: Vec<Value> = response["output"].as_array().cloned().unwrap_or_else(|| items.into_values().collect());
     // Keep the API's final items unchanged for the next request.
-    // The UI may still retain thoughts that were only sent while streaming.
     for (index, item) in output.iter().enumerate() {
-        if let Some(block) = display(item, false) {
+        if let Some(block) = Block::from_item(item, false) {
             live.upsert(index, block);
         }
     }
@@ -327,7 +232,7 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
             .filter(|(_, call)| call["type"] == "function_call")
             .map(|(index, call)| {
                 let slot = live.slots[&index];
-                let mut block = display(call, false).unwrap();
+                let mut block = Block::from_item(call, false).unwrap();
                 let cwd = &request.cwd;
                 let cancel = &cancel;
                 scope.spawn(move || {
@@ -354,21 +259,9 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
                             tool.status = ToolStatus::Error;
                         }
                     }
-                    let mut text = tool.output.text.clone();
-                    if let Some(summary) = tool.status.summary() {
-                        text.push_str(&format!("\n[{summary}]"));
-                    }
-                    if tool.output.truncated
-                        && let Some(log) = &tool.output.log
-                    {
-                        text.push_str(&format!(
-                            "\n[Output log (temporary): {} — read needed ranges with sed, tail, or grep]",
-                            log.display()
-                        ));
-                    }
-                    let item = json!({"type":"function_call_output", "call_id":tool.call_id, "output":text});
+                    let entry = Record::Tool(tool.clone());
                     let _ = tx.send(Event::Set(slot, block));
-                    (item, images)
+                    (entry, images)
                 })
             })
             .collect();
@@ -376,11 +269,12 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
         handles.into_iter().map(|h| h.join().map_err(|_| "Tool worker panicked".into())).collect::<Result<Vec<_>>>()
     })?;
     let again = !results.is_empty() && !cancel.load(Ordering::Relaxed);
+    let mut entries: Vec<_> = output.into_iter().map(|item| Record::Item { item }).collect();
     let mut images = vec![];
-    for (item, attached) in results {
-        output.push(item);
+    for (entry, attached) in results {
+        entries.push(entry);
         images.extend(attached);
     }
-    output.extend(images);
-    Ok(Step { items: output, usage, again })
+    entries.extend(images.into_iter().map(|item| Record::Item { item }));
+    Ok(Step { entries, usage, again })
 }

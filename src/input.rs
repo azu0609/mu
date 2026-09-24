@@ -1,4 +1,7 @@
-use crate::{Result, commands, process, session::Skill};
+use crate::{
+    Result, commands, process,
+    session::{Record, Skill},
+};
 use std::{
     collections::HashSet,
     env, fs,
@@ -16,7 +19,7 @@ use std::{
 
 pub struct Message {
     pub text: String,
-    pub content: String,
+    pub attachments: Vec<Record>,
 }
 
 struct Mention {
@@ -88,7 +91,8 @@ fn read_text(path: &Path) -> Result<String> {
 }
 
 pub fn prepare(text: String, cwd: &Path, skill: Option<&Skill>) -> Result<Message> {
-    let mut content = text.clone();
+    let mut size = text.len();
+    let mut snapshots = vec![];
     let mut seen = HashSet::new();
     // (label, path, keep): skills keep the discovered path so the model sees the same
     // possibly symlinked path as in the instructions; @ file mentions are shown resolved.
@@ -111,13 +115,14 @@ pub fn prepare(text: String, cwd: &Path, skill: Option<&Skill>) -> Result<Messag
             continue;
         }
         let body = read_text(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        if content.len() + body.len() > 4 * 1024 * 1024 {
+        let shown = if keep { path } else { canonical };
+        size += body.len() + kind.len() + shown.as_os_str().len() + 5;
+        if size > 4 * 1024 * 1024 {
             return Err("Attached context exceeds 4 MiB".into());
         }
-        let shown = if keep { &path } else { &canonical };
-        content.push_str(&format!("\n\n{kind}: {}\n{body}", shown.display()));
+        snapshots.push(Record::Attachment { label: kind, path: shown, text: body });
     }
-    Ok(Message { text, content })
+    Ok(Message { text, attachments: snapshots })
 }
 
 pub struct Entry {

@@ -3,13 +3,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     env, fs,
-    io::{BufReader, BufWriter, Write},
+    io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write},
     os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Debug)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Kind {
     User,
     Agent,
@@ -18,16 +18,111 @@ pub enum Kind {
     Notice,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone)]
 pub struct Block {
     pub kind: Kind,
     pub text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<Tool>,
 }
 impl Block {
     pub fn new(kind: Kind, text: impl Into<String>) -> Self {
         Self { kind, text: text.into(), tool: None }
+    }
+    pub fn from_item(item: &Value, partial: bool) -> Option<Block> {
+        if item["role"] == "user"
+            && let Some(text) = item["content"].as_str()
+        {
+            return Some(Block::new(Kind::User, text));
+        }
+        let texts = |field: &str, typ: &str| {
+            item[field]
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter(|v| v["type"] == typ)
+                        .filter_map(|v| v["text"].as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .unwrap_or_default()
+        };
+        match item["type"].as_str()? {
+            "message" => {
+                let mut text = texts("content", "output_text");
+                if let Some(content) = item["content"].as_array() {
+                    for part in content {
+                        if let Some(refusal) = part["refusal"].as_str() {
+                            text.push_str(refusal);
+                        }
+                    }
+                }
+                Some(Block::new(Kind::Agent, text))
+            }
+            "reasoning" => {
+                let mut text = texts("summary", "summary_text");
+                if text.is_empty() {
+                    text = texts("content", "reasoning_text");
+                }
+                Some(Block::new(Kind::Thought, text))
+            }
+            "function_call" => {
+                let name = item["name"].as_str().unwrap_or("tool");
+                let raw = item["arguments"].as_str().unwrap_or("");
+                let args: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+                let text = if name == "bash" {
+                    args["command"]
+                        .as_str()
+                        .map(str::to_owned)
+                        .or_else(|| partial.then(|| command_prefix(raw)).flatten())
+                        .unwrap_or_else(|| if partial || raw.is_empty() { "bash …" } else { raw }.to_owned())
+                } else {
+                    format!("{name} {raw}")
+                };
+                let mut block = Block::new(Kind::Call, text);
+                block.tool = Some(Tool {
+                    call_id: item["call_id"].as_str().unwrap_or("").into(),
+                    status: ToolStatus::Pending,
+                    output: ToolOutput::default(),
+                });
+                Some(block)
+            }
+            _ => None,
+        }
+    }
+}
+
+// Read only a top-level command, skipping complete fields before it. A partial
+// JSON string is display-only: execution still uses the final, validated args.
+fn command_prefix(raw: &str) -> Option<String> {
+    let mut rest = raw.trim_start().strip_prefix('{')?;
+    loop {
+        let mut key = serde_json::Deserializer::from_str(rest).into_iter::<String>();
+        let name = key.next()?.ok()?;
+        rest = rest[key.byte_offset()..].trim_start().strip_prefix(':')?.trim_start();
+        if name == "command" {
+            return string_prefix(rest);
+        }
+        let mut value = serde_json::Deserializer::from_str(rest).into_iter::<serde::de::IgnoredAny>();
+        value.next()?.ok()?;
+        rest = rest[value.byte_offset()..].trim_start().strip_prefix(',')?;
+    }
+}
+
+fn string_prefix(raw: &str) -> Option<String> {
+    match serde_json::Deserializer::from_str(raw).into_iter::<String>().next()? {
+        Ok(text) => return Some(text),
+        Err(e) if e.is_eof() => (),
+        Err(_) => return None,
+    }
+    // Supply the missing quote and let serde decode. On an unfinished escape,
+    // withhold it from the preview (and its high surrogate, if paired).
+    let mut prefix = raw.to_owned();
+    loop {
+        prefix.push('"');
+        if let Ok(text) = serde_json::from_str(&prefix) {
+            return Some(text);
+        }
+        prefix.truncate(prefix.rfind('\\')?);
     }
 }
 
@@ -86,24 +181,87 @@ impl Usage {
     }
 }
 
+// This is both the on-disk log and the in-memory history. Nodes only index
+// ranges in it; blocks are a disposable rendering cache, not a second history.
 #[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Record {
+    Item { item: Value },
+    Attachment { label: String, path: PathBuf, text: String },
+    Tool(Tool),
+    Node(Node),
+    Cursor { node: Option<usize> },
+    Model(Model),
+}
+impl Record {
+    fn is_entry(&self) -> bool {
+        matches!(self, Self::Item { .. } | Self::Attachment { .. } | Self::Tool(_))
+    }
+    fn input(&self) -> Option<Value> {
+        Some(match self {
+            Self::Item { item } => item.clone(),
+            Self::Attachment { label, path, text } => {
+                json!({"role":"user", "content":format!("{label}: {}\n{text}", path.display())})
+            }
+            Self::Tool(tool) => tool.item(),
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Default, Serialize, Deserialize)]
 pub struct Node {
     pub parent: Option<usize>,
-    pub items: Vec<Value>,
-    pub blocks: Vec<Block>,
     pub usage: Option<Usage>,
+    #[serde(skip)]
+    start: usize,
+    #[serde(skip)]
+    pub blocks: Vec<Block>,
+}
+
+impl Tool {
+    fn item(&self) -> Value {
+        let mut text = self.output.text.clone();
+        if let Some(summary) = self.status.summary() {
+            text.push_str(&format!("\n[{summary}]"));
+        }
+        if self.output.truncated
+            && let Some(log) = &self.output.log
+        {
+            text.push_str(&format!(
+                "\n[Output log (temporary): {} — read needed ranges with sed, tail, or grep]",
+                log.display()
+            ));
+        }
+        json!({"type":"function_call_output", "call_id":self.call_id, "output":text})
+    }
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+pub struct Model {
+    #[serde(rename = "model")]
+    pub name: String,
+    pub effort: Option<String>,
+    pub context: u64,
 }
 
 #[derive(Serialize, Deserialize)]
-pub struct Session {
+pub struct Header {
+    version: u32,
     pub id: String,
+    title: String,
     pub cwd: PathBuf,
     pub instructions: String,
-    pub model: String,
-    pub effort: Option<String>,
-    pub context: u64,
-    pub nodes: Vec<Node>,
-    pub cursor: Option<usize>,
+    #[serde(flatten)]
+    model: Model,
+}
+
+pub struct Session {
+    header: Header,
+    records: Vec<Record>,
+    file: Option<fs::File>,
+    saved: usize,
+    offset: u64,
 }
 
 pub fn unique_id() -> String {
@@ -118,41 +276,73 @@ fn home() -> PathBuf {
     env::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// A session is read and written by at most one `mu` process at a time. The
-/// lock lives on the open file, so the kernel drops it when the process exits
-/// (even on crash): there is no stale-lock state to detect or clean up.
-pub struct Lock {
-    _file: fs::File,
+// Lock the transcript's stable inode, not a separate sentinel. Closing the file
+// releases ownership even after a crash; normal saves never rename it.
+fn lock(file: &fs::File) -> Result<()> {
+    match file.try_lock() {
+        Ok(()) => Ok(()),
+        Err(fs::TryLockError::WouldBlock) => Err("Session is open in another mu process".into()),
+        Err(error) => Err(error.into()),
+    }
 }
 
-impl Lock {
-    pub fn acquire(id: &str) -> Result<Self> {
-        let dir = state_dir();
-        fs::create_dir_all(&dir)?;
-        let file = fs::OpenOptions::new().write(true).create(true).mode(0o600).open(dir.join(format!("{id}.lock")))?;
-        match file.try_lock() {
-            Ok(()) => Ok(Self { _file: file }),
-            Err(fs::TryLockError::WouldBlock) => Err(format!("Session {id} is open in another mu process").into()),
-            Err(error) => Err(error.into()),
-        }
-    }
+fn write_line(writer: &mut impl Write, value: &impl Serialize) -> Result<()> {
+    serde_json::to_writer(&mut *writer, value)?;
+    writer.write_all(b"\n")?;
+    Ok(())
 }
 
 impl Session {
-    pub fn new(cwd: PathBuf, model: String, effort: Option<String>, context: u64, skills: &[Skill]) -> Self {
-        Self {
+    pub fn new(cwd: PathBuf, model: Model, skills: &[Skill]) -> Self {
+        let header = Header {
+            version: 1,
             id: unique_id(),
+            title: String::new(),
             instructions: instructions(&cwd, skills),
             cwd,
             model,
-            effort,
-            context,
-            nodes: vec![],
-            cursor: None,
+        };
+        Self { header, records: vec![], file: None, saved: 0, offset: 0 }
+    }
+    pub fn header(&self) -> &Header {
+        &self.header
+    }
+    pub fn model(&self) -> &Model {
+        self.records
+            .iter()
+            .rev()
+            .find_map(|r| match r {
+                Record::Model(model) => Some(model),
+                _ => None,
+            })
+            .unwrap_or(&self.header.model)
+    }
+    pub fn cursor(&self) -> Option<usize> {
+        self.records
+            .iter()
+            .enumerate()
+            .rev()
+            .find_map(|(i, r)| match r {
+                Record::Node(_) => Some(Some(i)),
+                Record::Cursor { node } => Some(*node),
+                _ => None,
+            })
+            .flatten()
+    }
+    pub fn node(&self, i: usize) -> &Node {
+        match &self.records[i] {
+            Record::Node(node) => node,
+            _ => unreachable!("validated node index"),
         }
     }
+    fn nodes(&self) -> impl Iterator<Item = (usize, &Node)> {
+        self.records.iter().enumerate().filter_map(|(i, r)| match r {
+            Record::Node(node) => Some((i, node)),
+            _ => None,
+        })
+    }
     fn ancestors(&self) -> impl Iterator<Item = usize> + '_ {
-        std::iter::successors(self.cursor, |&i| self.nodes[i].parent)
+        std::iter::successors(self.cursor(), |&i| self.node(i).parent)
     }
     pub fn path(&self) -> Vec<usize> {
         let mut path: Vec<_> = self.ancestors().collect();
@@ -160,15 +350,15 @@ impl Session {
         path
     }
     pub fn input(&self) -> Vec<Value> {
-        self.path().iter().flat_map(|&i| self.nodes[i].items.clone()).collect()
+        self.path().iter().flat_map(|&i| self.records[self.node(i).start..i].iter().filter_map(Record::input)).collect()
     }
     pub fn usage(&self) -> Usage {
-        self.ancestors().find_map(|i| self.nodes[i].usage).unwrap_or_default()
+        self.ancestors().find_map(|i| self.node(i).usage).unwrap_or_default()
     }
     // Totals describe the active conversation path, not other branches.
     pub fn total_usage(&self) -> Usage {
         let mut total = Usage { cached: Some(0), ..Usage::default() };
-        for usage in self.ancestors().filter_map(|i| self.nodes[i].usage) {
+        for usage in self.ancestors().filter_map(|i| self.node(i).usage) {
             total.input = total.input.saturating_add(usage.input);
             total.output = total.output.saturating_add(usage.output);
             // Missing cache details make the total unknown, not zero.
@@ -177,75 +367,150 @@ impl Session {
         total
     }
     pub fn uncached_input(&self) -> u64 {
-        self.ancestors().filter_map(|i| self.nodes[i].usage).fold(0u64, |total, usage| {
+        self.ancestors().filter_map(|i| self.node(i).usage).fold(0u64, |total, usage| {
             // Without cache details, conservatively count all input as uncached.
             total.saturating_add(usage.input.saturating_sub(usage.cached.unwrap_or(0)))
         })
     }
-    pub fn push(&mut self, items: Vec<Value>, blocks: Vec<Block>, usage: Option<Usage>) {
-        self.nodes.push(Node { parent: self.cursor, items, blocks, usage });
-        self.cursor = Some(self.nodes.len() - 1);
+    pub fn push(&mut self, entries: Vec<Record>, usage: Option<Usage>) {
+        let parent = self.cursor();
+        debug_assert!(entries.iter().all(Record::is_entry));
+        self.records.extend(entries);
+        self.record(Record::Node(Node { parent, usage, ..Node::default() })).expect("valid cursor");
     }
-    pub fn user(&mut self, text: String, content: String) {
-        self.push(vec![json!({"role":"user", "content":content})], vec![Block::new(Kind::User, text)], None);
-    }
-    pub fn save(&self) -> Result<()> {
-        self.save_in(&state_dir())
-    }
-    fn save_in(&self, dir: &Path) -> Result<()> {
-        if self.nodes.is_empty() {
-            return Ok(());
+    pub fn user(&mut self, text: String, attachments: Vec<Record>) {
+        if self.file.is_none() && self.nodes().next().is_none() {
+            self.header.title = text.lines().next().unwrap_or("").chars().take(60).collect();
         }
-        fs::create_dir_all(dir)?;
-        let path = dir.join(format!("{}.json", self.id));
-        write_json(&path, self, true)?;
-        // The listing cache is disposable; its failure mustn't fail a saved turn.
-        let _ = self.cache_summary(&path);
+        let mut entries = vec![Record::Item { item: json!({"role":"user", "content":text}) }];
+        entries.extend(attachments);
+        self.push(entries, None);
+    }
+    // Live changes and replay use the same path. Control records cannot split a
+    // node, and every parent/cursor must point to an already committed node.
+    pub fn record(&mut self, mut record: Record) -> Result<()> {
+        if !record.is_entry() && !matches!(record, Record::Node(_)) && self.records.last().is_some_and(Record::is_entry)
+        {
+            return Err("Uncommitted session entries".into());
+        }
+        match &mut record {
+            Record::Node(node) => {
+                if node.parent.is_some_and(|i| !matches!(self.records.get(i), Some(Record::Node(_)))) {
+                    return Err("Invalid session parent".into());
+                }
+                node.start = self.records.iter().rposition(|r| !r.is_entry()).map_or(0, |i| i + 1);
+                for entry in &self.records[node.start..] {
+                    match entry {
+                        Record::Item { item } => node.blocks.extend(Block::from_item(item, false)),
+                        Record::Attachment { label, path, .. } => {
+                            node.blocks.push(Block::new(Kind::Notice, format!("{label}: {}", path.display())))
+                        }
+                        Record::Tool(tool) => {
+                            if let Some(block) = node
+                                .blocks
+                                .iter_mut()
+                                .rev()
+                                .find(|b| b.tool.as_ref().is_some_and(|t| t.call_id == tool.call_id))
+                            {
+                                block.tool = Some(tool.clone());
+                            }
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+            }
+            Record::Cursor { node } if node.is_some_and(|i| !matches!(self.records.get(i), Some(Record::Node(_)))) => {
+                return Err("Invalid session cursor".into());
+            }
+            _ => (),
+        }
+        self.records.push(record);
         Ok(())
     }
-    fn cache_summary(&self, path: &Path) -> Result<Summary> {
-        let metadata = fs::metadata(path)?;
-        let summary = Summary {
-            modified: metadata.modified()?,
-            len: metadata.len(),
-            label: (!self.nodes.is_empty())
-                .then(|| format!("{}  {}  [{} · {}]", self.id, self.title(), self.cwd.display(), self.model)),
-        };
-        let _ = write_json(&path.with_extension("meta"), &summary, false);
-        Ok(summary)
+    pub fn save(&mut self) -> Result<()> {
+        if self.saved == self.records.len() || self.nodes().next().is_none() {
+            return Ok(());
+        }
+        let path = state_dir().join(format!("{}.jsonl", self.header.id));
+        if self.file.is_none() {
+            fs::create_dir_all(path.parent().unwrap())?;
+            let file = fs::OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&path)?;
+            lock(&file)?;
+            self.file = Some(file);
+        }
+        let mut file = self.file.as_ref().unwrap();
+        // Retry from the last synced boundary, never duplicate a failed append.
+        file.set_len(self.offset)?;
+        file.seek(SeekFrom::Start(self.offset))?;
+        let mut writer = BufWriter::new(file);
+        if self.offset == 0 {
+            write_line(&mut writer, &self.header)?;
+        }
+        for record in &self.records[self.saved..] {
+            write_line(&mut writer, record)?;
+        }
+        writer.flush()?;
+        drop(writer);
+        let offset = file.stream_position()?;
+        file.sync_all()?;
+        if self.offset == 0 {
+            fs::File::open(path.parent().unwrap())?.sync_all()?;
+        }
+        self.offset = offset;
+        self.saved = self.records.len();
+        Ok(())
     }
     pub fn load(path: &Path) -> Result<Self> {
-        let s: Self = serde_json::from_reader(BufReader::new(fs::File::open(path)?))?;
-        if s.cursor.is_some_and(|i| i >= s.nodes.len())
-            || s.nodes.iter().enumerate().any(|(i, n)| n.parent.is_some_and(|p| p >= i))
+        let file = fs::OpenOptions::new().read(true).write(true).open(path)?;
+        lock(&file)?;
+        let mut reader = BufReader::new(&file);
+        let mut line = vec![];
+        let mut offset = reader.read_until(b'\n', &mut line)? as u64;
+        if line.last() != Some(&b'\n') {
+            return Err("Incomplete session header".into());
+        }
+        let header: Header = serde_json::from_slice(&line)?;
+        if header.version != 1
+            || path.file_stem().and_then(|s| s.to_str()) != Some(&header.id)
+            || header.id.is_empty()
+            || !header.id.chars().all(|c| c.is_ascii_digit() || c == '-')
         {
-            return Err("Invalid session tree".into());
+            return Err("Invalid session header".into());
         }
-        // Don't let an edited session's id become a write path.
-        if s.id.is_empty() || !s.id.chars().all(|c| c.is_ascii_digit() || c == '-') {
-            return Err("Invalid session id".into());
+        let mut session = Self { header, records: vec![], file: None, saved: 0, offset };
+        loop {
+            line.clear();
+            offset += reader.read_until(b'\n', &mut line)? as u64;
+            if line.last() != Some(&b'\n') {
+                break;
+            }
+            let record: Record =
+                serde_json::from_slice(&line).map_err(|e| format!("Session near byte {offset}: {e}"))?;
+            let committed = !record.is_entry();
+            session.record(record)?;
+            if committed {
+                session.saved = session.records.len();
+                session.offset = offset;
+            }
         }
-        Ok(s)
+        drop(reader);
+        // Only an unfinished tail is discarded; complete malformed records fail.
+        session.records.truncate(session.saved);
+        if file.metadata()?.len() != session.offset {
+            file.set_len(session.offset)?;
+            file.sync_all()?;
+        }
+        session.file = Some(file);
+        Ok(session)
     }
     pub fn last_text(&self, kind: Kind) -> Option<String> {
-        self.ancestors()
-            .flat_map(|i| self.nodes[i].blocks.iter().rev())
-            .find(|b| b.kind == kind)
-            .map(|b| b.text.clone())
-    }
-    pub fn title(&self) -> String {
-        self.nodes
-            .iter()
-            .flat_map(|n| &n.blocks)
-            .find(|b| b.kind == Kind::User)
-            .map(|b| b.text.lines().next().unwrap_or("").chars().take(60).collect())
-            .unwrap_or_else(|| "(empty)".into())
+        self.ancestors().flat_map(|i| self.node(i).blocks.iter().rev()).find(|b| b.kind == kind).map(|b| b.text.clone())
     }
     // Iterative DFS: very deep tool loops don't consume the stack. Linear
     // paths stay flat; fork guides continue through their descendants.
     pub fn tree(&self) -> Vec<(Option<usize>, String)> {
-        let mut children = vec![vec![]; self.nodes.len() + 1];
-        for (i, n) in self.nodes.iter().enumerate() {
+        let mut children = vec![vec![]; self.records.len() + 1];
+        for (i, n) in self.nodes() {
             children[n.parent.map_or(0, |p| p + 1)].push(i);
         }
         let mut result = vec![];
@@ -254,7 +519,7 @@ impl Session {
         while let Some((node, line_prefix, continuation, depth)) = stack.pop() {
             let label = node
                 .map(|i| {
-                    self.nodes[i]
+                    self.node(i)
                         .blocks
                         .iter()
                         .find(|b| matches!(b.kind, Kind::User | Kind::Agent | Kind::Call))
@@ -289,28 +554,6 @@ impl Session {
     }
 }
 
-// Small sidecars keep /resume independent of transcript/image size. Old sessions
-// are indexed lazily; a changed file or broken/missing cache is read once again.
-#[derive(Serialize, Deserialize)]
-struct Summary {
-    modified: SystemTime,
-    len: u64,
-    label: Option<String>,
-}
-
-fn write_json(path: &Path, value: &impl Serialize, durable: bool) -> Result<()> {
-    let tmp = path.with_extension(format!("{}.tmp", path.extension().unwrap_or_default().to_string_lossy()));
-    let mut file =
-        BufWriter::new(fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp)?);
-    serde_json::to_writer(&mut file, value)?;
-    file.flush()?;
-    if durable {
-        file.get_ref().sync_all()?;
-    }
-    fs::rename(tmp, path)?;
-    Ok(())
-}
-
 pub fn sessions() -> Result<Vec<(PathBuf, String)>> {
     sessions_in(&state_dir())
 }
@@ -322,19 +565,24 @@ fn sessions_in(dir: &Path) -> Result<Vec<(PathBuf, String)>> {
     let mut paths: Vec<_> = fs::read_dir(dir)?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "json"))
+        .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
         .collect();
     paths.sort_by_cached_key(|p| std::cmp::Reverse(fs::metadata(p).and_then(|m| m.modified()).ok()));
     Ok(paths
         .into_iter()
         .filter_map(|path| {
-            let metadata = fs::metadata(&path).ok()?;
-            let cached: Option<Summary> =
-                fs::read(path.with_extension("meta")).ok().and_then(|data| serde_json::from_slice(&data).ok());
-            let summary = cached
-                .filter(|s| s.len == metadata.len() && Some(s.modified) == metadata.modified().ok())
-                .or_else(|| Session::load(&path).ok()?.cache_summary(&path).ok())?;
-            summary.label.map(|label| (path, label))
+            // Listing reads only the immutable header, not the transcript. The
+            // current model is shown after resume, never guessed from old metadata.
+            let mut line = String::new();
+            BufReader::new(fs::File::open(&path).ok()?).read_line(&mut line).ok()?;
+            if !line.ends_with('\n') {
+                return None;
+            }
+            let header: Header = serde_json::from_str(&line).ok()?;
+            (header.version == 1).then(|| {
+                let label = format!("{}  {}  [{}]", header.id, header.title, header.cwd.display());
+                (path, label)
+            })
         })
         .collect())
 }

@@ -10,7 +10,7 @@ mod ui;
 use crossterm::event::{
     self, Event as Input, KeyCode as Key, KeyEvent, KeyEventKind, KeyModifiers as Mod, MouseEventKind,
 };
-use session::{Block, Kind, Session};
+use session::{Block, Kind, Model, Record, Session};
 use std::{
     env,
     io::{self, Write},
@@ -42,7 +42,6 @@ struct Picker {
 }
 struct App {
     session: Session,
-    lock: session::Lock,
     editor: ui::Editor,
     live: Vec<Block>,
     notices: Vec<Block>,
@@ -68,7 +67,7 @@ impl App {
     }
     fn drain_queue(&mut self) {
         for message in self.queued.drain(..) {
-            self.session.user(message.text, message.content);
+            self.session.user(message.text, message.attachments);
         }
     }
     fn notice(&mut self, text: impl Into<String>) {
@@ -87,7 +86,7 @@ impl App {
         }
     }
     fn start(&mut self) {
-        if self.worker.is_some() || self.session.cursor.is_none() {
+        if self.worker.is_some() || self.session.cursor().is_none() {
             return;
         }
         if !self.save() {
@@ -96,18 +95,18 @@ impl App {
         self.live.clear();
         self.scroll = 0;
         let request = api::Request {
-            instructions: self.session.instructions.clone(),
-            model: self.session.model.clone(),
-            effort: self.session.effort.clone(),
+            instructions: self.session.header().instructions.clone(),
+            model: self.session.model().name.clone(),
+            effort: self.session.model().effort.clone(),
             input: self.session.input(),
-            cwd: self.session.cwd.clone(),
+            cwd: self.session.header().cwd.clone(),
         };
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();
         let tx = self.tx.clone();
         let handle = thread::spawn(move || {
             let result = api::step(request, flag, &tx);
-            // All streaming sends finish before Done; the UI can commit its live blocks.
+            // All streaming sends finish before Done; commit the finalized items.
             let _ = tx.send(api::Event::Done(result));
         });
         self.worker = Some(Worker { cancel, handle });
@@ -124,9 +123,10 @@ impl App {
         match result {
             Ok(step) => {
                 if step.usage.cache_miss(self.session.usage()) {
-                    self.live.push(Block::new(Kind::Notice, "cache miss · previously cached prefix was not read"));
+                    self.notice("cache miss · previously cached prefix was not read");
                 }
-                self.session.push(step.items, std::mem::take(&mut self.live), Some(step.usage));
+                self.live.clear();
+                self.session.push(step.entries, Some(step.usage));
                 let mut again = step.again;
                 if !cancelled && !self.quitting {
                     again |= !self.queued.is_empty();
@@ -174,24 +174,26 @@ impl App {
                 if !(2..=4).contains(&args.len()) {
                     return Err(format!("Usage: {} {}", command.name, command.hint).into());
                 }
-                if let Some(context) = args.get(3) {
-                    self.session.context =
-                        counts::parse(context).ok_or("Context must be a positive token count (e.g. 128k or 1.5m)")?;
+                let context = match args.get(3) {
+                    Some(context) => {
+                        counts::parse(context).ok_or("Context must be a positive token count (e.g. 128k or 1.5m)")?
+                    }
+                    None => self.session.model().context,
+                };
+                let model = Model {
+                    name: args[1].into(),
+                    effort: args.get(2).copied().filter(|&s| s != "-").map(Into::into),
+                    context,
+                };
+                if &model != self.session.model() {
+                    self.session.record(Record::Model(model))?;
                 }
-                self.session.model = args[1].into();
-                self.session.effort = args.get(2).copied().filter(|&s| s != "-").map(Into::into);
                 self.save();
             }
             commands::BuiltinKind::New => {
-                self.skills = session::skills(&self.session.cwd);
-                let session = Session::new(
-                    self.session.cwd.clone(),
-                    self.session.model.clone(),
-                    self.session.effort.clone(),
-                    self.session.context,
-                    &self.skills,
-                );
-                self.lock = session::Lock::acquire(&session.id)?;
+                self.skills = session::skills(&self.session.header().cwd);
+                let session =
+                    Session::new(self.session.header().cwd.clone(), self.session.model().clone(), &self.skills);
                 self.session = session;
                 self.files = input::FileSearch::default();
                 self.reset_view();
@@ -202,12 +204,12 @@ impl App {
                     .tree()
                     .into_iter()
                     .map(|(i, label)| {
-                        (Target::Node(i), format!("{}{label}", if i == self.session.cursor { "● " } else { "  " }))
+                        (Target::Node(i), format!("{}{label}", if i == self.session.cursor() { "● " } else { "  " }))
                     })
                     .collect();
                 let selected = entries
                     .iter()
-                    .position(|(t, _)| matches!(t, Target::Node(i) if *i == self.session.cursor))
+                    .position(|(t, _)| matches!(t, Target::Node(i) if *i == self.session.cursor()))
                     .unwrap_or(0);
                 self.picker = Some(Picker { title: "conversation tree", entries, selected });
             }
@@ -248,7 +250,7 @@ impl App {
             }
         }
         // Snapshot all attachments before clearing the draft or touching the queue.
-        let message = input::prepare(text, &self.session.cwd, skill)?;
+        let message = input::prepare(text, &self.session.header().cwd, skill)?;
         self.editor.clear();
         if !message.text.trim().is_empty() {
             self.queued.push(message);
@@ -273,8 +275,13 @@ impl App {
             self.files = input::FileSearch::default();
             return;
         }
-        let mut menu =
-            input::menu(&self.editor.text(), self.editor.cursor, &self.session.cwd, &self.skills, &self.files.files);
+        let mut menu = input::menu(
+            &self.editor.text(),
+            self.editor.cursor,
+            &self.session.header().cwd,
+            &self.skills,
+            &self.files.files,
+        );
         if let Some(new) = &mut menu {
             if let Some(old) = &self.completion
                 && new.range == old.range
@@ -285,7 +292,7 @@ impl App {
                 new.explicit = old.explicit;
             }
             if new.file && !["/", "~/", "./", "../"].iter().any(|p| new.query.starts_with(p)) {
-                self.files.start(&self.session.cwd);
+                self.files.start(&self.session.header().cwd);
             } else {
                 self.files = input::FileSearch::default();
             }
@@ -303,14 +310,16 @@ impl App {
                 Target::Node(i) => {
                     let mut cursor = i;
                     let mut draft = None;
-                    if let Some(node) = i.map(|i| &self.session.nodes[i])
+                    if let Some(node) = i.map(|i| self.session.node(i))
                         && let Some(user) = node.blocks.iter().find(|b| b.kind == Kind::User)
                     {
                         cursor = node.parent;
                         draft = Some(user.text.clone());
                     }
-                    let changed = self.session.cursor != cursor;
-                    self.session.cursor = cursor;
+                    let changed = self.session.cursor() != cursor;
+                    if changed {
+                        self.session.record(Record::Cursor { node: cursor })?;
+                    }
                     if let Some(text) = draft {
                         self.editor.clear();
                         self.editor.insert(&text);
@@ -320,12 +329,10 @@ impl App {
                 Target::Session(path) => {
                     // Strict single reader/writer: take ownership before reading the session.
                     let id = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
-                    if id != self.session.id {
-                        let lock = session::Lock::acquire(&id)?;
+                    if id != self.session.header().id {
                         self.session = Session::load(&path)?;
-                        self.lock = lock;
                     }
-                    self.skills = session::skills(&self.session.cwd);
+                    self.skills = session::skills(&self.session.header().cwd);
                     self.files = input::FileSearch::default();
                     false
                 }
@@ -552,15 +559,15 @@ fn main() -> Result<()> {
     let skills = session::skills(&cwd);
     let session = Session::new(
         cwd,
-        env::var("MU_MODEL").unwrap_or_else(|_| "gpt-6-luna".into()),
-        Some(env::var("MU_EFFORT").unwrap_or_else(|_| "xhigh".into())),
-        env::var("MU_CONTEXT").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(272_000),
+        Model {
+            name: env::var("MU_MODEL").unwrap_or_else(|_| "gpt-6-luna".into()),
+            effort: Some(env::var("MU_EFFORT").unwrap_or_else(|_| "xhigh".into())),
+            context: env::var("MU_CONTEXT").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(272_000),
+        },
         &skills,
     );
-    let lock = session::Lock::acquire(&session.id)?;
     let mut app = App {
         session,
-        lock,
         skills,
         completion: None,
         dismissed: false,
