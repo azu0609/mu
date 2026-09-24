@@ -28,8 +28,6 @@ impl Terminal {
         }));
         terminal::enable_raw_mode()?;
         let guard = Self;
-        // Terminals with the kitty keyboard protocol can report Shift+Enter
-        // separately from Enter; unsupported terminals ignore the request.
         execute!(
             io::stdout(),
             EnterAlternateScreen,

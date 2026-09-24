@@ -355,20 +355,17 @@ impl Session {
     pub fn usage(&self) -> Usage {
         self.ancestors().find_map(|i| self.node(i).usage).unwrap_or_default()
     }
-    // Totals describe the active conversation path, not other branches.
     pub fn total_usage(&self) -> Usage {
         let mut total = Usage { cached: Some(0), ..Usage::default() };
         for usage in self.ancestors().filter_map(|i| self.node(i).usage) {
             total.input = total.input.saturating_add(usage.input);
             total.output = total.output.saturating_add(usage.output);
-            // Missing cache details make the total unknown, not zero.
             total.cached = total.cached.zip(usage.cached).map(|(a, b)| a.saturating_add(b));
         }
         total
     }
     pub fn uncached_input(&self) -> u64 {
         self.ancestors().filter_map(|i| self.node(i).usage).fold(0u64, |total, usage| {
-            // Without cache details, conservatively count all input as uncached.
             total.saturating_add(usage.input.saturating_sub(usage.cached.unwrap_or(0)))
         })
     }
@@ -571,8 +568,6 @@ fn sessions_in(dir: &Path) -> Result<Vec<(PathBuf, String)>> {
     Ok(paths
         .into_iter()
         .filter_map(|path| {
-            // Listing reads only the immutable header, not the transcript. The
-            // current model is shown after resume, never guessed from old metadata.
             let mut line = String::new();
             BufReader::new(fs::File::open(&path).ok()?).read_line(&mut line).ok()?;
             if !line.ends_with('\n') {
