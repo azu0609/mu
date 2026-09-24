@@ -101,6 +101,7 @@ pub struct Session {
     pub instructions: String,
     pub model: String,
     pub effort: Option<String>,
+    pub context: u64,
     pub nodes: Vec<Node>,
     pub cursor: Option<usize>,
 }
@@ -138,13 +139,14 @@ impl Lock {
 }
 
 impl Session {
-    pub fn new(cwd: PathBuf, model: String, effort: Option<String>, skills: &[Skill]) -> Self {
+    pub fn new(cwd: PathBuf, model: String, effort: Option<String>, context: u64, skills: &[Skill]) -> Self {
         Self {
             id: unique_id(),
             instructions: instructions(&cwd, skills),
             cwd,
             model,
             effort,
+            context,
             nodes: vec![],
             cursor: None,
         }

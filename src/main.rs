@@ -1,4 +1,5 @@
 mod api;
+mod commands;
 mod input;
 mod process;
 mod session;
@@ -55,7 +56,6 @@ struct App {
     picker: Option<Picker>,
     expanded: bool,
     scroll: usize,
-    context: u64,
     quitting: bool,
 }
 impl App {
@@ -149,43 +149,45 @@ impl App {
             }
         }
     }
-    fn command(&mut self, text: &str) -> Result<()> {
+    fn command(&mut self, command: &commands::Builtin, text: &str) -> Result<()> {
         let args: Vec<_> = text.split_whitespace().collect();
-        let name = args.first().copied().unwrap_or("");
-        if name == "/quit" {
-            self.quitting = true;
-            self.stop();
-            return Ok(());
-        }
-        if name == "/copy" {
-            let kind = match args.get(1).copied() {
-                None | Some("agent") => Kind::Agent,
-                Some("user") => Kind::User,
-                _ => return Err("Usage: /copy [agent|user]".into()),
-            };
-            let text = self.session.last_text(kind).ok_or("Nothing to copy")?;
-            copy(&text)?;
-            self.notice("Copied.");
-            return Ok(());
-        }
-        if self.worker.is_some() {
+        if !matches!(command.kind, commands::BuiltinKind::Quit | commands::BuiltinKind::Copy) && self.worker.is_some() {
             return Err("Stop the agent with Esc before changing sessions or models".into());
         }
-        match name {
-            "/model" => {
-                if !(2..=3).contains(&args.len()) {
-                    return Err("Usage: /model <model> [effort]".into());
+        match command.kind {
+            commands::BuiltinKind::Quit => {
+                self.quitting = true;
+                self.stop();
+            }
+            commands::BuiltinKind::Copy => {
+                let kind = match args.get(1).copied() {
+                    None | Some("agent") => Kind::Agent,
+                    Some("user") => Kind::User,
+                    _ => return Err(format!("Usage: {} {}", command.name, command.hint).into()),
+                };
+                let text = self.session.last_text(kind).ok_or("Nothing to copy")?;
+                copy(&text)?;
+                self.notice("Copied.");
+            }
+            commands::BuiltinKind::Model => {
+                if !(2..=4).contains(&args.len()) {
+                    return Err(format!("Usage: {} {}", command.name, command.hint).into());
+                }
+                if let Some(context) = args.get(3) {
+                    self.session.context =
+                        context.parse().ok().filter(|&n| n > 0).ok_or("Context must be a positive integer")?;
                 }
                 self.session.model = args[1].into();
-                self.session.effort = args.get(2).map(|s| (*s).into());
+                self.session.effort = args.get(2).copied().filter(|&s| s != "-").map(Into::into);
                 self.save();
             }
-            "/new" => {
+            commands::BuiltinKind::New => {
                 self.skills = session::skills(&self.session.cwd);
                 let session = Session::new(
                     self.session.cwd.clone(),
                     self.session.model.clone(),
                     self.session.effort.clone(),
+                    self.session.context,
                     &self.skills,
                 );
                 self.lock = session::Lock::acquire(&session.id)?;
@@ -193,7 +195,7 @@ impl App {
                 self.files = input::FileSearch::default();
                 self.reset_view();
             }
-            "/tree" => {
+            commands::BuiltinKind::Tree => {
                 let entries: Vec<_> = self
                     .session
                     .tree()
@@ -208,16 +210,13 @@ impl App {
                     .unwrap_or(0);
                 self.picker = Some(Picker { title: "conversation tree", entries, selected });
             }
-            "/resume" => {
+            commands::BuiltinKind::Resume => {
                 let entries: Vec<_> =
                     session::sessions()?.into_iter().map(|(p, label)| (Target::Session(p), label)).collect();
                 if entries.is_empty() {
                     return Err("No saved sessions".into());
                 }
                 self.picker = Some(Picker { title: "resume session", entries, selected: 0 });
-            }
-            _ => {
-                return Err("Commands: /model <model> [effort], /new, /resume, /tree, /copy [agent|user], /quit".into());
             }
         }
         Ok(())
@@ -236,14 +235,16 @@ impl App {
         let mut skill = None;
         if text.trim_start().starts_with('/') {
             let word = text.split_whitespace().next().unwrap();
-            let name = input::resolve(word, &self.skills)?;
+            let (name, choice) = commands::resolve(word, &self.skills)?;
             text = format!("{}{}", name, &text.trim_start()[word.len()..]);
-            if input::COMMANDS.iter().any(|(command, _)| *command == name) {
-                let result = self.command(&text);
-                self.editor.clear();
-                return result;
+            match choice {
+                commands::Choice::Builtin(command) => {
+                    let result = self.command(command, &text);
+                    self.editor.clear();
+                    return result;
+                }
+                commands::Choice::Skill(i) => skill = Some(&self.skills[i]),
             }
-            skill = self.skills.iter().rev().find(|s| format!("/{}", s.name) == name);
         }
         // Snapshot all attachments before clearing the draft or touching the queue.
         let message = input::prepare(text, &self.session.cwd, skill)?;
@@ -537,15 +538,20 @@ fn main() -> Result<()> {
     }
     if !args.is_empty() {
         println!(
-            "mu · µ · 無\n\nMU_BASE_URL=http://127.0.0.1:8317/v1 MU_API_KEY=… MU_MODEL=… mu\n\n/model <model> [effort]  /new  /resume  /tree  /copy [agent|user]  /quit\nCtrl+O expand · Esc stop · Alt+Enter newline · PgUp/PgDn scroll"
+            "mu · µ · 無\n\nMU_BASE_URL=http://127.0.0.1:8317/v1 MU_API_KEY=… MU_MODEL=… mu\n\nType / in the TUI for commands.\nCtrl+O expand · Esc stop · Alt+Enter newline · PgUp/PgDn scroll"
         );
         return Ok(());
     }
     let (tx, rx) = mpsc::channel();
     let cwd = env::current_dir()?;
     let skills = session::skills(&cwd);
-    let session =
-        Session::new(cwd, env::var("MU_MODEL").unwrap_or_else(|_| "gpt-5".into()), env::var("MU_EFFORT").ok(), &skills);
+    let session = Session::new(
+        cwd,
+        env::var("MU_MODEL").unwrap_or_else(|_| "gpt-5".into()),
+        env::var("MU_EFFORT").ok(),
+        env::var("MU_CONTEXT").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(128_000),
+        &skills,
+    );
     let lock = session::Lock::acquire(&session.id)?;
     let mut app = App {
         session,
@@ -564,7 +570,6 @@ fn main() -> Result<()> {
         picker: None,
         expanded: false,
         scroll: 0,
-        context: env::var("MU_CONTEXT").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(128_000),
         quitting: false,
     };
     app.run()

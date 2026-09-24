@@ -1,6 +1,6 @@
-use crate::{Result, process, session::Skill};
+use crate::{Result, commands, process, session::Skill};
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
     env, fs,
     io::Read,
     ops::Range,
@@ -14,43 +14,9 @@ use std::{
     time::Duration,
 };
 
-pub const COMMANDS: &[(&str, &str)] = &[
-    ("/model", "<model> [effort]"),
-    ("/new", "new conversation"),
-    ("/resume", "resume session"),
-    ("/tree", "conversation tree"),
-    ("/copy", "[agent|user]"),
-    ("/quit", "quit"),
-];
-
 pub struct Message {
     pub text: String,
     pub content: String,
-}
-
-fn commands(skills: &[Skill]) -> BTreeMap<String, String> {
-    let mut entries = BTreeMap::new();
-    // Local skills come last; built-ins always win a name collision.
-    for skill in skills {
-        if !skill.name.is_empty() && skill.name.chars().all(|c| c.is_alphanumeric() || "-_.".contains(c)) {
-            entries.insert(format!("/{}", skill.name), skill.description.clone());
-        }
-    }
-    entries.extend(COMMANDS.iter().map(|(name, desc)| (name.to_string(), desc.to_string())));
-    entries
-}
-
-pub fn resolve(word: &str, skills: &[Skill]) -> Result<String> {
-    let choices = commands(skills);
-    if choices.contains_key(word) {
-        return Ok(word.into());
-    }
-    let names: Vec<_> = choices.keys().filter(|name| name.starts_with(word)).cloned().collect();
-    match names.as_slice() {
-        [name] => Ok(name.clone()),
-        [] => Err(format!("Unknown command or skill: {word}").into()),
-        _ => Err(format!("Choose a command: {}", names.join(", ")).into()),
-    }
 }
 
 struct Mention {
@@ -212,10 +178,10 @@ pub fn menu(text: &str, cursor: usize, cwd: &Path, skills: &[Skill], files: &[St
     let start = prefix.chars().count() - trimmed.chars().count();
     if trimmed.starts_with('/') && !trimmed.chars().any(char::is_whitespace) {
         let end = text.chars().skip(start).take_while(|c| !c.is_whitespace()).count() + start;
-        let entries = commands(skills)
+        let entries = commands::choices(skills)
             .into_iter()
             .filter(|(name, _)| name.starts_with(trimmed))
-            .map(|(name, desc)| Entry { text: format!("{name} "), label: format!("{name}  {desc}") })
+            .map(|(name, (_, hint))| Entry { text: format!("{name} "), label: format!("{name}  {hint}") })
             .collect();
         return Some(Menu {
             range: start..end,

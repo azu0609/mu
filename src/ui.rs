@@ -451,7 +451,7 @@ pub fn draw(app: &mut App) -> Result<()> {
         cache,
         read,
         count(usage.input + usage.output),
-        count(app.context)
+        count(app.session.context)
     );
     let right = clip(
         &format!(
