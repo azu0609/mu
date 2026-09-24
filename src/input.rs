@@ -1,7 +1,4 @@
-use crate::{
-    Result, commands, process,
-    session::{Record, Skill},
-};
+use crate::{Result, commands, process, session::Record, skills::Skill};
 use std::{
     collections::HashSet,
     env, fs,

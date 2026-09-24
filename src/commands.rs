@@ -1,4 +1,4 @@
-use crate::{Result, session::Skill};
+use crate::{Result, skills::Skill};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy)]

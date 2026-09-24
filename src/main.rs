@@ -4,6 +4,7 @@ mod counts;
 mod input;
 mod process;
 mod session;
+mod skills;
 mod tools;
 mod ui;
 
@@ -25,6 +26,10 @@ use std::{
 };
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+pub fn home() -> PathBuf {
+    env::home_dir().unwrap_or_else(|| PathBuf::from("."))
+}
 
 struct Worker {
     cancel: Arc<AtomicBool>,
@@ -48,7 +53,7 @@ struct App {
     live: Vec<Block>,
     notices: Vec<Block>,
     queued: Vec<input::Message>,
-    skills: Vec<session::Skill>,
+    skills: Vec<skills::Skill>,
     completion: Option<input::Menu>,
     dismissed: bool,
     files: input::FileSearch,
@@ -201,7 +206,7 @@ impl App {
                 self.save();
             }
             commands::BuiltinKind::New => {
-                self.skills = session::skills(&self.session.header().cwd);
+                self.skills = skills::skills(&self.session.header().cwd);
                 let session =
                     Session::new(self.session.header().cwd.clone(), self.session.model().clone(), &self.skills);
                 self.session = session;
@@ -347,7 +352,7 @@ impl App {
                     if id != self.session.header().id {
                         self.session = Session::load(&path)?;
                     }
-                    self.skills = session::skills(&self.session.header().cwd);
+                    self.skills = skills::skills(&self.session.header().cwd);
                     self.files = input::FileSearch::default();
                     false
                 }
@@ -557,7 +562,7 @@ fn main() -> Result<()> {
     }
     let (tx, rx) = mpsc::channel();
     let cwd = env::current_dir()?;
-    let skills = session::skills(&cwd);
+    let skills = skills::skills(&cwd);
     let session = Session::new(
         cwd,
         Model {
