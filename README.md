@@ -34,7 +34,7 @@ All persisted data (e.g., sessions) are stored under `$XDG_STATE_HOME/mu`. Falls
   - A: Agents *love* using `curl` and `rg` on its own, so we've asked ourselves: "why not use it in the harness too?", and the answer was that.
 - Q: **What does near-_無_ base tokens mean?**
   - A: We aim for ~64 input tokens.
-  - **Note:** Some providers (e.g., DeepSeek) may include an additional set of server-side templates and count it toward the reported `input_tokens` value. Feel free to try out the below command to test the token floor yourself.
+  - **Note:** Some providers (e.g., DeepSeek) may include an additional set of server-side templates and count it toward the reported `input_tokens` value. Feel free to try the command below to test the token floor yourself.
   ```bash
   curl -X POST 'https://api.deepseek.com/responses' \
     -H 'Content-Type: application/json' \
