@@ -324,7 +324,16 @@ fn tool_lines(command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<L
     let lines = if output.is_empty() { vec![] } else { wrap(output, width.saturating_sub(4)) };
     let hidden_output = !expanded && lines.len() > 3;
     let start = if expanded { 0 } else { lines.len().saturating_sub(3) };
-    if !expanded && (hidden_input || hidden_output) {
+    if hidden_output {
+        result.push(Line::new(
+            format!(
+                "  │ … {start} {}{} hidden · Ctrl+O to expand",
+                if tool.output.truncated { "preview " } else { "" },
+                if start == 1 { "line" } else { "lines" }
+            ),
+            GRAY,
+        ));
+    } else if !expanded && hidden_input {
         result.push(Line::new("  │ … Ctrl+O to expand", GRAY));
     }
     for line in &lines[start..] {
