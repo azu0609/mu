@@ -430,6 +430,70 @@ fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
     result
 }
 
+// One snapshot defines both the transcript's order and the lines used for scroll anchoring.
+struct Transcript {
+    welcome: Block,
+    path: Vec<usize>,
+    pending: Vec<Block>,
+}
+
+impl Transcript {
+    fn new(app: &App) -> Self {
+        Self {
+            welcome: Block::new(
+                Kind::Notice,
+                "mu · escape to interrupt · / for commands & skills · ctrl+o to expand/collapse",
+            ),
+            path: app.session.path(),
+            pending: app
+                .queued
+                .iter()
+                .enumerate()
+                .map(|(i, message)| {
+                    let hint = if i + 1 == app.queued.len() { "  [Ctrl+↑ restore]" } else { "" };
+                    Block::new(Kind::Notice, format!("queued: {}{hint}", message.text))
+                })
+                .collect(),
+        }
+    }
+
+    fn static_blocks<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = &'a Block> + 'a {
+        std::iter::once(&self.welcome).chain(self.path.iter().flat_map(|&i| app.session.node(i).blocks.iter()))
+    }
+
+    fn dynamic_blocks<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = &'a Block> + 'a {
+        app.live.iter().chain(app.notices.iter()).chain(self.pending.iter())
+    }
+
+    fn blocks<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = &'a Block> + 'a {
+        self.static_blocks(app).chain(self.dynamic_blocks(app))
+    }
+
+    fn line_count(&self, app: &mut App, width: usize) -> usize {
+        let cursor = self.path.last().copied();
+        let static_lines = match app.transcript_static {
+            Some((w, expanded, at, lines)) if w == width && expanded == app.expanded && at == cursor => lines,
+            _ => {
+                let lines = self
+                    .static_blocks(app)
+                    .map(|block| block_lines(block, width.saturating_sub(1), app.expanded).len())
+                    .sum();
+                app.transcript_static = Some((width, app.expanded, cursor, lines));
+                lines
+            }
+        };
+        static_lines
+            + self
+                .dynamic_blocks(app)
+                .map(|block| block_lines(block, width.saturating_sub(1), app.expanded).len())
+                .sum::<usize>()
+    }
+}
+
+pub fn transcript_line_count(app: &mut App, width: usize) -> usize {
+    Transcript::new(app).line_count(app, width)
+}
+
 pub fn draw(app: &mut App) -> Result<()> {
     let (w, h) = terminal::size()?;
     let width = w as usize;
@@ -459,19 +523,28 @@ pub fn draw(app: &mut App) -> Result<()> {
         }
         lines
     } else {
-        let path = app.session.path();
-        let pending: Vec<_> =
-            app.queued.iter().map(|s| Block::new(Kind::Notice, format!("queued: {}", s.text))).collect();
-        let welcome = [Block::new(Kind::Notice, "mu · Ctrl+O to expand/collapse · PgUp/PgDn to scroll")];
-        let blocks = welcome
-            .iter()
-            .chain(path.iter().flat_map(|&i| app.session.node(i).blocks.iter()))
-            .chain(app.live.iter())
-            .chain(app.notices.iter())
-            .chain(pending.iter());
+        let transcript = Transcript::new(app);
+        if app.scroll > 0 {
+            let total = transcript.line_count(app, width);
+            if let Some((old_width, old_expanded, old_total)) = app.scroll_layout
+                && old_width == width
+                && old_expanded == app.expanded
+            {
+                // Keep the same transcript lines in view as new streamed lines arrive below them.
+                if total >= old_total {
+                    app.scroll = app.scroll.saturating_add(total - old_total);
+                } else {
+                    app.scroll = app.scroll.saturating_sub(old_total - total);
+                }
+            }
+            app.scroll = app.scroll.min(total.saturating_sub(transcript_height));
+            app.scroll_layout = (app.scroll > 0).then_some((width, app.expanded, total));
+        } else {
+            app.scroll_layout = None;
+        }
         let need = transcript_height.saturating_add(app.scroll);
         let mut reversed = vec![];
-        for block in blocks.rev() {
+        for block in transcript.blocks(app).rev() {
             reversed.extend(block_lines(block, width - 1, app.expanded).into_iter().rev());
             if reversed.len() >= need {
                 break;

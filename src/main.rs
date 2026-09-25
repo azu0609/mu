@@ -63,6 +63,10 @@ struct App {
     picker: Option<Picker>,
     expanded: bool,
     scroll: usize,
+    // Width, expansion state, and rendered transcript length at the last scroll position.
+    scroll_layout: Option<(usize, bool, usize)>,
+    // Cached line count for the welcome message and committed session path.
+    transcript_static: Option<(usize, bool, Option<usize>, usize)>,
     quitting: bool,
 }
 
@@ -72,11 +76,26 @@ impl App {
         self.notices.clear();
         self.queued.clear();
         self.scroll = 0;
+        self.scroll_layout = None;
+        self.transcript_static = None;
     }
 
     fn drain_queue(&mut self) {
         for message in self.queued.drain(..) {
             self.session.user(message.text, message.attachments);
+        }
+    }
+
+    fn recall_queued(&mut self) {
+        if !self.editor.chars.is_empty() {
+            self.notice("Clear the input before restoring a queued message.");
+            return;
+        }
+        if let Some(message) = self.queued.pop() {
+            self.editor.insert(&message.text);
+            self.notice("Restored newest queued message to input.");
+        } else {
+            self.notice("No queued messages.");
         }
     }
 
@@ -106,6 +125,7 @@ impl App {
         }
         self.live.clear();
         self.scroll = 0;
+        self.scroll_layout = None;
         let request = api::Request {
             instructions: self.session.header().instructions.clone(),
             model: self.session.model().name.clone(),
@@ -248,6 +268,7 @@ impl App {
             self.notice(e.to_string());
         }
         self.scroll = 0;
+        self.scroll_layout = None;
     }
 
     fn send_input(&mut self) -> Result<()> {
@@ -365,6 +386,24 @@ impl App {
         Ok(())
     }
 
+    fn scroll_up(&mut self, amount: usize) {
+        if self.scroll == 0
+            && self.picker.is_none()
+            && let Ok((width, _)) = crossterm::terminal::size()
+        {
+            let width = width as usize;
+            self.scroll_layout = Some((width, self.expanded, ui::transcript_line_count(self, width)));
+        }
+        self.scroll = self.scroll.saturating_add(amount);
+    }
+
+    fn scroll_down(&mut self, amount: usize) {
+        self.scroll = self.scroll.saturating_sub(amount);
+        if self.scroll == 0 {
+            self.scroll_layout = None;
+        }
+    }
+
     fn key(&mut self, key: KeyEvent) {
         if key.kind == KeyEventKind::Release {
             return;
@@ -372,6 +411,7 @@ impl App {
         let ctrl = key.modifiers.contains(Mod::CONTROL);
         if ctrl && key.code == Key::Char('o') {
             self.expanded = !self.expanded;
+            self.scroll_layout = None;
             return;
         }
         if let Some(picker) = &mut self.picker {
@@ -390,6 +430,10 @@ impl App {
                 }
                 _ => (),
             }
+            return;
+        }
+        if ctrl && key.code == Key::Up {
+            self.recall_queued();
             return;
         }
         if let Some(menu) = &mut self.completion {
@@ -439,8 +483,8 @@ impl App {
                 self.stop();
             }
             Key::Esc => self.stop(),
-            Key::PageUp => self.scroll = self.scroll.saturating_add(10),
-            Key::PageDown => self.scroll = self.scroll.saturating_sub(10),
+            Key::PageUp => self.scroll_up(10),
+            Key::PageDown => self.scroll_down(10),
             Key::Enter if key.modifiers.contains(Mod::SHIFT) => self.editor.insert("\n"),
             Key::Char('j') if ctrl => self.editor.insert("\n"),
             Key::Enter => self.submit(),
@@ -513,8 +557,8 @@ impl App {
                     Input::Key(k) => self.key(k),
                     Input::Paste(s) if self.picker.is_none() => self.editor.insert(&s),
                     Input::Mouse(m) => match m.kind {
-                        MouseEventKind::ScrollUp => self.scroll = self.scroll.saturating_add(3),
-                        MouseEventKind::ScrollDown => self.scroll = self.scroll.saturating_sub(3),
+                        MouseEventKind::ScrollUp => self.scroll_up(3),
+                        MouseEventKind::ScrollDown => self.scroll_down(3),
                         _ => (),
                     },
                     _ => (),
@@ -588,6 +632,8 @@ fn main() -> Result<()> {
         picker: None,
         expanded: false,
         scroll: 0,
+        scroll_layout: None,
+        transcript_static: None,
         quitting: false,
     };
     app.run()
