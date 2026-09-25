@@ -102,7 +102,6 @@ impl Editor {
             self.chars.remove(start - 1);
             self.cursor = start - 1;
         } else if end < self.chars.len() {
-            // The first line has no preceding newline; join it with the next.
             self.chars.remove(end);
             self.cursor = 0;
         }
@@ -296,7 +295,7 @@ fn tail_ellipsis(text: &str, width: usize) -> String {
         return "…".repeat(width);
     }
     let mut start = text.len();
-    let mut used = 1; // Leading ellipsis.
+    let mut used = 1;
     for (i, ch) in text.char_indices().rev() {
         let w = ch.width().unwrap_or(0);
         if used + w > width {
@@ -430,6 +429,29 @@ fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
     result
 }
 
+// Width, expansion state, and rendered transcript length at the last scroll position.
+#[derive(Clone, Copy)]
+pub struct ScrollAnchor {
+    pub width: usize,
+    pub expanded: bool,
+    pub total: usize,
+}
+
+// Cached line count for the welcome message and the committed session path.
+#[derive(Clone, Copy)]
+pub struct CachedLines {
+    pub width: usize,
+    pub expanded: bool,
+    pub cursor: Option<usize>,
+    pub lines: usize,
+}
+
+impl CachedLines {
+    fn matches(&self, width: usize, expanded: bool, cursor: Option<usize>) -> bool {
+        self.width == width && self.expanded == expanded && self.cursor == cursor
+    }
+}
+
 // One snapshot defines both the transcript's order and the lines used for scroll anchoring.
 struct Transcript {
     welcome: Block,
@@ -472,13 +494,13 @@ impl Transcript {
     fn line_count(&self, app: &mut App, width: usize) -> usize {
         let cursor = self.path.last().copied();
         let static_lines = match app.transcript_static {
-            Some((w, expanded, at, lines)) if w == width && expanded == app.expanded && at == cursor => lines,
+            Some(cached) if cached.matches(width, app.expanded, cursor) => cached.lines,
             _ => {
                 let lines = self
                     .static_blocks(app)
                     .map(|block| block_lines(block, width.saturating_sub(1), app.expanded).len())
                     .sum();
-                app.transcript_static = Some((width, app.expanded, cursor, lines));
+                app.transcript_static = Some(CachedLines { width, expanded: app.expanded, cursor, lines });
                 lines
             }
         };
@@ -526,19 +548,19 @@ pub fn draw(app: &mut App) -> Result<()> {
         let transcript = Transcript::new(app);
         if app.scroll > 0 {
             let total = transcript.line_count(app, width);
-            if let Some((old_width, old_expanded, old_total)) = app.scroll_layout
-                && old_width == width
-                && old_expanded == app.expanded
+            if let Some(old) = app.scroll_layout
+                && old.width == width
+                && old.expanded == app.expanded
             {
                 // Keep the same transcript lines in view as new streamed lines arrive below them.
-                if total >= old_total {
-                    app.scroll = app.scroll.saturating_add(total - old_total);
+                if total >= old.total {
+                    app.scroll = app.scroll.saturating_add(total - old.total);
                 } else {
-                    app.scroll = app.scroll.saturating_sub(old_total - total);
+                    app.scroll = app.scroll.saturating_sub(old.total - total);
                 }
             }
             app.scroll = app.scroll.min(total.saturating_sub(transcript_height));
-            app.scroll_layout = (app.scroll > 0).then_some((width, app.expanded, total));
+            app.scroll_layout = (app.scroll > 0).then_some(ScrollAnchor { width, expanded: app.expanded, total });
         } else {
             app.scroll_layout = None;
         }

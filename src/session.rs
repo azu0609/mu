@@ -530,14 +530,20 @@ impl Session {
     // Iterative DFS: very deep tool loops don't consume the stack. Linear
     // paths stay flat; fork guides continue through their descendants.
     pub fn tree(&self) -> Vec<(Option<usize>, String)> {
+        struct Frame {
+            node: Option<usize>,
+            line_prefix: String,
+            child_prefix: String,
+            depth: usize,
+        }
+
         let mut children = vec![vec![]; self.records.len() + 1];
         for (i, n) in self.nodes() {
             children[n.parent.map_or(0, |p| p + 1)].push(i);
         }
         let mut result = vec![];
-        // (node, prefix for this line, prefix for its children, fork depth)
-        let mut stack: Vec<(Option<usize>, String, String, usize)> = vec![(None, String::new(), String::new(), 0)];
-        while let Some((node, line_prefix, continuation, depth)) = stack.pop() {
+        let mut stack = vec![Frame { node: None, line_prefix: String::new(), child_prefix: String::new(), depth: 0 }];
+        while let Some(Frame { node, line_prefix, child_prefix, depth }) = stack.pop() {
             let label = node
                 .map(|i| {
                     self.node(i)
@@ -559,15 +565,25 @@ impl Session {
             for (position, &child) in siblings.iter().enumerate().rev() {
                 if siblings.len() > 1 {
                     let last = position == siblings.len() - 1;
-                    let line = format!("{continuation}{}", if last { "└─ " } else { "├─ " });
+                    let line = format!("{child_prefix}{}", if last { "└─ " } else { "├─ " });
                     let next = if depth < 16 {
-                        format!("{continuation}{}", if last { "     " } else { "│    " })
+                        format!("{child_prefix}{}", if last { "     " } else { "│    " })
                     } else {
-                        continuation.clone()
+                        child_prefix.clone()
                     };
-                    stack.push((Some(child), line, next, (depth + 1).min(16)));
+                    stack.push(Frame {
+                        node: Some(child),
+                        line_prefix: line,
+                        child_prefix: next,
+                        depth: (depth + 1).min(16),
+                    });
                 } else {
-                    stack.push((Some(child), continuation.clone(), continuation.clone(), depth));
+                    stack.push(Frame {
+                        node: Some(child),
+                        line_prefix: child_prefix.clone(),
+                        child_prefix: child_prefix.clone(),
+                        depth,
+                    });
                 }
             }
         }

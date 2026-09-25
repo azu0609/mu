@@ -40,7 +40,6 @@ impl Capture {
         if self.log.is_none() && self.total.saturating_add(bytes.len()) > PREVIEW_LIMIT {
             let path = env::temp_dir().canonicalize()?.join(format!("mu-output-{}.log", unique_id()));
             let mut file = BufWriter::new(fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?);
-            // Spill the entire prefix before discarding any bytes from memory.
             file.write_all(&self.head)?;
             let (a, b) = self.tail.as_slices();
             file.write_all(a)?;

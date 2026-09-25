@@ -63,10 +63,8 @@ struct App {
     picker: Option<Picker>,
     expanded: bool,
     scroll: usize,
-    // Width, expansion state, and rendered transcript length at the last scroll position.
-    scroll_layout: Option<(usize, bool, usize)>,
-    // Cached line count for the welcome message and committed session path.
-    transcript_static: Option<(usize, bool, Option<usize>, usize)>,
+    scroll_layout: Option<ui::ScrollAnchor>,
+    transcript_static: Option<ui::CachedLines>,
     quitting: bool,
 }
 
@@ -287,7 +285,6 @@ impl App {
                 commands::Choice::Skill(i) => skill = Some(&self.skills[i]),
             }
         }
-        // Snapshot all attachments before clearing the draft or touching the queue.
         let message = input::prepare(text, &self.session.header().cwd, skill)?;
         self.editor.clear();
         if !message.text.trim().is_empty() {
@@ -368,7 +365,6 @@ impl App {
                     changed
                 }
                 Target::Session(path) => {
-                    // Strict single reader/writer: take ownership before reading the session.
                     let id = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
                     if id != self.session.header().id {
                         self.session = Session::load(&path)?;
@@ -392,7 +388,8 @@ impl App {
             && let Ok((width, _)) = crossterm::terminal::size()
         {
             let width = width as usize;
-            self.scroll_layout = Some((width, self.expanded, ui::transcript_line_count(self, width)));
+            let total = ui::transcript_line_count(self, width);
+            self.scroll_layout = Some(ui::ScrollAnchor { width, expanded: self.expanded, total });
         }
         self.scroll = self.scroll.saturating_add(amount);
     }

@@ -223,7 +223,6 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
         .ok_or_else(|| format!("Stream ended without response.completed: {}", String::from_utf8_lossy(&preview)))?;
     let usage = Usage::from_json(&response["usage"]);
     let output: Vec<Value> = response["output"].as_array().cloned().unwrap_or_else(|| items.into_values().collect());
-    // Keep the API's final items unchanged for the next request.
     for (index, item) in output.iter().enumerate() {
         if let Some(block) = Block::from_item(item, false) {
             live.upsert(index, block);
