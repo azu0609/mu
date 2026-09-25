@@ -597,7 +597,7 @@ fn main() -> Result<()> {
     }
     if !args.is_empty() {
         println!(
-            "mu · µ · 無\n\nMU_BASE_URL=http://127.0.0.1:8317/v1 MU_API_KEY=… MU_MODEL=… mu\n\nType / in the TUI for commands.\nCtrl+O expand · Esc stop · Shift+Enter newline · PgUp/PgDn scroll"
+            "mu · µ · 無\n\nMU_BASE_URL=http://127.0.0.1:8317/v1 MU_API_KEY=… MU_MODEL=… MU_EFFORT=… MU_CONTEXT=… mu"
         );
         return Ok(());
     }
