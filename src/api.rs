@@ -121,7 +121,9 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
     let mut sse = Sse::default();
     let mut errors = vec![];
     let mut preview = vec![];
-    let base = env::var("MU_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8317/v1".into());
+    let base = env::var("MU_BASE_URL")
+        .or_else(|_| env::var("OPENAI_BASE_URL"))
+        .unwrap_or_else(|_| "http://127.0.0.1:8317/v1".into());
     let url = format!("{}/responses", base.trim_end_matches('/'));
     let mut curl = Command::new("curl");
     // Ignore ~/.curlrc: it must not silently alter the request or write model data to disk.
