@@ -23,6 +23,7 @@ pub enum Event {
     Delta(usize, String),
     Set(usize, Block),
     ToolOutput(usize, ToolOutput),
+    CacheMiss,
     Done(Result<Step>),
 }
 
@@ -38,6 +39,7 @@ pub struct Request {
     pub effort: Option<String>,
     pub input: Vec<Value>,
     pub cwd: PathBuf,
+    pub previous_usage: Usage,
 }
 
 impl Request {
@@ -224,6 +226,9 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
     let response = completed
         .ok_or_else(|| format!("Stream ended without response.completed: {}", String::from_utf8_lossy(&preview)))?;
     let usage = Usage::from_json(&response["usage"]);
+    if usage.cache_miss(request.previous_usage) {
+        let _ = tx.send(Event::CacheMiss);
+    }
     let output: Vec<Value> = response["output"].as_array().cloned().unwrap_or_else(|| items.into_values().collect());
     for (index, item) in output.iter().enumerate() {
         if let Some(block) = Block::from_item(item, false) {

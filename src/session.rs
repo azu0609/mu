@@ -16,6 +16,7 @@ pub enum Kind {
     Thought,
     Call,
     Notice,
+    Warning,
 }
 
 #[derive(Clone)]
@@ -193,6 +194,7 @@ impl Usage {
 pub enum Record {
     Item { item: Value },
     Attachment { label: String, path: PathBuf, text: String },
+    Notice { text: String },
     Tool(Tool),
     Node(Node),
     Cursor { node: Option<usize> },
@@ -201,7 +203,7 @@ pub enum Record {
 
 impl Record {
     fn is_entry(&self) -> bool {
-        matches!(self, Self::Item { .. } | Self::Attachment { .. } | Self::Tool(_))
+        matches!(self, Self::Item { .. } | Self::Attachment { .. } | Self::Notice { .. } | Self::Tool(_))
     }
 
     fn input(&self) -> Option<Value> {
@@ -210,6 +212,7 @@ impl Record {
             Self::Attachment { label, path, text } => {
                 json!({"role":"user", "content":format!("{label}: {}\n{text}", path.display())})
             }
+            Self::Notice { .. } => return None,
             Self::Tool(tool) => tool.item(),
             _ => return None,
         })
@@ -419,6 +422,7 @@ impl Session {
                         Record::Attachment { label, path, .. } => {
                             node.blocks.push(Block::new(Kind::Notice, format!("{label}: {}", path.display())))
                         }
+                        Record::Notice { text } => node.blocks.push(Block::new(Kind::Warning, text)),
                         Record::Tool(tool) => {
                             if let Some(block) = node
                                 .blocks

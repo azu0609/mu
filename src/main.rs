@@ -52,7 +52,8 @@ struct App {
     session: Session,
     editor: ui::Editor,
     live: Vec<Block>,
-    notices: Vec<Block>,
+    live_notice: Option<Block>,
+    feedback: Vec<Block>,
     queued: Vec<input::Message>,
     skills: Vec<skills::Skill>,
     completion: Option<input::Menu>,
@@ -70,10 +71,15 @@ struct App {
     title_status: ui::TitleStatus,
 }
 
+fn cache_miss_text() -> &'static str {
+    "Cache miss · previously cached prefix was not read"
+}
+
 impl App {
     fn reset_view(&mut self) {
         self.live.clear();
-        self.notices.clear();
+        self.live_notice = None;
+        self.feedback.clear();
         self.queued.clear();
         self.scroll = 0;
         self.scroll_layout = None;
@@ -101,9 +107,17 @@ impl App {
     }
 
     fn notice(&mut self, text: impl Into<String>) {
-        self.notices.push(Block::new(Kind::Notice, text));
-        if self.notices.len() > 20 {
-            self.notices.remove(0);
+        self.push_feedback(Kind::Notice, text);
+    }
+
+    fn warn(&mut self, text: impl Into<String>) {
+        self.push_feedback(Kind::Warning, text);
+    }
+
+    fn push_feedback(&mut self, kind: Kind, text: impl Into<String>) {
+        self.feedback.push(Block::new(kind, text));
+        if self.feedback.len() > 20 {
+            self.feedback.remove(0);
         }
     }
 
@@ -111,7 +125,7 @@ impl App {
         match self.session.save() {
             Ok(()) => true,
             Err(e) => {
-                self.notice(format!("Session not saved: {e}"));
+                self.warn(format!("Session not saved: {e}"));
                 false
             }
         }
@@ -125,6 +139,7 @@ impl App {
             return;
         }
         self.live.clear();
+        self.live_notice = None;
         self.scroll = 0;
         self.scroll_layout = None;
         let request = api::Request {
@@ -133,6 +148,7 @@ impl App {
             effort: self.session.model().effort.clone(),
             input: self.session.input(),
             cwd: self.session.header().cwd.clone(),
+            previous_usage: self.session.usage(),
         };
         let cancel = Arc::new(AtomicBool::new(false));
         let flag = cancel.clone();
@@ -157,11 +173,13 @@ impl App {
         let cancelled = w.cancel.load(Ordering::Relaxed);
         let _ = w.handle.join();
         match result {
-            Ok(step) => {
+            Ok(mut step) => {
+                // Keep the marker with this response, ahead of its output, not in transient UI feedback.
                 if step.usage.cache_miss(self.session.usage()) {
-                    self.notice("cache miss · previously cached prefix was not read");
+                    step.entries.insert(0, Record::Notice { text: cache_miss_text().into() });
                 }
                 self.live.clear();
+                self.live_notice = None;
                 self.session.push(step.entries, Some(step.usage));
                 let mut again = step.again;
                 if !cancelled && !self.quitting {
@@ -169,7 +187,7 @@ impl App {
                     self.drain_queue();
                 }
                 if cancelled {
-                    self.notice("Stopped. Tool side effects are not undone. Enter to continue.");
+                    self.warn("Stopped. Tool side effects are not undone. Enter to continue.");
                 }
                 if again && !cancelled && !self.quitting {
                     self.start();
@@ -189,8 +207,8 @@ impl App {
             }
             Err(e) => {
                 self.title_status = if cancelled { ui::TitleStatus::Ready } else { ui::TitleStatus::Failed };
-                self.notices.append(&mut self.live);
-                self.notice(e.to_string());
+                self.live_notice = None;
+                self.warn(e.to_string());
                 if !self.queued.is_empty() {
                     self.notice("Steering still queued. Send a message to retry, /new to discard.");
                 }
@@ -278,7 +296,7 @@ impl App {
             return;
         }
         if let Err(e) = self.send_input() {
-            self.notice(e.to_string());
+            self.warn(e.to_string());
         }
         self.scroll = 0;
         self.scroll_layout = None;
@@ -306,7 +324,7 @@ impl App {
             self.queued.push(message);
         }
         if self.worker.is_none() {
-            self.notices.clear();
+            self.feedback.clear();
             self.drain_queue();
             self.start();
         }
@@ -437,7 +455,7 @@ impl App {
                 Key::End => picker.selected = picker.entries.len().saturating_sub(1),
                 Key::Enter => {
                     if let Err(e) = self.select() {
-                        self.notice(e.to_string());
+                        self.warn(e.to_string());
                     }
                 }
                 _ => (),
@@ -542,13 +560,16 @@ impl App {
                             tool.output = output;
                         }
                     }
+                    api::Event::CacheMiss => {
+                        self.live_notice = Some(Block::new(Kind::Warning, cache_miss_text()));
+                    }
                     api::Event::Done(result) => self.finish(result),
                 }
                 dirty = true;
             }
             if let Some(result) = self.files.poll() {
                 if let Err(e) = result {
-                    self.notice(format!("File search: {e}"));
+                    self.warn(format!("File search: {e}"));
                 }
                 self.refresh_completion();
                 dirty = true;
@@ -642,7 +663,8 @@ fn main() -> Result<()> {
         files: input::FileSearch::default(),
         editor: ui::Editor::default(),
         live: vec![],
-        notices: vec![],
+        live_notice: None,
+        feedback: vec![],
         queued: vec![],
         worker: None,
         tx,

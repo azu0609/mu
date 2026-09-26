@@ -409,11 +409,14 @@ fn tool_lines(command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<L
 fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
     let (first_prefix, color, limit) = match block.kind {
         Kind::Call => return tool_lines(&block.text, block.tool.as_ref().unwrap(), width, expanded),
-        Kind::Notice => {
-            return wrap(&format!("! {}", clean(&block.text)), width)
-                .into_iter()
-                .map(|line| Line::new(line, Color::Yellow))
-                .collect();
+        Kind::Notice | Kind::Warning => {
+            let (marker, color) = if block.kind == Kind::Warning { ("!", Color::Yellow) } else { ("·", GRAY) };
+            let mut lines = vec![];
+            for (i, line) in wrap(&clean(&block.text), width.saturating_sub(4)).into_iter().enumerate() {
+                lines.push(Line::new(format!("  {} {line}", if i == 0 { marker } else { " " }), color));
+            }
+            lines.push(Line::new("", GRAY));
+            return lines;
         }
         Kind::User => ("› ", ACCENT, usize::MAX),
         Kind::Agent => ("  ", Color::Reset, usize::MAX),
@@ -513,7 +516,7 @@ impl Transcript {
     }
 
     fn dynamic_blocks<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = &'a Block> + 'a {
-        app.live.iter().chain(app.notices.iter()).chain(self.pending.iter())
+        app.live_notice.iter().chain(app.live.iter()).chain(app.feedback.iter()).chain(self.pending.iter())
     }
 
     fn blocks<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = &'a Block> + 'a {
