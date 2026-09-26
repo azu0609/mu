@@ -1,7 +1,4 @@
-use crate::{
-    Result, home,
-    skills::{Skill, instructions},
-};
+use crate::{Result, home, instructions, skills::Skill};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -304,7 +301,7 @@ impl Session {
             version: 1,
             id: unique_id(),
             title: String::new(),
-            instructions: instructions(&cwd, skills),
+            instructions: instructions::build(&cwd, skills),
             cwd,
             model,
         };

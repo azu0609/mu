@@ -81,19 +81,3 @@ fn skills_in(home: &Path, cwd: &Path) -> Vec<Skill> {
         })
         .collect()
 }
-
-pub fn instructions(cwd: &Path, skills: &[Skill]) -> String {
-    let mut s = "You are coding agent".to_string();
-    let ancestors: Vec<_> = cwd.ancestors().collect();
-    let project: Vec<_> = ancestors.iter().rev().filter_map(|p| fs::read_to_string(p.join("AGENTS.md")).ok()).collect();
-    if !project.is_empty() {
-        s.push_str("\n\nProject Instructions:\n");
-        s.push_str(&project.join("\n\n"));
-    }
-    let entries: Vec<_> = skills.iter().map(|s| format!("{}: {}", s.path.display(), s.description)).collect();
-    if !entries.is_empty() {
-        s.push_str("\n\nSkills:\n");
-        s.push_str(&entries.join("\n"));
-    }
-    s
-}

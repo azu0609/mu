@@ -2,6 +2,7 @@ mod api;
 mod commands;
 mod counts;
 mod input;
+mod instructions;
 mod process;
 mod session;
 mod skills;
