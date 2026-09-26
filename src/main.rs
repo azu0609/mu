@@ -67,6 +67,7 @@ struct App {
     scroll_layout: Option<ui::ScrollAnchor>,
     transcript_static: Option<ui::CachedLines>,
     quitting: bool,
+    title_status: ui::TitleStatus,
 }
 
 impl App {
@@ -77,6 +78,7 @@ impl App {
         self.scroll = 0;
         self.scroll_layout = None;
         self.transcript_static = None;
+        self.title_status = ui::TitleStatus::Ready;
     }
 
     fn drain_queue(&mut self) {
@@ -141,6 +143,7 @@ impl App {
             let _ = tx.send(api::Event::Done(result));
         });
         self.worker = Some(Worker { cancel, handle });
+        self.title_status = ui::TitleStatus::Ready;
     }
 
     fn stop(&mut self) {
@@ -173,8 +176,19 @@ impl App {
                 } else {
                     self.save();
                 }
+                if self.worker.is_none() {
+                    self.title_status = if cancelled {
+                        ui::TitleStatus::Ready
+                    } else if again && !self.quitting {
+                        // The next step could not start (for example, the session failed to save).
+                        ui::TitleStatus::Failed
+                    } else {
+                        ui::TitleStatus::Finished
+                    };
+                }
             }
             Err(e) => {
+                self.title_status = if cancelled { ui::TitleStatus::Ready } else { ui::TitleStatus::Failed };
                 self.notices.append(&mut self.live);
                 self.notice(e.to_string());
                 if !self.queued.is_empty() {
@@ -507,6 +521,7 @@ impl App {
 
     fn run(&mut self) -> Result<()> {
         let _terminal = ui::Terminal::enter()?;
+        let mut title = String::new();
         let mut dirty = true;
         loop {
             while let Ok(event) = self.rx.try_recv() {
@@ -542,6 +557,11 @@ impl App {
                 break;
             }
             if dirty {
+                let next = ui::title(self);
+                if next != title {
+                    ui::set_title(&next)?;
+                    title = next;
+                }
                 ui::draw(self)?;
                 dirty = false;
             }
@@ -633,6 +653,7 @@ fn main() -> Result<()> {
         scroll_layout: None,
         transcript_static: None,
         quitting: false,
+        title_status: ui::TitleStatus::Ready,
     };
     app.run()
 }

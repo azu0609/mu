@@ -50,7 +50,8 @@ fn restore() {
         DisableMouseCapture,
         DisableBracketedPaste,
         PopKeyboardEnhancementFlags,
-        LeaveAlternateScreen
+        LeaveAlternateScreen,
+        terminal::SetTitle("")
     );
     let _ = terminal::disable_raw_mode();
 }
@@ -59,6 +60,34 @@ impl Drop for Terminal {
     fn drop(&mut self) {
         restore();
     }
+}
+
+#[derive(Clone, Copy)]
+pub enum TitleStatus {
+    Ready,
+    Finished,
+    Failed,
+}
+
+pub fn title(app: &App) -> String {
+    let name = app.session.header().cwd.file_name().unwrap_or_else(|| app.session.header().cwd.as_os_str());
+    // OSC title strings must not contain terminal control characters (including ESC and BEL).
+    let name: String = name.to_string_lossy().chars().filter(|c| !c.is_control()).collect();
+    let prefix = if app.worker.is_some() {
+        "… "
+    } else {
+        match app.title_status {
+            TitleStatus::Ready => "",
+            TitleStatus::Finished => "✓ ",
+            TitleStatus::Failed => "! ",
+        }
+    };
+    format!("{prefix}mu · {name}")
+}
+
+pub fn set_title(title: &str) -> Result<()> {
+    execute!(io::stdout(), terminal::SetTitle(title))?;
+    Ok(())
 }
 
 #[derive(Default)]
