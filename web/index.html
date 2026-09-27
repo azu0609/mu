@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#f5f5f5" media="(prefers-color-scheme: light)">
+    <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
+    <title>Mu — a μ sized agent harness</title>
+    <meta name="description" content="Meet Mu, the μ sized agent harness for the rest of us.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Google+Sans+Flex:opsz,wght@6..144,1..1000&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <!-- Hover targets give CSS a coarse cursor position. -->
+    <div class="gaze-grid" aria-hidden="true">
+      <span></span><span></span><span></span>
+      <span></span><span></span><span></span>
+      <span></span><span></span><span></span>
+    </div>
+    <main class="page">
+      <section class="hero" aria-labelledby="intro-title">
+        <div class="avatar">
+          <svg viewBox="0 0 100 100" role="img" aria-label="Mu mascot">
+            <use href="avatar.svg#face"></use>
+            <use class="avatar-eyes" href="avatar.svg#eyes"></use>
+          </svg>
+        </div>
+        <h1 id="intro-title">Meet Mu,<br><span>a μ sized agent harness for the rest of us.</span></h1>
+        <div class="install" aria-label="Run with Nix: nix run github:azu0609/mu">
+          <img src="nixos-logomark-default-gradient-minimal.svg" alt="NixOS Logomark" class="install-icon">
+          <code>nix run github:azu0609/mu</code>
+        </div>
+      </section>
+
+      <section class="faq" aria-labelledby="faq-title">
+        <div class="faq-intro">
+          <h2 id="faq-title">FAQ</h2>
+          <p>Should you have any questions, please feel free to contact us through <a href="https://github.com/azu0609/mu">GitHub</a>.</p>
+        </div>
+        <div class="faq-list">
+          <details name="faq" open>
+            <summary><span>It depends on curl and ripgrep, fuck you mean μ sized?</span></summary>
+            <p>Agents <em>love</em> using curl and rg on their own. So, we’ve asked ourselves: <em>“why not use it in the harness too?”</em>, and the answer was it.</p>
+          </details>
+          <details name="faq">
+            <summary><span>How many tokens does it use?</span></summary>
+            <p>We aim for ~64 input tokens, with system instructions and tool definitions combined. The exact base input tokens may inflate significantly depending on your environment. <a href="https://github.com/azu0609/mu#faq">Learn More</a>.</p>
+          </details>
+          <details name="faq">
+            <summary><span>How am I supposed to use my Codex/Claude/Gemini subs?</span></summary>
+            <p>To keep code focused on the <em>harness</em>, we only implement a small subset of the stateless OpenAI Responses API. We recommend using <a href="https://github.com/router-for-me/CLIProxyAPI">CLIProxyAPI</a> and pointing mu to your CLIProxyAPI instance for such use cases.</p>
+          </details>
+          <details name="faq">
+            <summary><span>How do I use two providers without re-launching consistently?</span></summary>
+            <p><a href="https://github.com/router-for-me/CLIProxyAPI">CLIProxyAPI</a> can become a nearly transparent OpenAI Compatible API gateway (openai-compatibility for Chat Completions, codex-api-key for Responses API). Use that.</p>
+          </details>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
