@@ -49,12 +49,23 @@
             <p>We aim for ~64 input tokens, with system instructions and tool definitions combined. The exact base input tokens may inflate significantly depending on your environment. <a href="https://github.com/azu0609/mu#faq">Learn More</a>.</p>
           </details>
           <details name="faq">
-            <summary><span>How am I supposed to use my Codex/Claude/Gemini subs?</span></summary>
+            <summary><span>What features does it support?</span></summary>
+            <ul>
+              <li>Commands: <code>/copy</code>, <code>/model</code>, <code>/new</code>, <code>/quit</code>, <code>/resume</code> and <code>/tree</code>.</li>
+              <li>Model tools: <code>bash</code>, with a <code>view_image</code> command injected via <code>$PATH</code>.</li>
+              <li>Basic model context enhancements, such as <code>AGENTS.md</code> and skills are supported.</li>
+              <li>MCPs are explicitly <strong>not</strong> supported.</li>
+              <li>Compactions are <strong>not</strong> implemented. We do, however, intend to support it once we can figure a nice solution out. Stay tuned.</li>
+              <li>Subagents are <strong>not</strong> implemented. Instead, we recommend pairing mu with a terminal multiplexer. That way, you get to take full control over your agent regardless of if it's spawned by an agent or not, and it still works as a "subagent."</li>
+            </ul>
+          </details>
+          <details name="faq">
+            <summary><span>How am I supposed to use my Codex/Claude/Gemini subscription?</span></summary>
             <p>To keep code focused on the <em>harness</em>, we only implement a small subset of the stateless OpenAI Responses API. We recommend using <a href="https://github.com/router-for-me/CLIProxyAPI">CLIProxyAPI</a> and pointing mu to your CLIProxyAPI instance for such use cases.</p>
           </details>
           <details name="faq">
-            <summary><span>How do I use two providers without re-launching consistently?</span></summary>
-            <p><a href="https://github.com/router-for-me/CLIProxyAPI">CLIProxyAPI</a> can become a nearly transparent OpenAI Compatible API gateway (openai-compatibility for Chat Completions, codex-api-key for Responses API). Use that.</p>
+            <summary><span>Can I use more than one provider?</span></summary>
+            <p>Yes. Use gateway of your choice. <a href="https://github.com/router-for-me/CLIProxyAPI">CLIProxyAPI</a> can also become a near-transparent OpenAI Compatible API gateway (openai-compatibility for Chat Completions, codex-api-key for Responses API).</p>
           </details>
         </div>
       </section>

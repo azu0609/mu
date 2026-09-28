@@ -64,7 +64,7 @@ body {
   padding-block: 12rem 7.5rem;
 }
 
-.page :is(h1, h2, p, summary, a, .install) { pointer-events: auto; }
+.page :is(h1, h2, p, ul, summary, a, .install) { pointer-events: auto; }
 
 .avatar {
   display: grid;
@@ -94,7 +94,7 @@ body:has(.gaze-grid > :nth-child(-n + 3):hover) { --eye-y: -3px; }
 body:has(.gaze-grid > :nth-child(n + 7):hover) { --eye-y: 3px; }
 
 /* Content stays selectable/clickable, and still draws the gaze downward. */
-body:has(.page :is(h1, h2, p, summary, .install):hover) { --eye-y: 3px; }
+body:has(.page :is(h1, h2, p, ul, summary, .install):hover) { --eye-y: 3px; }
 body:has(.page :is(.install, .faq-list):hover) { --eye-x: 3px; }
 
 h1, h2, p { margin: 0; }
@@ -214,11 +214,20 @@ h1 span { color: var(--muted); }
   }
 }
 
-.faq-list p {
+.faq-list :is(p, ul) {
   margin-top: 0.5rem;
   color: var(--muted);
   font-size: 1rem;
   line-height: 1.25;
+}
+
+.faq-list ul {
+  margin-bottom: 0;
+  padding-left: 1.25rem;
+}
+
+.faq-list li + li {
+  margin-top: 0.25rem;
 }
 
 @media (prefers-reduced-motion: reduce) {
