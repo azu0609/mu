@@ -32,6 +32,8 @@ struct Capture {
     head: Vec<u8>,
     tail: VecDeque<u8>,
     total: usize,
+    omitted_newlines: usize,
+    omitted_last: u8,
     log: Option<(PathBuf, BufWriter<fs::File>)>,
 }
 
@@ -53,14 +55,14 @@ impl Capture {
         let n = bytes.len().min(PREVIEW_LIMIT / 2 - self.head.len());
         self.head.extend_from_slice(&bytes[..n]);
         let rest = &bytes[n..];
-        if rest.len() >= PREVIEW_LIMIT / 2 {
-            self.tail.clear();
-            self.tail.extend(&rest[rest.len() - PREVIEW_LIMIT / 2..]);
-        } else {
-            let excess = (self.tail.len() + rest.len()).saturating_sub(PREVIEW_LIMIT / 2);
-            self.tail.drain(..excess);
-            self.tail.extend(rest);
+        let excess = (self.tail.len() + rest.len()).saturating_sub(PREVIEW_LIMIT / 2);
+        let from_tail = excess.min(self.tail.len());
+        let from_rest = excess - from_tail;
+        for byte in self.tail.drain(..from_tail).chain(rest[..from_rest].iter().copied()) {
+            self.omitted_newlines += usize::from(byte == b'\n');
+            self.omitted_last = byte;
         }
+        self.tail.extend(&rest[from_rest..]);
         Ok(())
     }
 
@@ -75,7 +77,18 @@ impl Capture {
         let truncated = self.total > PREVIEW_LIMIT;
         let mut bytes = self.head.clone();
         if truncated {
-            bytes.extend_from_slice(format!("\n[… {} bytes omitted …]\n", self.total - PREVIEW_LIMIT).as_bytes());
+            // Count an unfinished line too: even output without newlines can
+            // lose part of a line between the retained head and tail.
+            let lines = self.omitted_newlines + usize::from(self.omitted_last != b'\n');
+            bytes.extend_from_slice(
+                format!(
+                    "\n[… {} bytes ({} {}) omitted …]\n",
+                    self.total - PREVIEW_LIMIT,
+                    lines,
+                    if lines == 1 { "line" } else { "lines" }
+                )
+                .as_bytes(),
+            );
         }
         bytes.extend(&self.tail);
         ToolOutput {
