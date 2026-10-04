@@ -1,6 +1,7 @@
 use crate::{
-    App, Result, counts,
+    App, Result, counts, markdown,
     session::{Block, Kind, Tool, ToolStatus},
+    text::{ACCENT, GRAY, Line, Span, Style, clean, clip, wrap},
 };
 use crossterm::{
     cursor,
@@ -14,9 +15,6 @@ use crossterm::{
 };
 use std::io::{self, Write};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-
-const GRAY: Color = Color::DarkGrey;
-const ACCENT: Color = Color::Cyan;
 
 pub struct Terminal;
 
@@ -232,77 +230,32 @@ impl Editor {
     }
 }
 
-// Never replay terminal control sequences supplied by a tool or a model.
-pub fn clean(text: &str) -> String {
-    let mut out = String::new();
-    let mut chars = text.chars();
-    while let Some(ch) = chars.next() {
-        if ch == '\x1b' {
-            match chars.next() {
-                Some('[') => {
-                    for c in chars.by_ref() {
-                        if ('@'..='~').contains(&c) {
-                            break;
-                        }
-                    }
-                }
-                Some(']') | Some('P') | Some('_') | Some('^') => {
-                    let mut esc = false;
-                    for c in chars.by_ref() {
-                        if c == '\x07' || (esc && c == '\\') {
-                            break;
-                        }
-                        esc = c == '\x1b';
-                    }
-                }
-                _ => (),
-            }
-        } else if ch == '\t' {
-            out.push_str("    ");
-        } else if ch == '\n' || !ch.is_control() {
-            out.push(ch);
-        }
-    }
-    out
-}
-
-pub fn wrap(text: &str, width: usize) -> Vec<String> {
-    let width = width.max(1);
-    let mut lines = vec![];
-    for line in text.split('\n') {
-        let mut current = String::new();
-        let mut col = 0;
-        for ch in line.chars() {
-            let w = ch.width().unwrap_or(0);
-            if col + w > width && !current.is_empty() {
-                lines.push(current);
-                current = String::new();
-                col = 0;
-            }
-            if w <= width {
-                current.push(ch);
-                col += w;
-            }
-        }
-        lines.push(current);
-    }
-    lines
-}
-
-fn clip(s: &str, width: usize) -> String {
-    wrap(&clean(s).replace('\n', " "), width).into_iter().next().unwrap_or_default()
-}
-
-struct Line {
-    text: String,
-    color: Color,
-    bullet: Option<Color>,
-    italic: bool,
-}
-
 impl Line {
-    fn new(text: impl Into<String>, color: Color) -> Self {
-        Self { text: text.into(), color, bullet: None, italic: false }
+    fn print(&self, out: &mut impl Write, width: usize) -> Result<()> {
+        let mut remaining = width;
+        for span in &self.spans {
+            if remaining == 0 {
+                break;
+            }
+            let text = clean(&span.text).replace('\n', " ");
+            let visible = clip(&text, remaining);
+            queue!(out, SetAttribute(Attribute::Reset), SetForegroundColor(span.style.color))?;
+            if span.style.bold {
+                queue!(out, SetAttribute(Attribute::Bold))?;
+            }
+            if span.style.italic {
+                queue!(out, SetAttribute(Attribute::Italic))?;
+            }
+            if span.style.underlined {
+                queue!(out, SetAttribute(Attribute::Underlined))?;
+            }
+            queue!(out, Print(&visible))?;
+            remaining = remaining.saturating_sub(visible.width());
+            if visible.len() < text.len() {
+                break;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -357,12 +310,9 @@ fn tool_lines(command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<L
     };
     let mut result = vec![];
     for (i, line) in command.into_iter().enumerate() {
-        result.push(Line {
-            text: format!("{}{line}", if i == 0 { "● " } else { "  " }),
-            color: Color::Reset,
-            bullet: (i == 0).then_some(color),
-            italic: false,
-        });
+        let mut rendered = Line::new(if i == 0 { "●" } else { " " }, if i == 0 { color } else { Color::Reset });
+        rendered.push(&format!(" {line}"), Style::new(Color::Reset));
+        result.push(rendered);
     }
     let output = clean(&tool.output.text);
     let output = output.trim_end_matches('\n');
@@ -422,6 +372,14 @@ fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
         Kind::Agent => ("  ", Color::Reset, usize::MAX),
         Kind::Thought => ("  ", GRAY, 2),
     };
+    if block.kind == Kind::Agent {
+        let mut lines = markdown::render(&block.text, width.saturating_sub(2));
+        for line in &mut lines {
+            line.spans.insert(0, Span { text: "  ".into(), style: Style::new(Color::Reset) });
+        }
+        lines.push(Line::new("", GRAY));
+        return lines;
+    }
     let text = clean(&block.text);
     if text.is_empty() && block.kind == Kind::Thought {
         return vec![];
@@ -432,30 +390,13 @@ fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
         lines.truncate(limit);
     }
     let mut result = vec![];
-    let mut code = false;
+    let style = Style { italic: block.kind == Kind::Thought, ..Style::new(color) };
     for (i, line) in lines.into_iter().enumerate() {
-        let trimmed = line.trim_start();
-        let md_color = if block.kind == Kind::Agent {
-            if trimmed.starts_with("```") {
-                code = !code;
-                GRAY
-            } else if code || trimmed.starts_with('#') || trimmed.starts_with("> ") {
-                ACCENT
-            } else {
-                color
-            }
-        } else {
-            color
-        };
         let prefix = if i == 0 { first_prefix } else { "  " };
-        let mut rendered = Line::new(format!("{prefix}{line}"), md_color);
-        rendered.italic = block.kind == Kind::Thought;
-        result.push(rendered);
+        result.push(Line::styled(format!("{prefix}{line}"), style));
     }
     if collapsed {
-        let mut line = Line::new("  … Ctrl+O to expand", GRAY);
-        line.italic = block.kind == Kind::Thought;
-        result.push(line);
+        result.push(Line::styled("  … Ctrl+O to expand", style));
     }
     result.push(Line::new("", GRAY));
     result
@@ -612,25 +553,13 @@ pub fn draw(app: &mut App) -> Result<()> {
     for row in 0..transcript_height {
         queue!(out, cursor::MoveTo(0, row as u16), Clear(ClearType::CurrentLine))?;
         if let Some(line) = lines.get(row) {
-            let text = clip(&line.text, width.saturating_sub(1));
-            queue!(out, SetAttribute(if line.italic { Attribute::Italic } else { Attribute::NoItalic }))?;
-            if let Some(color) = line.bullet {
-                queue!(
-                    out,
-                    SetForegroundColor(color),
-                    Print("●"),
-                    SetForegroundColor(line.color),
-                    Print(&text["●".len()..])
-                )?;
-            } else {
-                queue!(out, SetForegroundColor(line.color), Print(text))?;
-            }
+            line.print(&mut out, width.saturating_sub(1))?;
         }
     }
     if app.picker.is_none()
         && let Some(menu) = &app.completion
     {
-        queue!(out, SetAttribute(Attribute::NoItalic))?;
+        queue!(out, SetAttribute(Attribute::Reset))?;
         let height = menu.entries.len().min(7).min(transcript_height);
         let top = transcript_height - height;
         let start = (menu.selected + 1).saturating_sub(height);
@@ -644,7 +573,7 @@ pub fn draw(app: &mut App) -> Result<()> {
     }
     queue!(
         out,
-        SetAttribute(Attribute::NoItalic),
+        SetAttribute(Attribute::Reset),
         cursor::MoveTo(0, transcript_height as u16),
         SetForegroundColor(GRAY),
         Clear(ClearType::CurrentLine),

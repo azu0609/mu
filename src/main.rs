@@ -3,9 +3,11 @@ mod commands;
 mod counts;
 mod input;
 mod instructions;
+mod markdown;
 mod process;
 mod session;
 mod skills;
+mod text;
 mod tools;
 mod ui;
 
