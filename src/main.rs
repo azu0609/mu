@@ -48,6 +48,16 @@ struct Picker {
     selected: usize,
 }
 
+fn cycle_selection(selected: usize, len: usize, up: bool) -> usize {
+    if len == 0 {
+        0
+    } else if up {
+        selected.checked_sub(1).unwrap_or(len - 1)
+    } else {
+        (selected + 1) % len
+    }
+}
+
 struct App {
     session: Session,
     editor: ui::Editor,
@@ -447,9 +457,12 @@ impl App {
         if let Some(picker) = &mut self.picker {
             match key.code {
                 Key::Esc => self.picker = None,
-                Key::Up | Key::Char('k') => picker.selected = picker.selected.saturating_sub(1),
-                Key::Down | Key::Char('j') => {
-                    picker.selected = (picker.selected + 1).min(picker.entries.len().saturating_sub(1))
+                Key::Up | Key::Down | Key::Char('k' | 'j') => {
+                    picker.selected = cycle_selection(
+                        picker.selected,
+                        picker.entries.len(),
+                        matches!(key.code, Key::Up | Key::Char('k')),
+                    );
                 }
                 Key::Home => picker.selected = 0,
                 Key::End => picker.selected = picker.entries.len().saturating_sub(1),
@@ -469,11 +482,7 @@ impl App {
         if let Some(menu) = &mut self.completion {
             match key.code {
                 Key::Up | Key::Down if !menu.entries.is_empty() => {
-                    menu.selected = if key.code == Key::Up {
-                        menu.selected.saturating_sub(1)
-                    } else {
-                        (menu.selected + 1).min(menu.entries.len().saturating_sub(1))
-                    };
+                    menu.selected = cycle_selection(menu.selected, menu.entries.len(), key.code == Key::Up);
                     menu.explicit = true;
                     return;
                 }
