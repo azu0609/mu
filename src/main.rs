@@ -1,5 +1,6 @@
 mod api;
 mod commands;
+mod config;
 mod counts;
 mod input;
 mod instructions;
@@ -660,9 +661,9 @@ fn main() -> Result<()> {
     let session = Session::new(
         cwd,
         Model {
-            name: env::var("MU_MODEL").unwrap_or_else(|_| "gpt-6-luna".into()),
-            effort: Some(env::var("MU_EFFORT").unwrap_or_else(|_| "xhigh".into())),
-            context: env::var("MU_CONTEXT").ok().and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(272_000),
+            name: config::var("MU_MODEL")?.unwrap_or_else(|| "gpt-6-luna".into()),
+            effort: Some(config::var("MU_EFFORT")?.unwrap_or_else(|| "xhigh".into())),
+            context: config::var("MU_CONTEXT")?.and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(272_000),
         },
         &skills,
     );

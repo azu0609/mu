@@ -1,12 +1,11 @@
 use crate::{
-    Result, process,
+    Result, config, process,
     session::{Block, Kind, Record, ToolOutput, ToolStatus, Usage},
     tools,
 };
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
-    env,
     path::PathBuf,
     process::Command,
     sync::{
@@ -123,9 +122,9 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
     let mut sse = Sse::default();
     let mut errors = vec![];
     let mut preview = vec![];
-    let base = env::var("MU_BASE_URL")
-        .or_else(|_| env::var("OPENAI_BASE_URL"))
-        .unwrap_or_else(|_| "http://127.0.0.1:8317/v1".into());
+    let base = config::var("MU_BASE_URL")?
+        .or(config::var("OPENAI_BASE_URL")?)
+        .unwrap_or_else(|| "http://127.0.0.1:8317/v1".into());
     let url = format!("{}/responses", base.trim_end_matches('/'));
     let mut curl = Command::new("curl");
     // Ignore ~/.curlrc: it must not silently alter the request or write model data to disk.
@@ -148,7 +147,7 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
         "--url",
         &url,
     ]);
-    if let Ok(key) = env::var("MU_API_KEY").or_else(|_| env::var("OPENAI_API_KEY")) {
+    if let Some(key) = config::var("MU_API_KEY")?.or(config::var("OPENAI_API_KEY")?) {
         if key.contains(['\r', '\n']) {
             return Err("API key contains a newline".into());
         }
