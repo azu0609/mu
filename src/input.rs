@@ -1,9 +1,14 @@
-use crate::{Result, commands, process, session::Record, skills::Skill};
+use crate::{
+    Result, commands, process,
+    session::{Record, unique_id},
+    skills::Skill,
+};
 use std::{
     collections::HashSet,
     env, fs,
-    io::Read,
+    io::{Read, Write},
     ops::Range,
+    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
     process::Command,
     sync::{
@@ -13,6 +18,44 @@ use std::{
     thread,
     time::Duration,
 };
+
+struct PromptTemp(PathBuf);
+
+impl Drop for PromptTemp {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+pub fn edit(text: &str, cwd: &Path) -> Result<String> {
+    let editor = env::var("VISUAL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| env::var("EDITOR").ok().filter(|s| !s.trim().is_empty()))
+        .unwrap_or_else(|| "vi".into());
+    let dir = env::temp_dir().canonicalize()?.join(format!("mu-prompt-{}", unique_id()));
+    fs::DirBuilder::new().mode(0o700).create(&dir)?;
+    let temp = PromptTemp(dir);
+    let path = temp.0.join("PROMPT_EDITMSG");
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?;
+    file.write_all(text.as_bytes())?;
+    drop(file);
+
+    // Let editor settings contain arguments and quoting, but pass the filename
+    // separately so even paths containing shell metacharacters are safe.
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(format!("exec {editor} \"$@\""))
+        .arg("mu-editor")
+        .arg(&path)
+        .current_dir(cwd)
+        .status()
+        .map_err(|e| format!("Could not launch editor ({editor}): {e}"))?;
+    if !status.success() {
+        return Err(format!("Editor ({editor}) exited with {status}").into());
+    }
+    fs::read_to_string(&path).map_err(|e| format!("Could not read edited prompt: {e}").into())
+}
 
 pub struct Message {
     pub text: String,

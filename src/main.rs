@@ -549,8 +549,19 @@ impl App {
         }
     }
 
+    fn edit_prompt(&mut self, terminal: &mut ui::Terminal) -> Result<()> {
+        match terminal.suspend(|| input::edit(&self.editor.text(), &self.session.header().cwd))? {
+            Ok(text) => {
+                self.editor.clear();
+                self.editor.insert(&text);
+            }
+            Err(e) => self.warn(format!("Prompt unchanged: {e}")),
+        }
+        Ok(())
+    }
+
     fn run(&mut self) -> Result<()> {
-        let _terminal = ui::Terminal::enter()?;
+        let mut terminal = ui::Terminal::enter()?;
         let mut title = String::new();
         let mut dirty = true;
         loop {
@@ -605,6 +616,15 @@ impl App {
             }))? {
                 let before = (self.editor.text(), self.editor.cursor);
                 match event::read()? {
+                    Input::Key(k)
+                        if k.kind != KeyEventKind::Release
+                            && k.modifiers.contains(Mod::CONTROL)
+                            && k.code == Key::Char('g')
+                            && self.picker.is_none() =>
+                    {
+                        self.edit_prompt(&mut terminal)?;
+                        title.clear();
+                    }
                     Input::Key(k) => self.key(k),
                     Input::Paste(s) if self.picker.is_none() => self.editor.insert(&s),
                     Input::Mouse(m) => match m.kind {

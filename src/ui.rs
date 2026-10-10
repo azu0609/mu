@@ -25,8 +25,20 @@ impl Terminal {
             restore();
             old(info);
         }));
+        let mut guard = Self;
+        guard.resume()?;
+        Ok(guard)
+    }
+
+    pub fn suspend<T>(&mut self, run: impl FnOnce() -> T) -> Result<T> {
+        restore();
+        let result = run();
+        self.resume()?;
+        Ok(result)
+    }
+
+    fn resume(&mut self) -> Result<()> {
         terminal::enable_raw_mode()?;
-        let guard = Self;
         execute!(
             io::stdout(),
             EnterAlternateScreen,
@@ -35,7 +47,7 @@ impl Terminal {
             PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
             cursor::Hide
         )?;
-        Ok(guard)
+        Ok(())
     }
 }
 
@@ -437,7 +449,7 @@ impl Transcript {
         Self {
             welcome: Block::new(
                 Kind::Notice,
-                "mu · escape to interrupt · / for commands & skills · ctrl+o to expand/collapse",
+                "mu · escape to interrupt · / for commands & skills · ctrl+o to expand/collapse · ctrl+g to edit prompt",
             ),
             path: app.session.path(),
             pending: app
