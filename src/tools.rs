@@ -1,8 +1,7 @@
 use crate::{
-    Result, process,
+    Result, image, process,
     session::{ToolOutput, ToolStatus, unique_id},
 };
-use base64::{Engine, engine::general_purpose::STANDARD};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -17,7 +16,6 @@ use std::{
 };
 
 const PREVIEW_LIMIT: usize = 64 * 1024;
-const IMAGE_LIMIT: u64 = 20 * 1024 * 1024;
 
 pub struct BashResult {
     pub output: ToolOutput,
@@ -119,7 +117,7 @@ impl Drop for Temp {
 pub fn view_image(path: &Path) -> Result<()> {
     let manifest = env::var_os("MU_IMAGES").ok_or("view_image is only available inside mu's bash tool")?;
     let path = path.canonicalize()?;
-    if fs::metadata(&path)?.len() > IMAGE_LIMIT {
+    if fs::metadata(&path)?.len() > image::LIMIT {
         return Err("Image exceeds 20 MiB".into());
     }
     let mut line = serde_json::to_vec(&path)?;
@@ -127,27 +125,6 @@ pub fn view_image(path: &Path) -> Result<()> {
     fs::OpenOptions::new().create(true).append(true).open(manifest)?.write_all(&line)?;
     println!("Image queued: {}", path.display());
     Ok(())
-}
-
-fn image(path: &Path) -> Result<Value> {
-    use std::io::Read;
-    let mut bytes = vec![];
-    fs::File::open(path)?.take(IMAGE_LIMIT + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > IMAGE_LIMIT {
-        return Err("Image exceeds 20 MiB".into());
-    }
-    let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
-        "image/png"
-    } else if bytes.starts_with(b"\xff\xd8\xff") {
-        "image/jpeg"
-    } else if bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a") {
-        "image/gif"
-    } else if bytes.starts_with(b"RIFF") && bytes.get(8..12) == Some(b"WEBP") {
-        "image/webp"
-    } else {
-        return Err("Expected PNG, JPEG, GIF or WebP".into());
-    };
-    Ok(json!({"type":"input_image", "image_url": format!("data:{mime};base64,{}", STANDARD.encode(bytes))}))
 }
 
 pub fn bash(
@@ -213,7 +190,7 @@ pub fn bash(
         for line in BufReader::new(file.take(64 * 1024)).lines().take(8) {
             let result = (|| -> Result<(PathBuf, Value)> {
                 let path: PathBuf = serde_json::from_str(&line?)?;
-                let value = image(&path)?;
+                let value = image::read(&path)?;
                 Ok((path, value))
             })();
             match result {

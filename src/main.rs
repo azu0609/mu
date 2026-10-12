@@ -2,6 +2,7 @@ mod api;
 mod commands;
 mod config;
 mod counts;
+mod image;
 mod input;
 mod instructions;
 mod markdown;

@@ -1,5 +1,5 @@
 use crate::{
-    Result, commands, process,
+    Result, commands, image, process,
     session::{Record, unique_id},
     skills::Skill,
 };
@@ -114,53 +114,87 @@ fn path(cwd: &Path, name: &str) -> PathBuf {
     cwd.join(name)
 }
 
-fn read_text(path: &Path) -> Result<String> {
-    const LIMIT: u64 = 1024 * 1024;
+const TEXT_LIMIT: u64 = 1024 * 1024;
+const CONTEXT_LIMIT: usize = 4 * 1024 * 1024;
+const IMAGE_COUNT_LIMIT: usize = 8;
+
+fn read_file(path: &Path, limit: u64) -> Result<Vec<u8>> {
     if !fs::metadata(path)?.is_file() {
         return Err(format!("{} is not a regular file", path.display()).into());
     }
     let mut bytes = vec![];
-    fs::File::open(path)?.take(LIMIT + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > LIMIT {
-        return Err(format!("{} exceeds 1 MiB", path.display()).into());
+    fs::File::open(path)?.take(limit + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > limit {
+        return Err(format!("{} exceeds {} MiB", path.display(), limit / (1024 * 1024)).into());
+    }
+    Ok(bytes)
+}
+
+fn text_content(bytes: Vec<u8>) -> Result<String> {
+    if bytes.len() as u64 > TEXT_LIMIT {
+        return Err("Text file exceeds 1 MiB".into());
     }
     if bytes.contains(&0) {
-        return Err(format!("{} is binary; @ mentions accept text files", path.display()).into());
+        return Err("Expected text or a PNG, JPEG, GIF or WebP image".into());
     }
     Ok(String::from_utf8(bytes)?)
+}
+
+fn read_attachment(path: PathBuf) -> Result<Record> {
+    let bytes = read_file(&path, image::LIMIT)?;
+    if let Some(image) = image::content(&bytes) {
+        return Ok(Record::ImageAttachment { path, image });
+    }
+    Ok(Record::Attachment { label: "File".into(), path, text: text_content(bytes)? })
 }
 
 pub fn prepare(text: String, cwd: &Path, skill: Option<&Skill>) -> Result<Message> {
     let mut size = text.len();
     let mut snapshots = vec![];
     let mut seen = HashSet::new();
-    // (label, path, keep): skills keep the discovered path so the model sees the same
-    // possibly symlinked path as in the instructions; @ file mentions are shown resolved.
-    let mut attachments: Vec<(String, PathBuf, bool)> = vec![];
     if let Some(skill) = skill {
-        attachments.push((format!("Skill: /{}", skill.name), skill.path.clone(), true));
-    }
-    for mention in mentions(&text) {
-        if !mention.closed {
-            return Err("Unclosed @\"file name\" mention".into());
-        }
-        if mention.path.is_empty() {
-            continue;
-        }
-        attachments.push(("File".into(), path(cwd, &mention.path), false));
-    }
-    for (kind, path, keep) in attachments {
-        let canonical = path.canonicalize().map_err(|e| format!("{}: {e}", path.display()))?;
-        if !seen.insert(canonical.clone()) {
-            continue;
-        }
-        let body = read_text(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let shown = if keep { path } else { canonical };
-        size += body.len() + kind.len() + shown.as_os_str().len() + 5;
-        if size > 4 * 1024 * 1024 {
+        let canonical = skill.path.canonicalize().map_err(|e| format!("{}: {e}", skill.path.display()))?;
+        let body =
+            text_content(read_file(&skill.path, TEXT_LIMIT)?).map_err(|e| format!("{}: {e}", skill.path.display()))?;
+        let label = format!("Skill: /{}", skill.name);
+        size += body.len() + label.len() + skill.path.as_os_str().len() + 5;
+        if size > CONTEXT_LIMIT {
             return Err("Attached context exceeds 4 MiB".into());
         }
-        snapshots.push(Record::Attachment { label: kind, path: shown, text: body });
+        seen.insert(canonical);
+        // Keep the discovered (possibly symlinked) skill path used in the instructions.
+        snapshots.push(Record::Attachment { label, path: skill.path.clone(), text: body });
+    }
+    let mut images = 0;
+    // Mentions are optional context; a typo or unreadable file must not prevent sending.
+    for mention in mentions(&text).into_iter().filter(|m| m.closed && !m.path.is_empty()) {
+        let Ok(canonical) = path(cwd, &mention.path).canonicalize() else {
+            continue;
+        };
+        if seen.contains(&canonical) {
+            continue;
+        }
+        let Ok(attachment) = read_attachment(canonical.clone()) else {
+            continue;
+        };
+        match &attachment {
+            Record::Attachment { label, path, text } => {
+                let added = text.len() + label.len() + path.as_os_str().len() + 5;
+                if size + added > CONTEXT_LIMIT {
+                    continue;
+                }
+                size += added;
+            }
+            Record::ImageAttachment { .. } => {
+                if images >= IMAGE_COUNT_LIMIT {
+                    continue;
+                }
+                images += 1;
+            }
+            _ => unreachable!(),
+        }
+        seen.insert(canonical);
+        snapshots.push(attachment);
     }
     Ok(Message { text, attachments: snapshots })
 }

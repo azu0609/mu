@@ -194,6 +194,7 @@ impl Usage {
 pub enum Record {
     Item { item: Value },
     Attachment { label: String, path: PathBuf, text: String },
+    ImageAttachment { path: PathBuf, image: Value },
     Notice { text: String },
     Tool(Tool),
     Node(Node),
@@ -203,7 +204,14 @@ pub enum Record {
 
 impl Record {
     fn is_entry(&self) -> bool {
-        matches!(self, Self::Item { .. } | Self::Attachment { .. } | Self::Notice { .. } | Self::Tool(_))
+        matches!(
+            self,
+            Self::Item { .. }
+                | Self::Attachment { .. }
+                | Self::ImageAttachment { .. }
+                | Self::Notice { .. }
+                | Self::Tool(_)
+        )
     }
 
     fn input(&self) -> Option<Value> {
@@ -211,6 +219,9 @@ impl Record {
             Self::Item { item } => item.clone(),
             Self::Attachment { label, path, text } => {
                 json!({"role":"user", "content":format!("{label}: {}\n{text}", path.display())})
+            }
+            Self::ImageAttachment { path, image } => {
+                json!({"role":"user", "content":[{"type":"input_text", "text":format!("Image: {}", path.display())}, image]})
             }
             Self::Notice { .. } => return None,
             Self::Tool(tool) => tool.item(),
@@ -421,6 +432,9 @@ impl Session {
                         Record::Item { item } => node.blocks.extend(Block::from_item(item, false)),
                         Record::Attachment { label, path, .. } => {
                             node.blocks.push(Block::new(Kind::Notice, format!("{label}: {}", path.display())))
+                        }
+                        Record::ImageAttachment { path, .. } => {
+                            node.blocks.push(Block::new(Kind::Notice, format!("Image: {}", path.display())))
                         }
                         Record::Notice { text } => node.blocks.push(Block::new(Kind::Warning, text)),
                         Record::Tool(tool) => {
