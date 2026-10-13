@@ -9,8 +9,11 @@ pub fn build(cwd: &Path, skills: &[Skill]) -> String {
         instructions.push_str("\n\nProject Instructions:\n");
         instructions.push_str(&project.join("\n\n"));
     }
-    let entries: Vec<_> =
-        skills.iter().map(|skill| format!("{}: {}", skill.path.display(), skill.description)).collect();
+    let entries: Vec<_> = skills
+        .iter()
+        .filter(|skill| !skill.disable_model_invocation)
+        .map(|skill| format!("{}: {}", skill.path.display(), skill.description))
+        .collect();
     if !entries.is_empty() {
         instructions.push_str("\n\nSkills:\n");
         instructions.push_str(&entries.join("\n"));

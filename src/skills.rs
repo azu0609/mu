@@ -52,6 +52,7 @@ pub struct Skill {
     pub name: String,
     pub path: PathBuf,
     pub description: String,
+    pub disable_model_invocation: bool,
 }
 
 pub fn skills(cwd: &Path) -> Vec<Skill> {
@@ -77,7 +78,9 @@ fn skills_in(home: &Path, cwd: &Path) -> Vec<Skill> {
             let name = frontmatter(&text, "name").unwrap_or_else(|| {
                 path.parent().unwrap().file_name().unwrap_or_default().to_string_lossy().into_owned()
             });
-            Some(Skill { name, description: frontmatter(&text, "description")?, path })
+            let disable_model_invocation =
+                frontmatter(&text, "disable-model-invocation").is_some_and(|v| v.eq_ignore_ascii_case("true"));
+            Some(Skill { name, description: frontmatter(&text, "description")?, path, disable_model_invocation })
         })
         .collect()
 }
