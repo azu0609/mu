@@ -11,7 +11,6 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::Sender,
     },
     thread,
     time::Duration,
@@ -23,8 +22,10 @@ pub enum Event {
     Set(usize, Block),
     ToolOutput(usize, ToolOutput),
     CacheMiss,
-    Done(Result<Step>),
 }
+
+// Called from the request thread and from every tool thread.
+pub type Emit<'a> = &'a (dyn Fn(Event) + Sync);
 
 pub struct Step {
     pub entries: Vec<Record>,
@@ -58,20 +59,20 @@ impl Request {
     }
 }
 
-// App owns the rendered blocks; API output indices map to stable UI slots.
+// The agent owns the rendered blocks; API output indices map to stable slots.
 struct Live<'a> {
-    tx: &'a Sender<Event>,
+    emit: Emit<'a>,
     slots: BTreeMap<usize, usize>,
 }
 
 impl Live<'_> {
     fn upsert(&mut self, index: usize, block: Block) {
         if let Some(&slot) = self.slots.get(&index) {
-            let _ = self.tx.send(Event::Set(slot, block));
+            (self.emit)(Event::Set(slot, block));
         } else {
             let slot = self.slots.len();
             self.slots.insert(index, slot);
-            let _ = self.tx.send(Event::Push(block));
+            (self.emit)(Event::Push(block));
         }
     }
 
@@ -79,7 +80,7 @@ impl Live<'_> {
         if !self.slots.contains_key(&index) {
             self.upsert(index, Block::new(kind, ""));
         }
-        let _ = self.tx.send(Event::Delta(self.slots[&index], text.into()));
+        (self.emit)(Event::Delta(self.slots[&index], text.into()));
     }
 }
 
@@ -115,8 +116,8 @@ impl Sse {
     }
 }
 
-pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Result<Step> {
-    let mut live = Live { tx, slots: BTreeMap::new() };
+pub fn step(request: Request, cancel: Arc<AtomicBool>, emit: Emit) -> Result<Step> {
+    let mut live = Live { emit, slots: BTreeMap::new() };
     let mut items = BTreeMap::new();
     let mut completed = None;
     let mut sse = Sse::default();
@@ -226,7 +227,7 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
         .ok_or_else(|| format!("Stream ended without response.completed: {}", String::from_utf8_lossy(&preview)))?;
     let usage = Usage::from_json(&response["usage"]);
     if usage.cache_miss(request.previous_usage) {
-        let _ = tx.send(Event::CacheMiss);
+        emit(Event::CacheMiss);
     }
     let output: Vec<Value> = response["output"].as_array().cloned().unwrap_or_else(|| items.into_values().collect());
     for (index, item) in output.iter().enumerate() {
@@ -248,14 +249,14 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
                 let cancel = &cancel;
                 scope.spawn(move || {
                     block.tool.as_mut().unwrap().status = ToolStatus::Running;
-                    let _ = tx.send(Event::Set(slot, block.clone()));
+                    emit(Event::Set(slot, block.clone()));
                     let tool = block.tool.as_mut().unwrap();
                     let result = if call["name"] != "bash" {
                         Err("Unknown tool (only bash is available)".into())
                     } else {
                         tools::bash(call["arguments"].as_str().unwrap_or(""), cwd, cancel, |output| {
                             tool.output = output.clone();
-                            let _ = tx.send(Event::ToolOutput(slot, output));
+                            emit(Event::ToolOutput(slot, output));
                         })
                     };
                     let mut images = vec![];
@@ -271,7 +272,7 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, tx: &Sender<Event>) -> Re
                         }
                     }
                     let entry = Record::Tool(tool.clone());
-                    let _ = tx.send(Event::Set(slot, block));
+                    emit(Event::Set(slot, block));
                     (entry, images)
                 })
             })

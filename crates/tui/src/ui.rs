@@ -1,6 +1,6 @@
 use crate::{
     App, Result, counts, markdown,
-    session::{Block, Kind, Tool, ToolStatus},
+    model::{Block, Kind, Tool, ToolStatus},
     text::{ACCENT, GRAY, Line, Span, Style, clean, clip, wrap},
 };
 use crossterm::{
@@ -72,27 +72,11 @@ impl Drop for Terminal {
     }
 }
 
-#[derive(Clone, Copy)]
-pub enum TitleStatus {
-    Ready,
-    Finished,
-    Failed,
-}
-
 pub fn title(app: &App) -> String {
-    let name = app.session.header().cwd.file_name().unwrap_or_else(|| app.session.header().cwd.as_os_str());
+    let name = app.view.cwd.file_name().unwrap_or_else(|| app.view.cwd.as_os_str());
     // OSC title strings must not contain terminal control characters (including ESC and BEL).
     let name: String = name.to_string_lossy().chars().filter(|c| !c.is_control()).collect();
-    let prefix = if app.worker.is_some() {
-        "… "
-    } else {
-        match app.title_status {
-            TitleStatus::Ready => "",
-            TitleStatus::Finished => "✓ ",
-            TitleStatus::Failed => "! ",
-        }
-    };
-    format!("{prefix}mu · {name}")
+    format!("{}mu · {name}", app.view.status.marker())
 }
 
 pub fn set_title(title: &str) -> Result<()> {
@@ -355,7 +339,7 @@ fn tool_lines(command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<L
         && tool.output.truncated
         && let Some(log) = &tool.output.log
     {
-        footer.push_str(&format!("\noutput log (temporary): {}", clean(&log.to_string_lossy())));
+        footer.push_str(&format!("\noutput log (temporary): {}", clean(log)));
     }
     if !footer.is_empty() {
         let footer_width = width.saturating_sub(4);
@@ -422,25 +406,25 @@ pub struct ScrollAnchor {
     pub total: usize,
 }
 
-// Cached line count for the welcome message and the committed session path.
+// Cached line count for the welcome message and the committed transcript,
+// which only grows between snapshots.
 #[derive(Clone, Copy)]
 pub struct CachedLines {
     pub width: usize,
     pub expanded: bool,
-    pub cursor: Option<usize>,
+    pub blocks: usize,
     pub lines: usize,
 }
 
 impl CachedLines {
-    fn matches(&self, width: usize, expanded: bool, cursor: Option<usize>) -> bool {
-        self.width == width && self.expanded == expanded && self.cursor == cursor
+    fn matches(&self, width: usize, expanded: bool, blocks: usize) -> bool {
+        self.width == width && self.expanded == expanded && self.blocks == blocks
     }
 }
 
 // One snapshot defines both the transcript's order and the lines used for scroll anchoring.
 struct Transcript {
     welcome: Block,
-    path: Vec<usize>,
     pending: Vec<Block>,
 }
 
@@ -451,25 +435,25 @@ impl Transcript {
                 Kind::Notice,
                 "mu · escape to interrupt · / for commands & skills · ctrl+o to expand/collapse · ctrl+g to edit prompt",
             ),
-            path: app.session.path(),
             pending: app
+                .view
                 .queued
                 .iter()
                 .enumerate()
-                .map(|(i, message)| {
-                    let hint = if i + 1 == app.queued.len() { "  [Ctrl+↑ restore]" } else { "" };
-                    Block::new(Kind::Notice, format!("queued: {}{hint}", message.text))
+                .map(|(i, text)| {
+                    let hint = if i + 1 == app.view.queued.len() { "  [Ctrl+↑ restore]" } else { "" };
+                    Block::new(Kind::Notice, format!("queued: {text}{hint}"))
                 })
                 .collect(),
         }
     }
 
     fn static_blocks<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = &'a Block> + 'a {
-        std::iter::once(&self.welcome).chain(self.path.iter().flat_map(|&i| app.session.node(i).blocks.iter()))
+        std::iter::once(&self.welcome).chain(app.view.blocks.iter())
     }
 
     fn dynamic_blocks<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = &'a Block> + 'a {
-        app.live_notice.iter().chain(app.live.iter()).chain(app.feedback.iter()).chain(self.pending.iter())
+        app.view.live_notice.iter().chain(app.view.live.iter()).chain(app.feedback.iter()).chain(self.pending.iter())
     }
 
     fn blocks<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = &'a Block> + 'a {
@@ -477,15 +461,15 @@ impl Transcript {
     }
 
     fn line_count(&self, app: &mut App, width: usize) -> usize {
-        let cursor = self.path.last().copied();
+        let blocks = app.view.blocks.len();
         let static_lines = match app.transcript_static {
-            Some(cached) if cached.matches(width, app.expanded, cursor) => cached.lines,
+            Some(cached) if cached.matches(width, app.expanded, blocks) => cached.lines,
             _ => {
                 let lines = self
                     .static_blocks(app)
                     .map(|block| block_lines(block, width.saturating_sub(1), app.expanded).len())
                     .sum();
-                app.transcript_static = Some(CachedLines { width, expanded: app.expanded, cursor, lines });
+                app.transcript_static = Some(CachedLines { width, expanded: app.expanded, blocks, lines });
                 lines
             }
         };
@@ -612,9 +596,8 @@ pub fn draw(app: &mut App) -> Result<()> {
         Clear(ClearType::CurrentLine),
         Print("─".repeat(width))
     )?;
-    let model = app.session.model();
-    let usage = app.session.total_usage();
-    let context = app.session.usage();
+    let model = &app.view.model;
+    let usage = &app.view.stats;
     let cache = usage.cached.map(counts::compact).unwrap_or_else(|| "?".into());
     let read = usage
         .cached
@@ -622,17 +605,17 @@ pub fn draw(app: &mut App) -> Result<()> {
         .unwrap_or_else(|| "?".into());
     let left = format!(
         " ↑{} ↓{} | cache {} read {} | ctx {}/{} ",
-        counts::compact(app.session.uncached_input()),
+        counts::compact(usage.uncached_input),
         counts::compact(usage.output),
         cache,
         read,
-        counts::compact(context.input.saturating_add(context.output)),
+        counts::compact(usage.context_used),
         counts::compact(model.context)
     );
     let right = clip(
         &format!(
             "{}{}{} ",
-            if app.worker.is_some() { "· " } else { "" },
+            if app.view.running() { "· " } else { "" },
             model.name,
             model.effort.as_ref().map(|e| format!(" {e}")).unwrap_or_default()
         ),

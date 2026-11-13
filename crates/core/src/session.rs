@@ -5,7 +5,7 @@ use std::{
     env, fs,
     io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write},
     os::unix::fs::OpenOptionsExt,
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -270,7 +270,7 @@ pub struct Model {
 pub struct Header {
     version: u32,
     pub id: String,
-    title: String,
+    pub title: String,
     pub cwd: PathBuf,
     pub instructions: String,
     #[serde(flatten)]
@@ -348,6 +348,15 @@ impl Session {
                 _ => None,
             })
             .flatten()
+    }
+
+    pub fn is_node(&self, i: usize) -> bool {
+        matches!(self.records.get(i), Some(Record::Node(_)))
+    }
+
+    // Nothing would be lost by dropping this session from memory.
+    pub fn persisted(&self) -> bool {
+        self.file.is_some() && self.saved == self.records.len()
     }
 
     pub fn node(&self, i: usize) -> &Node {
@@ -494,7 +503,12 @@ impl Session {
         Ok(())
     }
 
-    pub fn load(path: &Path) -> Result<Self> {
+    pub fn load(id: &str) -> Result<Self> {
+        // Ids arrive from clients; never let one name a path outside the state directory.
+        if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit() || c == '-') {
+            return Err("Invalid session id".into());
+        }
+        let path = &state_dir().join(format!("{id}.jsonl"));
         let file = fs::OpenOptions::new().read(true).write(true).open(path)?;
         lock(&file)?;
         let mut reader = BufReader::new(&file);
@@ -504,11 +518,7 @@ impl Session {
             return Err("Incomplete session header".into());
         }
         let header: Header = serde_json::from_slice(&line)?;
-        if header.version != 1
-            || path.file_stem().and_then(|s| s.to_str()) != Some(&header.id)
-            || header.id.is_empty()
-            || !header.id.chars().all(|c| c.is_ascii_digit() || c == '-')
-        {
+        if header.version != 1 || header.id != id {
             return Err("Invalid session header".into());
         }
         let mut session = Self { header, records: vec![], file: None, saved: 0, offset };
@@ -536,10 +546,6 @@ impl Session {
         }
         session.file = Some(file);
         Ok(session)
-    }
-
-    pub fn last_text(&self, kind: Kind) -> Option<String> {
-        self.ancestors().flat_map(|i| self.node(i).blocks.iter().rev()).find(|b| b.kind == kind).map(|b| b.text.clone())
     }
 
     // Iterative DFS: very deep tool loops don't consume the stack. Linear
@@ -606,11 +612,15 @@ impl Session {
     }
 }
 
-pub fn sessions() -> Result<Vec<(PathBuf, String)>> {
-    sessions_in(&state_dir())
+pub struct Summary {
+    pub id: String,
+    pub title: String,
+    pub cwd: PathBuf,
 }
 
-fn sessions_in(dir: &Path) -> Result<Vec<(PathBuf, String)>> {
+// Most recently written first.
+pub fn sessions() -> Result<Vec<Summary>> {
+    let dir = &state_dir();
     if !dir.exists() {
         return Ok(vec![]);
     }
@@ -629,10 +639,7 @@ fn sessions_in(dir: &Path) -> Result<Vec<(PathBuf, String)>> {
                 return None;
             }
             let header: Header = serde_json::from_str(&line).ok()?;
-            (header.version == 1).then(|| {
-                let label = format!("{}  {}  [{}]", header.id, header.title, header.cwd.display());
-                (path, label)
-            })
+            (header.version == 1).then_some(Summary { id: header.id, title: header.title, cwd: header.cwd })
         })
         .collect())
 }

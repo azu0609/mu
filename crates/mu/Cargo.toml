@@ -1,0 +1,12 @@
+[package]
+name = "mu"
+description = "A small coding agent: match the post-train."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+mu-core.workspace = true
+mu-proto.workspace = true
+mu-server.workspace = true
+mu-tui.workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "mu-proto"
+description = "mu's wire protocol: generated messages, service trait and client."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+buffa.workspace = true
+connectrpc = { workspace = true, features = ["client"] }
+
+[build-dependencies]
+connectrpc-build = "0.9"
