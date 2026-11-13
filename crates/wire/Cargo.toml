@@ -1,0 +1,9 @@
+[package]
+name = "mu-wire"
+description = "mu's wire protocol: what a host and its clients exchange."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true

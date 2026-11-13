@@ -1,4 +1,5 @@
-use crate::{Result, model::Skill};
+use crate::Result;
+use mu_client::Skill;
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy)]

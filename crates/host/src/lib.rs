@@ -1,14 +1,16 @@
-pub mod agent;
+mod agent;
 mod api;
 mod config;
 mod image;
-pub mod input;
+mod input;
 mod instructions;
 mod process;
-pub mod session;
-pub mod skills;
+mod server;
+mod session;
+mod skills;
 pub mod tools;
 
+pub use server::{serve, serve_stream, socket_path};
 use std::{env, path::PathBuf};
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;

@@ -1,8 +1,9 @@
 use crate::{
     Result, config, process,
-    session::{Block, Kind, Record, ToolOutput, ToolStatus, Usage},
+    session::{Record, Usage, block_from_item},
     tools,
 };
+use mu_wire::{Block, Kind, ToolOutput, ToolStatus};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -170,7 +171,7 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, emit: Emit) -> Result<Ste
                 match event["type"].as_str().unwrap_or("") {
                     "response.output_item.added" | "response.output_item.done" => {
                         let item = &event["item"];
-                        if let Some(block) = Block::from_item(item, event["type"] == "response.output_item.added") {
+                        if let Some(block) = block_from_item(item, event["type"] == "response.output_item.added") {
                             live.upsert(index, block);
                         }
                         items.insert(index, item.clone());
@@ -188,14 +189,14 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, emit: Emit) -> Result<Ste
                         let mut raw = item["arguments"].as_str().unwrap_or("").to_owned();
                         raw.push_str(event["delta"].as_str().unwrap_or(""));
                         item["arguments"] = raw.into();
-                        if let Some(block) = Block::from_item(item, true) {
+                        if let Some(block) = block_from_item(item, true) {
                             live.upsert(index, block);
                         }
                     }
                     "response.function_call_arguments.done" => {
                         let item = items.entry(index).or_insert_with(|| json!({"type":"function_call"}));
                         item["arguments"] = event["arguments"].clone();
-                        if let Some(block) = Block::from_item(item, false) {
+                        if let Some(block) = block_from_item(item, false) {
                             live.upsert(index, block);
                         }
                     }
@@ -231,7 +232,7 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, emit: Emit) -> Result<Ste
     }
     let output: Vec<Value> = response["output"].as_array().cloned().unwrap_or_else(|| items.into_values().collect());
     for (index, item) in output.iter().enumerate() {
-        if let Some(block) = Block::from_item(item, false) {
+        if let Some(block) = block_from_item(item, false) {
             live.upsert(index, block);
         }
     }
@@ -244,7 +245,7 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, emit: Emit) -> Result<Ste
             .filter(|(_, call)| call["type"] == "function_call")
             .map(|(index, call)| {
                 let slot = live.slots[&index];
-                let mut block = Block::from_item(call, false).unwrap();
+                let mut block = block_from_item(call, false).unwrap();
                 let cwd = &request.cwd;
                 let cancel = &cancel;
                 scope.spawn(move || {

@@ -1,4 +1,5 @@
 use crate::{Result, image, process, session::Record, skills::Skill};
+use mu_wire::{self as wire, MentionEntry};
 use std::{
     collections::HashSet,
     env, fs,
@@ -152,18 +153,6 @@ pub fn prepare(text: String, cwd: &Path, skill: Option<&Skill>) -> Result<Messag
     Ok(Message { text, attachments: snapshots })
 }
 
-pub struct Entry {
-    pub text: String,
-    pub label: String,
-}
-
-pub struct Menu {
-    pub range: Range<usize>,
-    pub query: String,
-    pub exact_file: bool,
-    pub entries: Vec<Entry>,
-}
-
 fn score(candidate: &str, query: &str) -> Option<usize> {
     let candidate = candidate.to_lowercase();
     let query = query.to_lowercase();
@@ -183,7 +172,7 @@ fn score(candidate: &str, query: &str) -> Option<usize> {
     Some(gaps)
 }
 
-fn file_entry(name: String) -> Entry {
+fn file_entry(name: String) -> MentionEntry {
     let directory = name.ends_with('/');
     let token = if name.chars().any(|c| c.is_whitespace() || matches!(c, '"' | '\\')) || name.starts_with('@') {
         let mut quoted = serde_json::to_string(&name).unwrap();
@@ -194,7 +183,7 @@ fn file_entry(name: String) -> Entry {
     } else {
         name.clone()
     };
-    Entry { text: format!("@{token}{}", if directory { "" } else { " " }), label: name }
+    MentionEntry { text: format!("@{token}{}", if directory { "" } else { " " }), label: name }
 }
 
 // The mention being typed at the cursor: the range to replace and its query.
@@ -214,7 +203,7 @@ pub fn is_path(query: &str) -> bool {
     ["/", "~/", "./", "../"].iter().any(|p| query.starts_with(p))
 }
 
-pub fn complete(range: Range<usize>, query: String, cwd: &Path, files: &[String]) -> Menu {
+pub fn complete(range: Range<usize>, query: String, cwd: &Path, files: &[String]) -> wire::Mention {
     let mut matches = if is_path(&query) {
         let (parent, leaf) = query.rsplit_once('/').unwrap_or(("", &query));
         let parent = format!("{parent}/");
@@ -241,7 +230,7 @@ pub fn complete(range: Range<usize>, query: String, cwd: &Path, files: &[String]
     };
     matches.sort_unstable();
     let entries = matches.into_iter().take(40).map(|(_, name)| file_entry(name)).collect();
-    Menu { range, exact_file: !query.is_empty() && path(cwd, &query).is_file(), query, entries }
+    wire::Mention { range, exact_file: !query.is_empty() && path(cwd, &query).is_file(), query, entries }
 }
 
 pub fn index(cwd: &Path) -> Result<Vec<String>> {

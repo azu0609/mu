@@ -1,6 +1,5 @@
 use crate::{
     App, Result, counts, markdown,
-    model::{Block, Kind, Tool, ToolStatus},
     text::{ACCENT, GRAY, Line, Span, Style, clean, clip, wrap},
 };
 use crossterm::{
@@ -13,6 +12,7 @@ use crossterm::{
     style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use mu_client::{Block, Kind, Status, Tool, ToolStatus};
 use std::io::{self, Write};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -76,7 +76,16 @@ pub fn title(app: &App) -> String {
     let name = app.view.cwd.file_name().unwrap_or_else(|| app.view.cwd.as_os_str());
     // OSC title strings must not contain terminal control characters (including ESC and BEL).
     let name: String = name.to_string_lossy().chars().filter(|c| !c.is_control()).collect();
-    format!("{}mu · {name}", app.view.status.marker())
+    format!("{}mu · {name}", marker(app.view.status))
+}
+
+pub fn marker(status: Status) -> &'static str {
+    match status {
+        Status::Idle => "",
+        Status::Running => "… ",
+        Status::Finished => "✓ ",
+        Status::Failed => "! ",
+    }
 }
 
 pub fn set_title(title: &str) -> Result<()> {
@@ -285,6 +294,17 @@ fn tail_ellipsis(text: &str, width: usize) -> String {
     format!("…{}", &text[start..])
 }
 
+fn ending(status: ToolStatus) -> Option<String> {
+    Some(match status {
+        ToolStatus::Exited(0) | ToolStatus::Error => return None,
+        ToolStatus::Pending => "pending".into(),
+        ToolStatus::Running => "running".into(),
+        ToolStatus::Exited(code) => format!("exit {code}"),
+        ToolStatus::TimedOut(ms) => format!("timed out after {ms} ms; process group killed"),
+        ToolStatus::Cancelled => "cancelled; process group killed".into(),
+    })
+}
+
 fn tool_lines(command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<Line> {
     let color = match tool.status {
         ToolStatus::Running | ToolStatus::TimedOut(_) | ToolStatus::Cancelled => Color::Yellow,
@@ -330,7 +350,7 @@ fn tool_lines(command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<L
     for line in &lines[start..] {
         result.push(Line::new(format!("  │ {line}"), GRAY));
     }
-    let mut footer: Vec<_> = tool.status.summary().into_iter().collect();
+    let mut footer: Vec<_> = ending(tool.status).into_iter().collect();
     if tool.output.truncated {
         footer.push("preview only; overflow in temp file".into());
     }
@@ -339,7 +359,7 @@ fn tool_lines(command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<L
         && tool.output.truncated
         && let Some(log) = &tool.output.log
     {
-        footer.push_str(&format!("\noutput log (temporary): {}", clean(log)));
+        footer.push_str(&format!("\noutput log (temporary): {}", clean(&log.to_string_lossy())));
     }
     if !footer.is_empty() {
         let footer_width = width.saturating_sub(4);
@@ -353,9 +373,10 @@ fn tool_lines(command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<L
 }
 
 fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
-    let (first_prefix, color, limit) = match block.kind {
-        Kind::Call => return tool_lines(&block.text, block.tool.as_ref().unwrap(), width, expanded),
-        Kind::Notice | Kind::Warning => {
+    let (first_prefix, color, limit) = match (block.kind, &block.tool) {
+        (Kind::Call, Some(tool)) => return tool_lines(&block.text, tool, width, expanded),
+        // A call without its tool has nothing to show beyond its text.
+        (Kind::Call | Kind::Notice | Kind::Warning, _) => {
             let (marker, color) = if block.kind == Kind::Warning { ("!", Color::Yellow) } else { ("·", GRAY) };
             let mut lines = vec![];
             for (i, line) in wrap(&clean(&block.text), width.saturating_sub(4)).into_iter().enumerate() {
@@ -364,9 +385,9 @@ fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
             lines.push(Line::new("", GRAY));
             return lines;
         }
-        Kind::User => ("› ", ACCENT, usize::MAX),
-        Kind::Agent => ("  ", Color::Reset, usize::MAX),
-        Kind::Thought => ("  ", GRAY, 2),
+        (Kind::User, _) => ("› ", ACCENT, usize::MAX),
+        (Kind::Agent, _) => ("  ", Color::Reset, usize::MAX),
+        (Kind::Thought, _) => ("  ", GRAY, 2),
     };
     if block.kind == Kind::Agent {
         let mut lines = markdown::render(&block.text, width.saturating_sub(2));

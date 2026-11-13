@@ -1,4 +1,5 @@
 use crate::{Result, home, instructions, skills::Skill};
+use mu_wire::{Block, Kind, Model, Tool, ToolOutput, ToolStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -9,88 +10,61 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Kind {
-    User,
-    Agent,
-    Thought,
-    Call,
-    Notice,
-    Warning,
-}
-
-#[derive(Clone)]
-pub struct Block {
-    pub kind: Kind,
-    pub text: String,
-    pub tool: Option<Tool>,
-}
-
-impl Block {
-    pub fn new(kind: Kind, text: impl Into<String>) -> Self {
-        Self { kind, text: text.into(), tool: None }
+pub fn block_from_item(item: &Value, partial: bool) -> Option<Block> {
+    if item["role"] == "user"
+        && let Some(text) = item["content"].as_str()
+    {
+        return Some(Block::new(Kind::User, text));
     }
-
-    pub fn from_item(item: &Value, partial: bool) -> Option<Block> {
-        if item["role"] == "user"
-            && let Some(text) = item["content"].as_str()
-        {
-            return Some(Block::new(Kind::User, text));
-        }
-        let texts = |field: &str, typ: &str| {
-            item[field]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter(|v| v["type"] == typ)
-                        .filter_map(|v| v["text"].as_str())
-                        .collect::<Vec<_>>()
-                        .join("\n")
-                })
-                .unwrap_or_default()
-        };
-        match item["type"].as_str()? {
-            "message" => {
-                let mut text = texts("content", "output_text");
-                if let Some(content) = item["content"].as_array() {
-                    for part in content {
-                        if let Some(refusal) = part["refusal"].as_str() {
-                            text.push_str(refusal);
-                        }
+    let texts = |field: &str, typ: &str| {
+        item[field]
+            .as_array()
+            .map(|a| {
+                a.iter().filter(|v| v["type"] == typ).filter_map(|v| v["text"].as_str()).collect::<Vec<_>>().join("\n")
+            })
+            .unwrap_or_default()
+    };
+    match item["type"].as_str()? {
+        "message" => {
+            let mut text = texts("content", "output_text");
+            if let Some(content) = item["content"].as_array() {
+                for part in content {
+                    if let Some(refusal) = part["refusal"].as_str() {
+                        text.push_str(refusal);
                     }
                 }
-                Some(Block::new(Kind::Agent, text))
             }
-            "reasoning" => {
-                let mut text = texts("summary", "summary_text");
-                if text.is_empty() {
-                    text = texts("content", "reasoning_text");
-                }
-                Some(Block::new(Kind::Thought, text))
-            }
-            "function_call" => {
-                let name = item["name"].as_str().unwrap_or("tool");
-                let raw = item["arguments"].as_str().unwrap_or("");
-                let args: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
-                let text = if name == "bash" {
-                    args["command"]
-                        .as_str()
-                        .map(str::to_owned)
-                        .or_else(|| partial.then(|| command_prefix(raw)).flatten())
-                        .unwrap_or_else(|| if partial || raw.is_empty() { "bash …" } else { raw }.to_owned())
-                } else {
-                    format!("{name} {raw}")
-                };
-                let mut block = Block::new(Kind::Call, text);
-                block.tool = Some(Tool {
-                    call_id: item["call_id"].as_str().unwrap_or("").into(),
-                    status: ToolStatus::Pending,
-                    output: ToolOutput::default(),
-                });
-                Some(block)
-            }
-            _ => None,
+            Some(Block::new(Kind::Agent, text))
         }
+        "reasoning" => {
+            let mut text = texts("summary", "summary_text");
+            if text.is_empty() {
+                text = texts("content", "reasoning_text");
+            }
+            Some(Block::new(Kind::Thought, text))
+        }
+        "function_call" => {
+            let name = item["name"].as_str().unwrap_or("tool");
+            let raw = item["arguments"].as_str().unwrap_or("");
+            let args: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+            let text = if name == "bash" {
+                args["command"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .or_else(|| partial.then(|| command_prefix(raw)).flatten())
+                    .unwrap_or_else(|| if partial || raw.is_empty() { "bash …" } else { raw }.to_owned())
+            } else {
+                format!("{name} {raw}")
+            };
+            let mut block = Block::new(Kind::Call, text);
+            block.tool = Some(Tool {
+                call_id: item["call_id"].as_str().unwrap_or("").into(),
+                status: ToolStatus::Pending,
+                output: ToolOutput::default(),
+            });
+            Some(block)
+        }
+        _ => None,
     }
 }
 
@@ -129,41 +103,15 @@ fn string_prefix(raw: &str) -> Option<String> {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Tool {
-    pub call_id: String,
-    pub status: ToolStatus,
-    pub output: ToolOutput,
-}
-
-#[derive(Clone, Default, Serialize, Deserialize)]
-pub struct ToolOutput {
-    pub text: String,
-    pub log: Option<PathBuf>,
-    pub truncated: bool,
-}
-
-#[derive(Clone, Copy, Serialize, Deserialize)]
-pub enum ToolStatus {
-    Pending,
-    Running,
-    Exited(i32),
-    TimedOut(u64),
-    Cancelled,
-    Error,
-}
-
-impl ToolStatus {
-    pub fn summary(self) -> Option<String> {
-        Some(match self {
-            Self::Exited(0) | Self::Error => return None,
-            Self::Pending => "pending".into(),
-            Self::Running => "running".into(),
-            Self::Exited(code) => format!("exit {code}"),
-            Self::TimedOut(ms) => format!("timed out after {ms} ms; process group killed"),
-            Self::Cancelled => "cancelled; process group killed".into(),
-        })
-    }
+fn summary(status: ToolStatus) -> Option<String> {
+    Some(match status {
+        ToolStatus::Exited(0) | ToolStatus::Error => return None,
+        ToolStatus::Pending => "pending".into(),
+        ToolStatus::Running => "running".into(),
+        ToolStatus::Exited(code) => format!("exit {code}"),
+        ToolStatus::TimedOut(ms) => format!("timed out after {ms} ms; process group killed"),
+        ToolStatus::Cancelled => "cancelled; process group killed".into(),
+    })
 }
 
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
@@ -224,7 +172,7 @@ impl Record {
                 json!({"role":"user", "content":[{"type":"input_text", "text":format!("Image: {}", path.display())}, image]})
             }
             Self::Notice { .. } => return None,
-            Self::Tool(tool) => tool.item(),
+            Self::Tool(tool) => tool_item(tool),
             _ => return None,
         })
     }
@@ -240,30 +188,20 @@ pub struct Node {
     pub blocks: Vec<Block>,
 }
 
-impl Tool {
-    fn item(&self) -> Value {
-        let mut text = self.output.text.clone();
-        if let Some(summary) = self.status.summary() {
-            text.push_str(&format!("\n[{summary}]"));
-        }
-        if self.output.truncated
-            && let Some(log) = &self.output.log
-        {
-            text.push_str(&format!(
-                "\n[Output log (temporary): {} — read needed ranges with sed, tail, or grep]",
-                log.display()
-            ));
-        }
-        json!({"type":"function_call_output", "call_id":self.call_id, "output":text})
+fn tool_item(tool: &Tool) -> Value {
+    let mut text = tool.output.text.clone();
+    if let Some(summary) = summary(tool.status) {
+        text.push_str(&format!("\n[{summary}]"));
     }
-}
-
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-pub struct Model {
-    #[serde(rename = "model")]
-    pub name: String,
-    pub effort: Option<String>,
-    pub context: u64,
+    if tool.output.truncated
+        && let Some(log) = &tool.output.log
+    {
+        text.push_str(&format!(
+            "\n[Output log (temporary): {} — read needed ranges with sed, tail, or grep]",
+            log.display()
+        ));
+    }
+    json!({"type":"function_call_output", "call_id":tool.call_id, "output":text})
 }
 
 #[derive(Serialize, Deserialize)]
@@ -438,7 +376,7 @@ impl Session {
                 node.start = self.records.iter().rposition(|r| !r.is_entry()).map_or(0, |i| i + 1);
                 for entry in &self.records[node.start..] {
                     match entry {
-                        Record::Item { item } => node.blocks.extend(Block::from_item(item, false)),
+                        Record::Item { item } => node.blocks.extend(block_from_item(item, false)),
                         Record::Attachment { label, path, .. } => {
                             node.blocks.push(Block::new(Kind::Notice, format!("{label}: {}", path.display())))
                         }

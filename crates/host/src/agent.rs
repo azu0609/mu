@@ -1,8 +1,9 @@
 use crate::{
     Result, api, config, input,
-    session::{Block, Kind, Model, Record, Session, ToolOutput},
+    session::{Record, Session},
     skills::{self, Skill},
 };
+use mu_wire::{self as wire, Block, Event, Kind, Mention, Model, Snapshot, State, Stats, Status, TreeEntry};
 use std::{
     mem,
     path::PathBuf,
@@ -12,63 +13,6 @@ use std::{
     },
     thread,
 };
-
-#[derive(Clone, Copy, PartialEq)]
-pub enum Status {
-    Idle,
-    Running,
-    Finished,
-    Failed,
-}
-
-#[derive(Clone)]
-pub struct Stats {
-    pub input: u64,
-    pub output: u64,
-    pub cached: Option<u64>,
-    pub uncached_input: u64,
-    pub context_used: u64,
-}
-
-#[derive(Clone)]
-pub struct State {
-    pub status: Status,
-    pub title: String,
-    pub model: Model,
-    pub stats: Stats,
-    pub queued: Vec<String>,
-}
-
-pub struct Snapshot {
-    pub id: String,
-    pub cwd: PathBuf,
-    pub state: State,
-    pub blocks: Vec<Block>,
-    pub live: Vec<Block>,
-    pub live_notice: Option<Block>,
-    pub skills: Vec<Skill>,
-}
-
-// What subscribers see. A snapshot replaces everything; a commit appends to
-// the transcript and ends the live step; live indices are stable in between.
-pub enum Event {
-    Snapshot(Box<Snapshot>),
-    State(State),
-    Commit(Vec<Block>),
-    LivePush(Block),
-    LiveDelta(usize, String),
-    LiveSet(usize, Block),
-    LiveOutput(usize, ToolOutput),
-    LiveNotice(Block),
-    // Transient: not part of the session, not replayed to late subscribers.
-    Feedback(Block),
-}
-
-pub struct TreeEntry {
-    pub node: Option<usize>,
-    pub label: String,
-    pub current: bool,
-}
 
 // Runs under the agent's lock, so it must not block. Returning false unsubscribes.
 type Sink = Box<dyn FnMut(&Event) -> bool + Send>;
@@ -135,16 +79,26 @@ impl Inner {
         }
     }
 
-    fn snapshot(&self) -> Snapshot {
-        Snapshot {
+    // A reset, then the transcript along the current path, then the step in progress.
+    fn snapshot(&self) -> Vec<Event> {
+        let mut events = vec![Event::Snapshot(Box::new(Snapshot {
             id: self.session.header().id.clone(),
             cwd: self.session.header().cwd.clone(),
             state: self.state(),
-            blocks: self.session.path().iter().flat_map(|&i| self.session.node(i).blocks.iter().cloned()).collect(),
-            live: self.live.clone(),
-            live_notice: self.live_notice.clone(),
-            skills: self.skills.clone(),
+            skills: self
+                .skills
+                .iter()
+                .map(|skill| wire::Skill { name: skill.name.clone(), description: skill.description.clone() })
+                .collect(),
+        }))];
+        let blocks: Vec<_> =
+            self.session.path().iter().flat_map(|&i| self.session.node(i).blocks.iter().cloned()).collect();
+        if !blocks.is_empty() {
+            events.push(Event::Commit { blocks });
         }
+        events.extend(self.live.iter().cloned().map(Event::LivePush));
+        events.extend(self.live_notice.clone().map(Event::LiveNotice));
+        events
     }
 
     fn emit_state(&mut self) {
@@ -171,7 +125,7 @@ impl Inner {
         let blocks = self.session.cursor().map(|i| self.session.node(i).blocks.clone()).unwrap_or_default();
         self.live.clear();
         self.live_notice = None;
-        self.emit(Event::Commit(blocks));
+        self.emit(Event::Commit { blocks });
     }
 
     fn drain_queue(&mut self) {
@@ -235,7 +189,7 @@ impl Agent {
         let mut inner = self.inner();
         let id = inner.next_sink;
         inner.next_sink += 1;
-        if sink(&Event::Snapshot(inner.snapshot().into())) {
+        if inner.snapshot().iter().all(&mut sink) {
             inner.sinks.push((id, Box::new(sink)));
         }
         id
@@ -311,23 +265,23 @@ impl Agent {
                 inner.live.push(block.clone());
                 inner.emit(Event::LivePush(block));
             }
-            api::Event::Delta(i, text) => {
-                if let Some(block) = inner.live.get_mut(i) {
+            api::Event::Delta(index, text) => {
+                if let Some(block) = inner.live.get_mut(index) {
                     block.text.push_str(&text);
                 }
-                inner.emit(Event::LiveDelta(i, text));
+                inner.emit(Event::LiveDelta { index, text });
             }
-            api::Event::Set(i, block) => {
-                if let Some(slot) = inner.live.get_mut(i) {
+            api::Event::Set(index, block) => {
+                if let Some(slot) = inner.live.get_mut(index) {
                     *slot = block.clone();
                 }
-                inner.emit(Event::LiveSet(i, block));
+                inner.emit(Event::LiveSet { index, block });
             }
-            api::Event::ToolOutput(i, output) => {
-                if let Some(tool) = inner.live.get_mut(i).and_then(|block| block.tool.as_mut()) {
+            api::Event::ToolOutput(index, output) => {
+                if let Some(tool) = inner.live.get_mut(index).and_then(|block| block.tool.as_mut()) {
                     tool.output = output.clone();
                 }
-                inner.emit(Event::LiveOutput(i, output));
+                inner.emit(Event::LiveOutput { index, output });
             }
             api::Event::CacheMiss => {
                 let block = Block::new(Kind::Warning, CACHE_MISS);
@@ -448,14 +402,15 @@ impl Agent {
         inner.live_notice = None;
         inner.queued.clear();
         inner.status = Status::Idle;
-        let snapshot = inner.snapshot();
-        inner.emit(Event::Snapshot(snapshot.into()));
+        for event in inner.snapshot() {
+            inner.emit(event);
+        }
         Ok(draft)
     }
 
     // Completes the @file mention at the cursor (a character offset), if there is one.
     // `refresh` rebuilds the file index; a failed build is reported once and then stays empty.
-    pub fn complete(&self, text: &str, cursor: usize, refresh: bool) -> Result<Option<input::Menu>> {
+    pub fn complete(&self, text: &str, cursor: usize, refresh: bool) -> Result<Option<Mention>> {
         let Some((range, query)) = input::mention_at(text, cursor) else {
             return Ok(None);
         };

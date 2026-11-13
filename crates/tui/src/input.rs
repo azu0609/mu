@@ -1,4 +1,5 @@
-use crate::{Result, commands, model::Skill};
+use crate::{Result, commands};
+use mu_client::Skill;
 use std::{
     env, fs,
     io::Write,

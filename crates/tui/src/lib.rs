@@ -2,7 +2,6 @@ mod commands;
 mod counts;
 mod input;
 mod markdown;
-mod model;
 mod remote;
 mod text;
 mod ui;
@@ -10,9 +9,8 @@ mod ui;
 use crossterm::event::{
     self, Event as Input, KeyCode as Key, KeyEvent, KeyEventKind, KeyModifiers as Mod, MouseEventKind,
 };
-use model::{Block, Kind, View};
 pub use mu_client::Endpoint;
-use mu_client::proto as pb;
+use mu_client::{Block, Change, Event, Kind, Model, View};
 use remote::{Incoming, Remote};
 use std::{
     env,
@@ -23,7 +21,7 @@ use std::{
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 enum Target {
-    Node(Option<u64>),
+    Node(Option<usize>),
     Session(String),
 }
 
@@ -88,51 +86,25 @@ impl App {
         }
     }
 
-    fn apply(&mut self, event: pb::Event) {
-        match event {
-            pb::Event::Snapshot(snapshot) => {
-                self.view.reset(*snapshot);
+    fn apply(&mut self, event: Event) {
+        match self.view.apply(event) {
+            Change::Reset => {
                 self.connected = true;
                 self.scroll = 0;
                 self.scroll_layout = None;
                 self.transcript_static = None;
             }
-            pb::Event::State(state) => {
-                let was_running = self.view.running();
-                self.view.set_state(*state);
+            Change::State { started } => {
                 if self.view.running() {
-                    if !was_running {
+                    if started {
                         self.feedback.clear();
                     }
                     self.scroll = 0;
                     self.scroll_layout = None;
                 }
             }
-            pb::Event::Commit(commit) => {
-                self.view.blocks.extend(commit.blocks.into_iter().map(Block::from));
-                self.view.live.clear();
-                self.view.live_notice = None;
-            }
-            pb::Event::LivePush(block) => self.view.live.push((*block).into()),
-            pb::Event::LiveDelta(delta) => {
-                if let Some(block) = self.view.live.get_mut(delta.index as usize) {
-                    block.text.push_str(&delta.text);
-                }
-            }
-            pb::Event::LiveSet(set) => {
-                if let Some(slot) = self.view.live.get_mut(set.index as usize)
-                    && let Some(block) = set.block.into_option()
-                {
-                    *slot = block.into();
-                }
-            }
-            pb::Event::LiveOutput(update) => {
-                if let Some(tool) = self.view.live.get_mut(update.index as usize).and_then(|b| b.tool.as_mut()) {
-                    tool.output = update.output.into_option().unwrap_or_default().into();
-                }
-            }
-            pb::Event::LiveNotice(block) => self.view.live_notice = Some((*block).into()),
-            pb::Event::Feedback(block) => self.push_feedback((*block).into()),
+            Change::Committed | Change::Live => (),
+            Change::Feedback(block) => self.push_feedback(block),
         }
     }
 
@@ -151,10 +123,10 @@ impl App {
                 match result {
                     Ok(Some(mention)) => {
                         let mut menu = input::Menu {
-                            range: mention.start as usize..mention.end as usize,
+                            range: mention.range,
                             query: mention.query,
                             file: true,
-                            exact_file: mention.exact,
+                            exact_file: mention.exact_file,
                             entries: mention
                                 .entries
                                 .into_iter()
@@ -241,11 +213,10 @@ impl App {
                     }
                     None => self.view.model.context,
                 };
-                let model = pb::Model {
+                let model = Model {
                     name: args[1].into(),
                     effort: args.get(2).copied().filter(|&s| s != "-").map(Into::into),
                     context,
-                    ..Default::default()
                 };
                 self.remote.set_model(&self.view.id, model)?;
             }
@@ -281,10 +252,10 @@ impl App {
                     .map(|session| {
                         let label = format!(
                             "{}{}  {}  [{}]",
-                            model::status(session.status).marker(),
+                            ui::marker(session.status),
                             session.id,
                             session.title,
-                            session.cwd
+                            session.cwd.display()
                         );
                         (Target::Session(session.id), label)
                     })

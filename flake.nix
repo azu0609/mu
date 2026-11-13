@@ -14,10 +14,10 @@
             version = "0.1.0";
             src = pkgs.lib.fileset.toSource {
               root = ./.;
-              fileset = pkgs.lib.fileset.unions [ ./crates ./proto ./Cargo.toml ./Cargo.lock ];
+              fileset = pkgs.lib.fileset.unions [ ./crates ./Cargo.toml ./Cargo.lock ];
             };
             cargoLock.lockFile = ./Cargo.lock;
-            nativeBuildInputs = [ pkgs.makeWrapper pkgs.protobuf ];
+            nativeBuildInputs = [ pkgs.makeWrapper ];
             stripAllList = [ "bin" ];
             postInstall = ''
               wrapProgram $out/bin/mu --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.bash pkgs.curl pkgs.ripgrep ]}
@@ -28,7 +28,7 @@
         let pkgs = import nixpkgs { inherit system; };
         in {
           default = pkgs.mkShell {
-            packages = with pkgs; [ cargo rustc rust-analyzer rustfmt clippy protobuf bash curl ripgrep ];
+            packages = with pkgs; [ cargo rustc rust-analyzer rustfmt clippy bash curl ripgrep ];
           };
         });
     };
