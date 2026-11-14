@@ -9,7 +9,10 @@ plugins {
 // The Cargo workspace this app lives in.
 val rust = rootProject.layout.projectDirectory.dir("..")
 val rustSources = files(rust.file("Cargo.toml"), rust.file("Cargo.lock"), rust.dir("crates"))
-val rustAbis = providers.gradleProperty("mu.abis").map { abis -> abis.split(",").map(String::trim).filter(String::isNotEmpty) }
+val rustAbis =
+    providers.gradleProperty("mu.abis").map { abis ->
+        abis.split(",").map(String::trim).filter(String::isNotEmpty)
+    }
 
 android {
     namespace = "dev.azuki.mu.android"
@@ -46,7 +49,9 @@ dependencies {
 abstract class CargoNdk : DefaultTask() {
     @get:Inject abstract val exec: ExecOperations
 
-    @get:InputFiles @get:PathSensitive(PathSensitivity.RELATIVE) abstract val sources: ConfigurableFileCollection
+    @get:InputFiles
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val sources: ConfigurableFileCollection
 
     @get:Input abstract val profile: Property<String>
 
@@ -67,7 +72,16 @@ abstract class CargoNdk : DefaultTask() {
             commandLine(
                 listOf("cargo", "ndk", "--platform", platform.get().toString()) +
                     abis.get().flatMap { listOf("--target", it) } +
-                    listOf("--output-dir", output.path, "build", "--package", "mu-ffi", "--lib", "--profile", profile.get()),
+                    listOf(
+                        "--output-dir",
+                        output.path,
+                        "build",
+                        "--package",
+                        "mu-ffi",
+                        "--lib",
+                        "--profile",
+                        profile.get(),
+                    )
             )
         }
     }
@@ -78,7 +92,9 @@ abstract class CargoNdk : DefaultTask() {
 abstract class UniffiBindings : DefaultTask() {
     @get:Inject abstract val exec: ExecOperations
 
-    @get:InputFile @get:PathSensitive(PathSensitivity.NONE) abstract val library: RegularFileProperty
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.NONE)
+    abstract val library: RegularFileProperty
 
     @get:Internal abstract val workspace: DirectoryProperty
 
@@ -91,9 +107,24 @@ abstract class UniffiBindings : DefaultTask() {
         exec.exec {
             workingDir = workspace.get().asFile
             commandLine(
-                "cargo", "run", "--quiet", "--package", "mu-ffi", "--features", "bindgen", "--bin", "uniffi-bindgen", "--",
-                "generate", "--library", library.get().asFile.path, "--language", "kotlin", "--no-format",
-                "--out-dir", output.path,
+                "cargo",
+                "run",
+                "--quiet",
+                "--package",
+                "mu-ffi",
+                "--features",
+                "bindgen",
+                "--bin",
+                "uniffi-bindgen",
+                "--",
+                "generate",
+                "--library",
+                library.get().asFile.path,
+                "--language",
+                "kotlin",
+                "--no-format",
+                "--out-dir",
+                output.path,
             )
         }
     }
@@ -102,22 +133,26 @@ abstract class UniffiBindings : DefaultTask() {
 androidComponents {
     onVariants { variant ->
         val name = variant.name.replaceFirstChar(Char::uppercase)
-        val cargo = tasks.register<CargoNdk>("cargoNdk$name") {
-            sources.from(rustSources)
-            // Release builds unwind on panic; see the workspace's Cargo.toml.
-            profile = if (variant.buildType == "release") "android" else "dev"
-            abis = rustAbis
-            platform = variant.minSdk.apiLevel
-            workspace = rust
-            output = layout.buildDirectory.dir("rust/${variant.name}/jniLibs")
-        }
+        val cargo =
+            tasks.register<CargoNdk>("cargoNdk$name") {
+                sources.from(rustSources)
+                // Release builds unwind on panic; see the workspace's Cargo.toml.
+                profile = if (variant.buildType == "release") "android" else "dev"
+                abis = rustAbis
+                platform = variant.minSdk.apiLevel
+                workspace = rust
+                output = layout.buildDirectory.dir("rust/${variant.name}/jniLibs")
+            }
         variant.sources.jniLibs?.addGeneratedSourceDirectory(cargo, CargoNdk::output)
 
-        val bindings = tasks.register<UniffiBindings>("uniffiBindings$name") {
-            library = cargo.flatMap { cargo -> cargo.output.file(rustAbis.map { "${it.first()}/libmu_ffi.so" }) }
-            workspace = rust
-            output = layout.buildDirectory.dir("generated/uniffi/${variant.name}")
-        }
+        val bindings =
+            tasks.register<UniffiBindings>("uniffiBindings$name") {
+                library = cargo.flatMap { cargo ->
+                    cargo.output.file(rustAbis.map { "${it.first()}/libmu_ffi.so" })
+                }
+                workspace = rust
+                output = layout.buildDirectory.dir("generated/uniffi/${variant.name}")
+            }
         variant.sources.kotlin?.addGeneratedSourceDirectory(bindings, UniffiBindings::output)
     }
 }

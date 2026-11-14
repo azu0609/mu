@@ -1,42 +1,89 @@
 {
   description = "mu — a minimal coding agent";
+
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-  # A Rust toolchain with Android's standard libraries, for the app.
+  inputs.treefmt-nix = {
+    url = "github:numtide/treefmt-nix";
+    inputs.nixpkgs.follows = "nixpkgs";
+  };
   inputs.rust-overlay = {
     url = "github:oxalica/rust-overlay";
     inputs.nixpkgs.follows = "nixpkgs";
   };
-  outputs = { self, nixpkgs, rust-overlay }:
+
+  outputs =
+    {
+      self,
+      nixpkgs,
+      rust-overlay,
+      treefmt-nix,
+    }:
     let
-      systems = [ "x86_64-linux" "aarch64-linux" ];
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+      ];
       each = nixpkgs.lib.genAttrs systems;
-    in {
-      packages = each (system:
-        let pkgs = import nixpkgs { inherit system; };
-        in {
+      treefmt = each (system: treefmt-nix.lib.evalModule nixpkgs.legacyPackages.${system} ./treefmt.nix);
+    in
+    {
+      formatter = each (system: treefmt.${system}.config.build.wrapper);
+      checks = each (system: {
+        formatting = treefmt.${system}.config.build.check self;
+      });
+
+      packages = each (
+        system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+        in
+        {
           default = pkgs.rustPlatform.buildRustPackage {
             pname = "mu";
             version = "0.1.0";
             src = pkgs.lib.fileset.toSource {
               root = ./.;
-              fileset = pkgs.lib.fileset.unions [ ./crates ./Cargo.toml ./Cargo.lock ];
+              fileset = pkgs.lib.fileset.unions [
+                ./crates
+                ./Cargo.toml
+                ./Cargo.lock
+              ];
             };
             cargoLock.lockFile = ./Cargo.lock;
             nativeBuildInputs = [ pkgs.makeWrapper ];
             stripAllList = [ "bin" ];
             postInstall = ''
-              wrapProgram $out/bin/mu --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.bash pkgs.curl pkgs.ripgrep ]}
+              wrapProgram $out/bin/mu --prefix PATH : ${
+                pkgs.lib.makeBinPath [
+                  pkgs.bash
+                  pkgs.curl
+                  pkgs.ripgrep
+                ]
+              }
             '';
           };
-        });
-      devShells = each (system:
-        let pkgs = import nixpkgs { inherit system; };
-        in {
+        }
+      );
+      devShells = each (
+        system:
+        let
+          pkgs = import nixpkgs { inherit system; };
+        in
+        {
           default = pkgs.mkShell {
-            packages = with pkgs; [ cargo rustc rust-analyzer rustfmt clippy bash curl ripgrep ];
+            packages = with pkgs; [
+              cargo
+              rustc
+              rust-analyzer
+              clippy
+              bash
+              curl
+              ripgrep
+              treefmt.${system}.config.build.wrapper
+            ];
           };
-        } // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
-          # The Android app (app/): Gradle builds the Rust core with cargo-ndk.
+        }
+        // nixpkgs.lib.optionalAttrs (system == "x86_64-linux") {
           android =
             let
               pkgs = import nixpkgs {
@@ -59,20 +106,33 @@
               };
               sdk = "${android.androidsdk}/libexec/android-sdk";
               rust = pkgs.rust-bin.stable.latest.default.override {
-                extensions = [ "rust-src" "rust-analyzer" ];
-                targets = [ "aarch64-linux-android" "x86_64-linux-android" ];
+                extensions = [
+                  "rust-src"
+                  "rust-analyzer"
+                ];
+                targets = [
+                  "aarch64-linux-android"
+                  "x86_64-linux-android"
+                ];
               };
               jdk = pkgs.jdk21;
             in
             pkgs.mkShell {
-              packages = [ rust pkgs.cargo-ndk android.androidsdk jdk pkgs.gradle_9 ];
+              packages = [
+                rust
+                pkgs.cargo-ndk
+                android.androidsdk
+                jdk
+                pkgs.gradle_9
+                treefmt.${system}.config.build.wrapper
+              ];
               ANDROID_HOME = sdk;
               ANDROID_SDK_ROOT = sdk;
               ANDROID_NDK_HOME = "${sdk}/ndk/${ndk}";
               JAVA_HOME = jdk.home;
-              # The aapt2 AGP fetches from Maven is a generic Linux binary that does not run on NixOS.
               GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${sdk}/build-tools/${buildTools}/aapt2";
             };
-        });
+        }
+      );
     };
 }

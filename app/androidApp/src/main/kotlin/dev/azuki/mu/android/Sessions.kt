@@ -17,28 +17,32 @@ import kotlinx.coroutines.flow.callbackFlow
 // A session's updates. None may be dropped: each one builds on the last.
 fun Core.updates(host: String, session: String): Flow<SessionUpdate> =
     callbackFlow {
-        val handle = openSession(
-            host,
-            session,
-            object : SessionListener {
-                override fun onUpdate(update: SessionUpdate) {
-                    trySend(update)
-                }
-            },
-        )
-        awaitClose { handle.close() }
-    }.buffer(Channel.UNLIMITED)
+            val handle =
+                openSession(
+                    host,
+                    session,
+                    object : SessionListener {
+                        override fun onUpdate(update: SessionUpdate) {
+                            trySend(update)
+                        }
+                    },
+                )
+            awaitClose { handle.close() }
+        }
+        .buffer(Channel.UNLIMITED)
 
 // A host's session list. Each update is the whole list, so only the latest matters.
 fun Core.sessionList(host: String): Flow<SessionListUpdate> =
     callbackFlow {
-        val handle = watchSessions(
-            host,
-            object : SessionListListener {
-                override fun onUpdate(update: SessionListUpdate) {
-                    trySend(update)
-                }
-            },
-        )
-        awaitClose { handle.close() }
-    }.buffer(Channel.CONFLATED)
+            val handle =
+                watchSessions(
+                    host,
+                    object : SessionListListener {
+                        override fun onUpdate(update: SessionListUpdate) {
+                            trySend(update)
+                        }
+                    },
+                )
+            awaitClose { handle.close() }
+        }
+        .buffer(Channel.CONFLATED)

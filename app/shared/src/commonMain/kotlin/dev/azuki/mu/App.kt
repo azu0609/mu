@@ -34,7 +34,8 @@ fun App(version: String, hosts: List<String>) {
                 )
                 Spacer(Modifier.height(16.dp))
                 Text(
-                    "mu $version · " + if (hosts.isEmpty()) "no hosts paired" else hosts.joinToString(),
+                    "mu $version · " +
+                        if (hosts.isEmpty()) "no hosts paired" else hosts.joinToString(),
                     style = MiuixTheme.textStyles.footnote1,
                     color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                 )

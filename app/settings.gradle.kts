@@ -15,5 +15,6 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "mu"
+
 // The UI, in common Kotlin (Android only for now), and the Android app around it.
 include(":shared", ":androidApp")

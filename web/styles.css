@@ -23,7 +23,9 @@
   }
 }
 
-* { box-sizing: border-box; }
+* {
+  box-sizing: border-box;
+}
 
 ::selection {
   background-color: var(--link);
@@ -64,7 +66,9 @@ body {
   padding-block: 12rem 7.5rem;
 }
 
-.page :is(h1, h2, p, ul, summary, a, .install) { pointer-events: auto; }
+.page :is(h1, h2, p, ul, summary, a, .install) {
+  pointer-events: auto;
+}
 
 .avatar {
   display: grid;
@@ -88,16 +92,32 @@ body {
   transition: transform 180ms ease-out;
 }
 
-body:has(.gaze-grid > :nth-child(3n + 1):hover) { --eye-x: -3px; }
-body:has(.gaze-grid > :nth-child(3n + 3):hover) { --eye-x: 3px; }
-body:has(.gaze-grid > :nth-child(-n + 3):hover) { --eye-y: -3px; }
-body:has(.gaze-grid > :nth-child(n + 7):hover) { --eye-y: 3px; }
+body:has(.gaze-grid > :nth-child(3n + 1):hover) {
+  --eye-x: -3px;
+}
+body:has(.gaze-grid > :nth-child(3n + 3):hover) {
+  --eye-x: 3px;
+}
+body:has(.gaze-grid > :nth-child(-n + 3):hover) {
+  --eye-y: -3px;
+}
+body:has(.gaze-grid > :nth-child(n + 7):hover) {
+  --eye-y: 3px;
+}
 
 /* Content stays selectable/clickable, and still draws the gaze downward. */
-body:has(.page :is(h1, h2, p, ul, summary, .install):hover) { --eye-y: 3px; }
-body:has(.page :is(.install, .faq-list):hover) { --eye-x: 3px; }
+body:has(.page :is(h1, h2, p, ul, summary, .install):hover) {
+  --eye-y: 3px;
+}
+body:has(.page :is(.install, .faq-list):hover) {
+  --eye-x: 3px;
+}
 
-h1, h2, p { margin: 0; }
+h1,
+h2,
+p {
+  margin: 0;
+}
 
 a {
   color: var(--link);
@@ -111,7 +131,9 @@ h1 {
   font-weight: 500;
 }
 
-h1 span { color: var(--muted); }
+h1 span {
+  color: var(--muted);
+}
 
 .install {
   display: inline-flex;
@@ -176,7 +198,9 @@ h1 span { color: var(--muted); }
   font-weight: 500;
 }
 
-.faq-list summary::-webkit-details-marker { display: none; }
+.faq-list summary::-webkit-details-marker {
+  display: none;
+}
 
 .faq-list summary::after {
   content: "";
@@ -192,10 +216,14 @@ h1 span { color: var(--muted); }
     color 180ms ease;
 }
 
-.faq-list details:not([open]) summary::after { transform: rotate(225deg); }
+.faq-list details:not([open]) summary::after {
+  transform: rotate(225deg);
+}
 
 @supports (interpolate-size: allow-keywords) and selector(details::details-content) {
-  .faq-list details { interpolate-size: allow-keywords; }
+  .faq-list details {
+    interpolate-size: allow-keywords;
+  }
 
   .faq-list details::details-content {
     display: flow-root;
@@ -231,19 +259,33 @@ h1 span { color: var(--muted); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .avatar-eyes { transition: none; }
-  .faq-list summary::after { transition: none; }
+  .avatar-eyes {
+    transition: none;
+  }
+  .faq-list summary::after {
+    transition: none;
+  }
 
   @supports (interpolate-size: allow-keywords) and selector(details::details-content) {
-    .faq-list details::details-content { transition: none; }
+    .faq-list details::details-content {
+      transition: none;
+    }
   }
 }
 
 @media (max-width: 45rem) {
-  .page { padding-block: 4.5rem 5rem; }
-  .avatar { width: 8.5rem; }
-  .avatar svg { width: 7rem; }
-  .install { margin-top: 2.25rem; }
+  .page {
+    padding-block: 4.5rem 5rem;
+  }
+  .avatar {
+    width: 8.5rem;
+  }
+  .avatar svg {
+    width: 7rem;
+  }
+  .install {
+    margin-top: 2.25rem;
+  }
   .faq {
     grid-template-columns: 1fr;
     gap: 2.5rem;
