@@ -3,7 +3,7 @@ use crate::{
     session::{Record, Usage, block_from_item},
     tools,
 };
-use mu_wire::{Block, Kind, ToolOutput, ToolStatus};
+use mu_wire::{Block, Kind, ModelInfo, ToolOutput, ToolStatus};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -115,37 +115,23 @@ impl Sse {
     }
 }
 
-pub fn step(request: Request, cancel: Arc<AtomicBool>, emit: Emit) -> Result<Step> {
-    let mut live = Live { emit, slots: BTreeMap::new() };
-    let mut items = BTreeMap::new();
-    let mut completed = None;
-    let mut sse = Sse::default();
-    let mut errors = vec![];
-    let mut preview = vec![];
+fn curl(path: &str, max_time: u64) -> Result<Command> {
     let base = config::var("MU_BASE_URL")?
         .or(config::var("OPENAI_BASE_URL")?)
         .unwrap_or_else(|| "http://127.0.0.1:8317/v1".into());
-    let url = format!("{}/responses", base.trim_end_matches('/'));
     let mut curl = Command::new("curl");
     // Ignore ~/.curlrc: it must not silently alter the request or write model data to disk.
     curl.args([
         "--disable",
         "--silent",
         "--show-error",
-        "--no-buffer",
         "--fail-with-body",
         "--connect-timeout",
         "15",
         "--max-time",
-        "600",
-        "--header",
-        "Content-Type: application/json",
-        "--header",
-        "Accept: text/event-stream",
-        "--data-binary",
-        "@-",
+        &max_time.to_string(),
         "--url",
-        &url,
+        &format!("{}{path}", base.trim_end_matches('/')),
     ]);
     if let Some(key) = config::var("MU_API_KEY")?.or(config::var("OPENAI_API_KEY")?) {
         if key.contains(['\r', '\n']) {
@@ -153,6 +139,62 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, emit: Emit) -> Result<Ste
         }
         curl.args(["--header", &format!("Authorization: Bearer {key}")]);
     }
+    Ok(curl)
+}
+
+// Asks for Anthropic's shape of the list even though mu speaks Responses: it is the only spec
+// that says how much context a model takes.
+pub fn models() -> Result<Vec<ModelInfo>> {
+    let mut curl = curl("/models?limit=1000", 30)?;
+    curl.args(["--header", "anthropic-version: 2026-10-21"]);
+    let (mut body, mut errors) = (vec![], vec![]);
+    let exit = process::run(&mut curl, None, Duration::from_secs(35), &Arc::default(), |stderr, bytes| {
+        let buffer = if stderr { &mut errors } else { &mut body };
+        if buffer.len() + bytes.len() > 16 * 1024 * 1024 {
+            return Err("The model list exceeds 16 MiB".into());
+        }
+        buffer.extend_from_slice(bytes);
+        Ok(())
+    })?;
+    if exit.timed_out || exit.code != 0 {
+        return Err(format!(
+            "Listing models failed ({}): {} {}",
+            exit.code,
+            String::from_utf8_lossy(&errors),
+            String::from_utf8_lossy(&body[..body.len().min(2048)])
+        )
+        .into());
+    }
+    let list: Value = serde_json::from_slice(&body)?;
+    let models = list["data"].as_array().ok_or("The endpoint's model list has no data")?;
+    Ok(models
+        .iter()
+        .filter_map(|model| {
+            Some(ModelInfo {
+                name: model["id"].as_str()?.to_owned(),
+                context: model["max_input_tokens"].as_u64().filter(|&n| n > 0),
+            })
+        })
+        .collect())
+}
+
+pub fn step(request: Request, cancel: Arc<AtomicBool>, emit: Emit) -> Result<Step> {
+    let mut live = Live { emit, slots: BTreeMap::new() };
+    let mut items = BTreeMap::new();
+    let mut completed = None;
+    let mut sse = Sse::default();
+    let mut errors = vec![];
+    let mut preview = vec![];
+    let mut curl = curl("/responses", 600)?;
+    curl.args([
+        "--no-buffer",
+        "--header",
+        "Content-Type: application/json",
+        "--header",
+        "Accept: text/event-stream",
+        "--data-binary",
+        "@-",
+    ]);
     let exit = process::run(
         &mut curl,
         Some(serde_json::to_vec(&request.body())?),

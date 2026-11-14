@@ -1,11 +1,11 @@
 use crate::{
     Result,
     agent::{self, Agent},
-    config,
+    api, config,
     devices::Devices,
-    directory, net,
+    directory, input, net,
     profile::Profile,
-    session, skills, tools,
+    session, skills, tools, upload,
 };
 use http_body_util::{BodyExt, Either, Full, Limited};
 use hyper::{
@@ -105,6 +105,9 @@ struct Host {
     runs: Mutex<VecDeque<(String, tools::Run)>>,
     devices: Option<Devices>,
     network: Option<Network>,
+    models: Mutex<Option<Vec<wire::ModelInfo>>>,
+    // The files under the last directory an @mention looked in.
+    mentions: Mutex<Option<(PathBuf, Arc<Vec<String>>)>>,
 }
 
 impl Host {
@@ -120,6 +123,8 @@ impl Host {
             runs: Mutex::default(),
             devices,
             network,
+            models: Mutex::default(),
+            mentions: Mutex::default(),
         }))
     }
 
@@ -213,11 +218,55 @@ impl Host {
         if !call.cwd.is_absolute() || !call.cwd.is_dir() {
             return Err(failed(format!("{} is not a directory", call.cwd.display())));
         }
-        let model = agent::default_model(call.model, call.effort, call.context).map_err(failed)?;
+        let model = self.resolve(call.model);
+        agent::check(&model).map_err(failed)?;
         let agent = Agent::new(call.cwd, model, self.changed());
+        agent.send(call.text, call.skill.as_deref()).map_err(failed)?;
         let id = agent.id();
         self.agents.lock().unwrap().insert(id.clone(), agent);
         Ok(id)
+    }
+
+    fn list_models(&self) -> Rpc<Vec<wire::ModelInfo>> {
+        let models = api::models().map_err(failed)?;
+        *self.models.lock().unwrap() = Some(models.clone());
+        Ok(models)
+    }
+
+    // Fills in how much context the model takes, when the endpoint says.
+    fn resolve(&self, mut model: wire::Model) -> wire::Model {
+        model.effort = model.effort.filter(|effort| !effort.is_empty());
+        if model.context.is_none() {
+            let mut models = self.models.lock().unwrap();
+            let known = models.get_or_insert_with(|| api::models().unwrap_or_default());
+            model.context = known.iter().find(|known| known.name == model.name).and_then(|known| known.context);
+        }
+        model
+    }
+
+    fn complete(&self, call: wire::CompleteMention) -> Rpc<Option<wire::Mention>> {
+        if !call.cwd.is_absolute() {
+            return Err(failed(format!("{} is not an absolute path", call.cwd.display())));
+        }
+        let Some((range, query)) = input::mention_at(&call.text, call.cursor) else {
+            return Ok(None);
+        };
+        let files = if input::is_path(&query) {
+            Arc::default()
+        } else {
+            let mut mentions = self.mentions.lock().unwrap();
+            match &*mentions {
+                Some((cwd, files)) if !call.refresh && *cwd == call.cwd => files.clone(),
+                _ => {
+                    let built = input::index(&call.cwd);
+                    let files = Arc::new(built.as_ref().cloned().unwrap_or_default());
+                    *mentions = Some((call.cwd.clone(), files.clone()));
+                    built.map_err(failed)?;
+                    files
+                }
+            }
+        };
+        Ok(Some(input::complete(range, query, &call.cwd, &files)))
     }
 
     fn subscribe(self: &Arc<Self>, call: wire::Subscribe) -> Rpc<Stream> {
@@ -552,7 +601,7 @@ async fn handle(host: Arc<Host>, peer: Peer, request: Request<Incoming>) -> Repl
         }
         wire::SetModel::PATH => {
             call(host, &body, |host, call: wire::SetModel| {
-                host.agent(&call.session_id)?.set_model(call.model).map_err(failed)
+                host.agent(&call.session_id)?.set_model(host.resolve(call.model)).map_err(failed)
             })
             .await
         }
@@ -565,12 +614,7 @@ async fn handle(host: Arc<Host>, peer: Peer, request: Request<Incoming>) -> Repl
             })
             .await
         }
-        wire::CompleteMention::PATH => {
-            call(host, &body, |host, call: wire::CompleteMention| {
-                host.agent(&call.session_id)?.complete(&call.text, call.cursor, call.refresh).map_err(failed)
-            })
-            .await
-        }
+        wire::CompleteMention::PATH => call(host, &body, |host, call| host.complete(call)).await,
         wire::AppendShell::PATH => call(host, &body, |host, call| host.append(call)).await,
         wire::DeleteSessions::PATH => call(host, &body, |host, wire::DeleteSessions {}| host.delete_sessions()).await,
         wire::SetIcon::PATH => {
@@ -592,6 +636,7 @@ async fn handle(host: Arc<Host>, peer: Peer, request: Request<Incoming>) -> Repl
         wire::ListDirectory::PATH => {
             call(host, &body, |_, call: wire::ListDirectory| directory::list(&call.path).map_err(failed)).await
         }
+        wire::ListModels::PATH => call(host, &body, |host, wire::ListModels {}| host.list_models()).await,
         wire::ListSkills::PATH => {
             call(host, &body, |_, call: wire::ListSkills| {
                 if !call.cwd.is_absolute() {
@@ -600,6 +645,9 @@ async fn handle(host: Arc<Host>, peer: Peer, request: Request<Incoming>) -> Repl
                 Ok(skills::skills(&call.cwd).iter().map(Into::into).collect())
             })
             .await
+        }
+        wire::Upload::PATH => {
+            call(host, &body, |_, call: wire::Upload| upload::save(&call.name, &call.data).map_err(failed)).await
         }
         wire::Pair::PATH => call(host, &body, |host, call| host.pair(call)).await,
         wire::CreateInvite::PATH => call(host, &body, |host, wire::CreateInvite {}| host.invite()).await,

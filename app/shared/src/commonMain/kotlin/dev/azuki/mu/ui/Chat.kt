@@ -1,0 +1,382 @@
+package dev.azuki.mu.ui
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.structuralEqualityPolicy
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import dev.azuki.mu.model.Block
+import dev.azuki.mu.model.BlockKind
+import dev.azuki.mu.model.ToolStatus
+import dev.azuki.mu.state.ChatState
+import dev.azuki.mu.state.Entry
+import dev.azuki.mu.state.Mu
+import dev.azuki.mu.state.compact
+import dev.azuki.mu.state.duration
+import dev.azuki.mu.state.entries
+import kotlin.time.Clock
+import kotlinx.coroutines.delay
+import top.yukonga.miuix.kmp.basic.Card
+import top.yukonga.miuix.kmp.basic.Icon
+import top.yukonga.miuix.kmp.basic.Scaffold
+import top.yukonga.miuix.kmp.basic.SmallTopAppBar
+import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.theme.MiuixTheme
+
+@Composable
+fun Chat(
+    mu: Mu,
+    chat: ChatState,
+    // How much of the bottom the composer covers.
+    bottom: Dp,
+    // Counts the messages sent, each one bringing the list back to its end.
+    sent: Int,
+    onMenu: () -> Unit,
+) {
+    val expanded = remember(chat) { mutableStateMapOf<String, Boolean>() }
+    val entries by
+        remember(chat) {
+            derivedStateOf { entries(chat.blocks.toList(), chat.live.toList(), chat.running) }
+        }
+    val state = chat.state
+    val list = rememberLazyListState()
+    var follow by remember(chat) { mutableStateOf(true) }
+    LaunchedEffect(sent) { follow = true }
+    LaunchedEffect(list) {
+        snapshotFlow { list.isScrollInProgress }
+            .collect { scrolling ->
+                if (!scrolling)
+                    follow =
+                        list.firstVisibleItemIndex == 0 && list.firstVisibleItemScrollOffset == 0
+            }
+    }
+    val newest by
+        remember(chat) {
+            derivedStateOf(structuralEqualityPolicy()) {
+                listOf(
+                    entries.lastOrNull()?.key,
+                    entries.size,
+                    chat.feedback.size,
+                    chat.state?.queued?.size,
+                    chat.liveNotice != null,
+                )
+            }
+        }
+    // The list is reversed and holds its first visible item in place, so anything new would land
+    // below the fold. Pinning to the end in the same frame the items change keeps it in view.
+    key(newest) {
+        SideEffect { if (follow && !list.isScrollInProgress) list.requestScrollToItem(0) }
+    }
+
+    Scaffold(
+        topBar = {
+            SmallTopAppBar(
+                title = state?.title?.ifBlank { null } ?: "New Session",
+                subtitle =
+                    when {
+                        !chat.connected ->
+                            if (chat.error != null) "Reconnecting to ${mu.name(chat.host)}…"
+                            else "Connecting…"
+                        state == null -> ""
+                        else ->
+                            buildString {
+                                append(
+                                    "in ${compact(state.uncachedInput)} (${compact(state.input)}) / ${compact(state.output)} out"
+                                )
+                                val context = state.context
+                                if (context != null)
+                                    append(" / ${state.contextUsed * 100 / context}% ctx")
+                                else append(" / ${compact(state.contextUsed)} ctx")
+                            }
+                    },
+                navigationIcon = {
+                    CircleButton(Solar.HamburgerMenuLineDuotone, "Sessions", onMenu)
+                },
+            )
+        }
+    ) { padding ->
+        LazyColumn(
+            state = list,
+            reverseLayout = true,
+            modifier = Modifier.fillMaxSize(),
+            contentPadding =
+                PaddingValues(
+                    top = padding.calculateTopPadding() + 8.dp,
+                    bottom = bottom + 16.dp,
+                    start = 16.dp,
+                    end = 16.dp,
+                ),
+            verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.Bottom),
+        ) {
+            val queued = state?.queued.orEmpty()
+            queued.asReversed().forEachIndexed { index, text ->
+                item(key = "queued.${queued.size - 1 - index}") {
+                    UserBubble(text, Modifier.alpha(0.5f))
+                }
+            }
+            chat.liveNotice?.let { block -> item(key = "notice") { NoticeView(block) } }
+            chat.feedback.asReversed().forEachIndexed { index, block ->
+                item(key = "feedback.${chat.feedback.size - 1 - index}") { NoticeView(block) }
+            }
+            items(entries.asReversed(), key = { it.key }) { entry ->
+                when (entry) {
+                    is Entry.User -> UserBubble(entry.text)
+                    is Entry.Agent -> Markdown(entry.text)
+                    is Entry.Work ->
+                        WorkView(entry, expanded[entry.key] == true) {
+                            expanded[entry.key] = expanded[entry.key] != true
+                        }
+                    is Entry.Shell -> ShellCard(entry.block)
+                    is Entry.Notice -> NoticeView(entry.block)
+                }
+            }
+            chat.error
+                ?.takeIf { !chat.connected }
+                ?.let { error ->
+                    item(key = "error") {
+                        NoticeView(Block(BlockKind.Warning, error, null, null))
+                    }
+                }
+        }
+    }
+}
+
+@Composable
+private fun UserBubble(text: String, modifier: Modifier = Modifier) {
+    Box(modifier.fillMaxWidth(), contentAlignment = Alignment.CenterEnd) {
+        Text(
+            text,
+            Modifier.padding(start = 48.dp)
+                .clip(RoundedCornerShape(22.dp))
+                .background(Accent)
+                .padding(horizontal = 16.dp, vertical = 11.dp),
+            color = MiuixTheme.colorScheme.onPrimary,
+            style = MiuixTheme.textStyles.body1,
+        )
+    }
+}
+
+@Composable
+private fun WorkView(work: Entry.Work, expanded: Boolean, onToggle: () -> Unit) {
+    val now by
+        produceState(Clock.System.now().toEpochMilliseconds(), work.ongoing) {
+            while (work.ongoing) {
+                delay(1_000)
+                value = Clock.System.now().toEpochMilliseconds()
+            }
+        }
+    val label =
+        when {
+            work.ongoing && work.started != null -> "Working for ${duration(now - work.started)}"
+            work.ongoing -> "Working…"
+            work.started != null && work.finished != null ->
+                "Worked for ${duration(work.finished - work.started)}"
+            else -> "Worked"
+        }
+    val gray = MiuixTheme.colorScheme.onSurfaceVariantSummary
+    Column {
+        Row(
+            Modifier.clip(RoundedCornerShape(8.dp))
+                .clickable(enabled = work.blocks.isNotEmpty(), onClick = onToggle)
+                .padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (work.ongoing) Spinning(Solar.LoaderBold, Modifier.padding(end = 8.dp).size(16.dp))
+            Text(label, color = gray, style = MiuixTheme.textStyles.body2)
+            if (work.blocks.isNotEmpty()) {
+                Icon(
+                    if (expanded) Solar.AltArrowUpLinear else Solar.AltArrowDownLinear,
+                    null,
+                    Modifier.padding(start = 6.dp).size(16.dp),
+                    tint = gray,
+                )
+            }
+        }
+        if (work.ongoing && !expanded) {
+            work.blocks.lastOrNull()?.let { last ->
+                Text(
+                    last.text
+                        .lineSequence()
+                        .firstOrNull { it.isNotBlank() }
+                        .orEmpty()
+                        .trim()
+                        .trim('*'),
+                    Modifier.padding(top = 2.dp),
+                    color = gray,
+                    style = MiuixTheme.textStyles.footnote1,
+                    fontFamily = if (last.kind == BlockKind.Call) Mono else null,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        AnimatedVisibility(
+            expanded,
+            enter = fadeIn() + expandVertically(),
+            exit = fadeOut() + shrinkVertically(),
+        ) {
+            Column(
+                Modifier.padding(top = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                work.blocks.forEach { block ->
+                    when (block.kind) {
+                        BlockKind.Call -> CallView(block)
+                        else -> Markdown(block.text, color = gray, small = true)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CallView(block: Block) {
+    var open by remember { mutableStateOf(false) }
+    val tool = block.tool
+    val gray = MiuixTheme.colorScheme.onSurfaceVariantSummary
+    Column(
+        Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(MiuixTheme.colorScheme.surfaceContainer)
+            .clickable(enabled = !tool?.output.isNullOrEmpty()) { open = !open }
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Solar.FileTerminalBoldDuotone, null, Modifier.size(18.dp), tint = Accent)
+            Text(
+                block.text,
+                Modifier.weight(1f).padding(horizontal = 8.dp),
+                fontFamily = Mono,
+                fontSize = 12.sp,
+                lineHeight = 17.sp,
+                maxLines = if (open) Int.MAX_VALUE else 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            when (val status = tool?.status) {
+                ToolStatus.Running,
+                ToolStatus.Pending -> Spinning(Solar.LoaderBold, Modifier.size(14.dp))
+                null -> Unit
+                else ->
+                    ending(status)?.let {
+                        Text(it, color = Danger, fontSize = 11.sp, fontFamily = Mono)
+                    }
+            }
+        }
+        if (open && tool != null) {
+            Text(
+                tool.output.trimEnd() + if (tool.truncated) "\n…" else "",
+                Modifier.padding(top = 8.dp),
+                fontFamily = Mono,
+                fontSize = 11.sp,
+                lineHeight = 16.sp,
+                color = gray,
+            )
+        }
+    }
+}
+
+private fun ending(status: ToolStatus): String? =
+    when (status) {
+        is ToolStatus.Exited -> if (status.code == 0) null else "exit ${status.code}"
+        is ToolStatus.TimedOut -> "timed out"
+        ToolStatus.Cancelled -> "cancelled"
+        ToolStatus.Failed -> "failed"
+        ToolStatus.Running,
+        ToolStatus.Pending -> null
+    }
+
+@Composable
+private fun ShellCard(block: Block) {
+    var open by remember { mutableStateOf(false) }
+    val output = block.tool?.output.orEmpty().trimEnd()
+    Card(cornerRadius = 20.dp, onClick = { open = !open }) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "$ ${block.text}",
+                    Modifier.weight(1f),
+                    fontFamily = Mono,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                )
+                block.tool?.status?.let(::ending)?.let {
+                    Text(it, color = Danger, fontSize = 11.sp, fontFamily = Mono)
+                }
+            }
+            if (output.isNotEmpty()) {
+                Text(
+                    output,
+                    Modifier.padding(top = 6.dp),
+                    fontFamily = Mono,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    maxLines = if (open) Int.MAX_VALUE else 6,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun NoticeView(block: Block) {
+    if (block.kind == BlockKind.Warning) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+            Icon(
+                Solar.DangerTriangleBoldDuotone,
+                null,
+                Modifier.padding(top = 1.dp, end = 8.dp).size(18.dp),
+                tint = Danger,
+            )
+            Text(block.text, color = Danger, style = MiuixTheme.textStyles.body2)
+        }
+    } else {
+        Text(
+            block.text,
+            Modifier.fillMaxWidth(),
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            style = MiuixTheme.textStyles.footnote1,
+            textAlign = TextAlign.Center,
+        )
+    }
+}

@@ -1,44 +1,92 @@
 package dev.azuki.mu
 
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import top.yukonga.miuix.kmp.basic.Scaffold
-import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.theme.ColorSchemeMode
-import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.theme.ThemeController
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import dev.azuki.mu.model.Core
+import dev.azuki.mu.model.Platform
+import dev.azuki.mu.state.Mu
+import dev.azuki.mu.ui.Home
+import dev.azuki.mu.ui.HostPage
+import dev.azuki.mu.ui.MuTheme
+import dev.azuki.mu.ui.SettingsPage
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
+import top.yukonga.miuix.kmp.basic.SnackbarHost
+import top.yukonga.miuix.kmp.nav.core.NavDisplay
+import top.yukonga.miuix.kmp.nav.core.NavKey
+import top.yukonga.miuix.kmp.nav.core.rememberNavBackStack
+import top.yukonga.miuix.kmp.nav.transition.NavSwipeDirection
 
+@Serializable
+sealed interface Route : NavKey {
+    @Serializable data object Home : Route
+
+    @Serializable data object Settings : Route
+
+    @Serializable data class Host(val id: String) : Route
+}
+
+// `invite` is a mu:// link the app was opened with, until `onInviteHandled`.
 @Composable
-fun App(version: String, hosts: List<String>) {
-    MiuixTheme(controller = remember { ThemeController(ColorSchemeMode.System) }) {
-        Scaffold { padding ->
-            Column(
-                modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 24.dp),
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Text("嗨!", style = MiuixTheme.textStyles.title1, fontWeight = FontWeight.Bold)
-                Text(
-                    "我是mu, 你好呀～",
-                    style = MiuixTheme.textStyles.title1,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                )
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    "mu $version · " +
-                        if (hosts.isEmpty()) "no hosts paired" else hosts.joinToString(),
-                    style = MiuixTheme.textStyles.footnote1,
-                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                )
+fun App(core: Core, platform: Platform, invite: String?, onInviteHandled: () -> Unit) {
+    MuTheme {
+        val scope = rememberCoroutineScope()
+        val mu = remember { Mu(core, platform, scope) }
+        val lifecycle = LocalLifecycleOwner.current.lifecycle
+        val ids = mu.hosts.map { it.id }
+        LaunchedEffect(ids) {
+            lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                coroutineScope { ids.forEach { launch { mu.watch(it) } } }
             }
+        }
+
+        val backStack = rememberNavBackStack<Route>(Route.Home)
+        fun push(route: Route) {
+            if (backStack.lastOrNull() != route) backStack.add(route)
+        }
+        Box(Modifier.fillMaxSize()) {
+            NavDisplay(backStack) {
+                entry<Route.Home> {
+                    Home(
+                        mu = mu,
+                        onSettings = { push(Route.Settings) },
+                        onHost = { push(Route.Host(it)) },
+                        invite = invite,
+                        onInviteHandled = onInviteHandled,
+                    )
+                }
+                entry<Route.Settings>(swipeDismiss = NavSwipeDirection.LeftToRight) {
+                    SettingsPage(
+                        mu,
+                        onBack = { backStack.removeLastOrNull() },
+                        onHost = { push(Route.Host(it)) },
+                    )
+                }
+                entry<Route.Host>(swipeDismiss = NavSwipeDirection.LeftToRight) { route ->
+                    HostPage(mu, route.id, onBack = { backStack.removeLastOrNull() })
+                }
+            }
+            SnackbarHost(
+                mu.snackbar,
+                Modifier.align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .imePadding()
+                    .padding(bottom = 96.dp),
+            )
         }
     }
 }

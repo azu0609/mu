@@ -1,6 +1,6 @@
 use crate::Result;
 use mu_client::{
-    Client, Device, Endpoint, Event, Invitation, Mention, Model, ShellEvent, TreeEntry, Update, WatchEvent,
+    Client, Device, Endpoint, Event, Invitation, Mention, Model, ShellEvent, Skill, TreeEntry, Update, WatchEvent,
 };
 use std::{future::Future, path::Path, sync::mpsc, time::Duration};
 use tokio::{runtime::Runtime, task::JoinHandle, time};
@@ -79,14 +79,20 @@ impl Remote {
         Ok(())
     }
 
-    pub fn create(
-        &self,
-        cwd: &Path,
-        model: Option<String>,
-        effort: Option<String>,
-        context: Option<u64>,
-    ) -> Result<String> {
-        self.call(self.client.create(cwd, model, effort, context))
+    pub fn detach(&mut self) {
+        if let Some(old) = self.subscription.take() {
+            old.abort();
+        }
+        self.subscriptions += 1;
+        self.generation = self.subscriptions;
+    }
+
+    pub fn create(&self, cwd: &Path, model: Model, text: String, skill: Option<String>) -> Result<String> {
+        self.call(self.client.create(cwd, model, text, skill))
+    }
+
+    pub fn skills(&self, cwd: &Path) -> Result<Vec<Skill>> {
+        self.call(self.client.list_skills(cwd))
     }
 
     pub fn mark_read(&self, id: &str) {
@@ -166,12 +172,12 @@ impl Remote {
         }
     }
 
-    pub fn complete(&self, seq: u64, id: &str, text: String, cursor: usize, refresh: bool) {
+    pub fn complete(&self, seq: u64, cwd: &Path, text: String, cursor: usize, refresh: bool) {
         let client = self.client.clone();
-        let id = id.to_owned();
+        let cwd = cwd.to_owned();
         let tx = self.tx.clone();
         self.runtime.spawn(async move {
-            let result = client.complete(&id, text, cursor, refresh).await;
+            let result = client.complete(&cwd, text, cursor, refresh).await;
             let _ = tx.send(Incoming::Mention(seq, result.map_err(Into::into)));
         });
     }

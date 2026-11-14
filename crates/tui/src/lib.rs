@@ -17,6 +17,7 @@ use remote::{Incoming, Remote};
 use std::{
     env,
     io::{self, Write},
+    path::PathBuf,
     time::{Duration, Instant},
 };
 
@@ -51,10 +52,16 @@ fn cycle_selection(selected: usize, len: usize, up: bool) -> usize {
     }
 }
 
+// A conversation not started yet: the host only makes one with its first message.
+struct Draft {
+    model: Option<Model>,
+}
+
 struct App {
     remote: Remote,
     connected: bool,
     view: View,
+    draft: Option<Draft>,
     host: HostView,
     editor: ui::Editor,
     feedback: Vec<Block>,
@@ -75,6 +82,20 @@ struct App {
 }
 
 impl App {
+    fn model(&self) -> Option<&Model> {
+        match &self.draft {
+            Some(draft) => draft.model.as_ref(),
+            None => Some(&self.view.model),
+        }
+    }
+
+    fn session(&self) -> Result<&str> {
+        match self.draft {
+            Some(_) => Err("Nothing sent yet".into()),
+            None => Ok(&self.view.id),
+        }
+    }
+
     fn reset_view(&mut self) {
         self.feedback.clear();
         self.scroll = 0;
@@ -252,13 +273,28 @@ impl App {
     fn attach(&mut self, id: &str) -> Result<()> {
         self.remote.attach(id)?;
         self.view = View::default();
+        self.draft = None;
         self.reset_view();
         Ok(())
     }
 
+    fn start_draft(&mut self, cwd: PathBuf, model: Option<Model>) {
+        self.remote.detach();
+        let skills = self.remote.skills(&cwd);
+        self.view = View { cwd, skills: skills.as_ref().cloned().unwrap_or_default(), ..View::default() };
+        self.draft = Some(Draft { model });
+        self.connected = true;
+        self.reset_view();
+        if let Err(e) = skills {
+            self.warn(format!("Skills: {e}"));
+        }
+    }
+
     fn quit(&mut self) {
         self.quitting = true;
-        let _ = self.remote.stop(&self.view.id);
+        if let Ok(id) = self.session() {
+            let _ = self.remote.stop(id);
+        }
     }
 
     fn stop(&mut self) {
@@ -274,7 +310,11 @@ impl App {
             self.notice("Clear the input before restoring a queued message.");
             return;
         }
-        match self.remote.recall(&self.view.id) {
+        let recalled = match self.draft {
+            Some(_) => Ok(None),
+            None => self.remote.recall(&self.view.id),
+        };
+        match recalled {
             Ok(Some(text)) => {
                 self.editor.insert(&text);
                 self.notice("Restored newest queued message to input.");
@@ -303,30 +343,24 @@ impl App {
                     return Err(format!("Usage: {} {}", command.name, command.hint).into());
                 }
                 let context = match args.get(3) {
-                    Some(context) => {
-                        counts::parse(context).ok_or("Context must be a positive token count (e.g. 128k or 1.5m)")?
-                    }
-                    None => self.view.model.context,
+                    Some(context) => Some(
+                        counts::parse(context).ok_or("Context must be a positive token count (e.g. 128k or 1.5m)")?,
+                    ),
+                    None => self.model().filter(|model| model.name == args[1]).and_then(|model| model.context),
                 };
                 let model = Model {
                     name: args[1].into(),
                     effort: args.get(2).copied().filter(|&s| s != "-").map(Into::into),
                     context,
                 };
-                self.remote.set_model(&self.view.id, model)?;
+                match &mut self.draft {
+                    Some(draft) => draft.model = Some(model),
+                    None => self.remote.set_model(&self.view.id, model)?,
+                }
             }
-            commands::BuiltinKind::New => {
-                let model = &self.view.model;
-                let id = self.remote.create(
-                    &self.view.cwd,
-                    Some(model.name.clone()),
-                    Some(model.effort.clone().unwrap_or_default()),
-                    Some(model.context),
-                )?;
-                self.attach(&id)?;
-            }
+            commands::BuiltinKind::New => self.start_draft(self.view.cwd.clone(), self.model().cloned()),
             commands::BuiltinKind::Tree => {
-                let entries: Vec<_> = self.remote.tree(&self.view.id)?;
+                let entries: Vec<_> = self.remote.tree(self.session()?)?;
                 let selected = entries.iter().position(|entry| entry.current).unwrap_or(0);
                 let entries = entries
                     .into_iter()
@@ -382,9 +416,19 @@ impl App {
                 commands::Choice::Skill(i) => skill = Some(self.view.skills[i].name.clone()),
             }
         }
-        self.remote.send(&self.view.id, text, skill)?;
-        self.editor.clear();
-        Ok(())
+        match &self.draft {
+            Some(draft) => {
+                let model = draft.model.clone().ok_or("Pick a model first: /model <model> [effort|-] [context]")?;
+                let id = self.remote.create(&self.view.cwd, model, text, skill)?;
+                self.editor.clear();
+                self.attach(&id)
+            }
+            None => {
+                self.remote.send(&self.view.id, text, skill)?;
+                self.editor.clear();
+                Ok(())
+            }
+        }
     }
 
     fn complete(&mut self) {
@@ -427,7 +471,7 @@ impl App {
             return;
         }
         self.mention_seq += 1;
-        self.remote.complete(self.mention_seq, &self.view.id, text.clone(), cursor, !self.mention_open);
+        self.remote.complete(self.mention_seq, &self.view.cwd, text.clone(), cursor, !self.mention_open);
         self.mention_open = true;
         self.mention_key = Some((text, cursor));
         // A nearby host answers before the next frame, so the menu never lags the
@@ -686,16 +730,16 @@ fn var(name: &str) -> Option<String> {
 
 pub fn run(endpoint: Endpoint) -> Result<()> {
     let remote = Remote::connect(endpoint)?;
-    let id = remote.create(
-        &env::current_dir()?,
-        var("MU_MODEL"),
-        var("MU_EFFORT"),
-        var("MU_CONTEXT").and_then(|s| s.parse().ok()),
-    )?;
+    let model = var("MU_MODEL").map(|name| Model {
+        name,
+        effort: var("MU_EFFORT"),
+        context: var("MU_CONTEXT").and_then(|s| counts::parse(&s)),
+    });
     let mut app = App {
         remote,
         connected: true,
         view: View::default(),
+        draft: None,
         host: HostView::default(),
         editor: ui::Editor::default(),
         feedback: vec![],
@@ -714,6 +758,6 @@ pub fn run(endpoint: Endpoint) -> Result<()> {
         transcript_static: None,
         quitting: false,
     };
-    app.attach(&id)?;
+    app.start_draft(env::current_dir()?, model);
     app.run()
 }

@@ -13,6 +13,7 @@ mod server;
 mod session;
 mod skills;
 pub mod tools;
+mod upload;
 
 pub use server::{listen_address, serve, serve_stream, socket_path};
 use std::{env, path::PathBuf};

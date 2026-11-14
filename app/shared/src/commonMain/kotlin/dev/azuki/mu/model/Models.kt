@@ -1,0 +1,136 @@
+package dev.azuki.mu.model
+
+data class Host(
+    val id: String,
+    val name: String,
+    val icon: String?,
+    val description: String,
+    val address: String,
+)
+
+data class HostProfile(
+    val name: String,
+    val home: String,
+    val icon: String?,
+    val description: String,
+    val snippets: List<Snippet>,
+)
+
+data class Snippet(val id: String, val name: String, val command: String, val icon: String?)
+
+enum class Status {
+    Idle,
+    Running,
+    Finished,
+    Failed,
+}
+
+data class SessionSummary(
+    val id: String,
+    val title: String,
+    val cwd: String,
+    val status: Status,
+    val error: String?,
+    val unread: Boolean,
+    // Milliseconds since the Unix epoch.
+    val updated: Long,
+)
+
+sealed interface HostUpdate {
+    data class Host(val profile: HostProfile, val sessions: List<SessionSummary>) : HostUpdate
+
+    data object Lost : HostUpdate
+}
+
+data class Deleted(val deleted: Long, val inUse: Long)
+
+data class Directory(val path: String, val entries: List<DirectoryEntry>)
+
+data class DirectoryEntry(val name: String, val kind: EntryKind)
+
+enum class EntryKind {
+    File,
+    Directory,
+    Repository,
+}
+
+data class Skill(val name: String, val description: String)
+
+data class ModelInfo(val name: String, val context: Long?)
+
+enum class BlockKind {
+    User,
+    Agent,
+    Thought,
+    Call,
+    Shell,
+    Notice,
+    Warning,
+}
+
+data class Block(val kind: BlockKind, val text: String, val tool: Tool?, val span: Span?)
+
+// Milliseconds since the Unix epoch.
+data class Span(val started: Long, val finished: Long)
+
+data class Tool(val status: ToolStatus, val output: String, val truncated: Boolean)
+
+sealed interface ToolStatus {
+    data object Pending : ToolStatus
+
+    data object Running : ToolStatus
+
+    data class Exited(val code: Int) : ToolStatus
+
+    data class TimedOut(val millis: Long) : ToolStatus
+
+    data object Cancelled : ToolStatus
+
+    data object Failed : ToolStatus
+}
+
+data class SessionState(
+    val status: Status,
+    val title: String,
+    val model: String,
+    val effort: String?,
+    val context: Long?,
+    val contextUsed: Long,
+    val input: Long,
+    val uncachedInput: Long,
+    val output: Long,
+    val queued: List<String>,
+)
+
+// A reset clears everything but the first `keep` blocks of the transcript; the
+// rest of it then arrives as ordinary commits.
+sealed interface SessionUpdate {
+    data class Reset(
+        val keep: Int,
+        val cwd: String,
+        val state: SessionState,
+        val skills: List<Skill>,
+    ) : SessionUpdate
+
+    data class State(val state: SessionState, val started: Boolean) : SessionUpdate
+
+    data class Committed(val blocks: List<Block>) : SessionUpdate
+
+    data class Live(val index: Int, val block: Block) : SessionUpdate
+
+    data class LiveNotice(val block: Block) : SessionUpdate
+
+    data class Feedback(val block: Block) : SessionUpdate
+
+    data object Lost : SessionUpdate
+}
+
+sealed interface ShellUpdate {
+    data class Output(val tool: Tool) : ShellUpdate
+
+    data class Done(val run: String, val tool: Tool) : ShellUpdate
+
+    data class Failed(val message: String) : ShellUpdate
+}
+
+class MuException(message: String, val unpaired: Boolean = false) : Exception(message)

@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{fmt, net::IpAddr, ops::Range, path::PathBuf, str::FromStr};
 
 // Bump on any change an older peer cannot read; peers refuse a mismatch.
-pub const PROTOCOL: u32 = 3;
+pub const PROTOCOL: u32 = 5;
 
 pub trait Call: Serialize + DeserializeOwned {
     const PATH: &'static str;
@@ -95,7 +95,13 @@ pub struct Model {
     #[serde(rename = "model")]
     pub name: String,
     pub effort: Option<String>,
-    pub context: u64,
+    pub context: Option<u64>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub struct ModelInfo {
+    pub name: String,
+    pub context: Option<u64>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -318,16 +324,17 @@ macro_rules! calls {
 calls! {
     Hello {} => "/hello" -> HostInfo;
     ListSessions {} => "/list_sessions" -> Vec<SessionSummary>;
-    CreateSession { cwd: PathBuf, model: Option<String>, effort: Option<String>, context: Option<u64> }
-        => "/create_session" -> String;
+    // A session starts with its first message, so none is ever left empty.
+    CreateSession { cwd: PathBuf, model: Model, text: String, skill: Option<String> } => "/create_session" -> String;
     SendMessage { session_id: String, text: String, skill: Option<String> } => "/send_message" -> ();
     Stop { session_id: String } => "/stop" -> ();
     MarkRead { session_id: String } => "/mark_read" -> ();
     RecallQueued { session_id: String } => "/recall_queued" -> Option<String>;
     SetModel { session_id: String, model: Model } => "/set_model" -> ();
+    ListModels {} => "/list_models" -> Vec<ModelInfo>;
     GetTree { session_id: String } => "/get_tree" -> Vec<TreeEntry>;
     Checkout { session_id: String, node: Option<usize> } => "/checkout" -> Option<String>;
-    CompleteMention { session_id: String, text: String, cursor: usize, refresh: bool }
+    CompleteMention { cwd: PathBuf, text: String, cursor: usize, refresh: bool }
         => "/complete_mention" -> Option<Mention>;
     AppendShell { session_id: String, run: String } => "/append_shell" -> ();
     DeleteSessions {} => "/delete_sessions" -> Deleted;
@@ -338,6 +345,8 @@ calls! {
     DeleteSnippet { id: String } => "/delete_snippet" -> ();
     ListDirectory { path: PathBuf } => "/list_directory" -> Directory;
     ListSkills { cwd: PathBuf } => "/list_skills" -> Vec<Skill>;
+    // `data` is base64; the reply is where the host keeps it, to @mention.
+    Upload { name: String, data: String } => "/upload" -> PathBuf;
     Pair { code: String, device: String } => "/pair" -> String;
     CreateInvite {} => "/create_invite" -> Invitation;
     ListDevices {} => "/list_devices" -> Vec<Device>;

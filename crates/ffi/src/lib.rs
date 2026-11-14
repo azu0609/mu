@@ -1,7 +1,7 @@
 // Listeners are called on the core's own threads; hop to the UI's before
 // touching its state.
 use mu_client::{
-    Change, Client, Endpoint, HostView, Invite, ShellEvent, Update, View,
+    Change, Client, Endpoint, HostView, Invite, Model, ShellEvent, Update, View,
     hosts::{Hosts, Paired},
 };
 use std::{
@@ -122,8 +122,25 @@ impl Core {
         Ok(sessions.into_iter().map(Into::into).collect())
     }
 
-    pub async fn create_session(&self, host: String, cwd: String) -> Result<String, MuError> {
-        self.on(&host, |client| async move { client.create(cwd.as_ref(), None, None, None).await }).await
+    pub async fn create_session(
+        &self,
+        host: String,
+        cwd: String,
+        model: String,
+        effort: Option<String>,
+        text: String,
+        skill: Option<String>,
+    ) -> Result<String, MuError> {
+        let model = Model { name: model, effort, context: None };
+        self.on(&host, |client| async move { client.create(cwd.as_ref(), model, text, skill).await }).await
+    }
+
+    pub async fn list_models(&self, host: String) -> Result<Vec<ModelInfo>, MuError> {
+        let models = self.on(&host, |client| async move { client.models().await }).await?;
+        Ok(models
+            .into_iter()
+            .map(|model| ModelInfo { name: model.name, context: model.context.map(|context| context as i64) })
+            .collect())
     }
 
     pub async fn delete_sessions(&self, host: String) -> Result<DeletedSessions, MuError> {
@@ -204,6 +221,11 @@ impl Core {
                 })
                 .collect(),
         })
+    }
+
+    pub async fn upload(&self, host: String, name: String, data: Vec<u8>) -> Result<String, MuError> {
+        let path = self.on(&host, |client| async move { client.upload(&name, &data).await }).await?;
+        Ok(path.to_string_lossy().into_owned())
     }
 
     pub async fn list_skills(&self, host: String, cwd: String) -> Result<Vec<Skill>, MuError> {
@@ -332,8 +354,11 @@ fn state(view: &View) -> SessionState {
         title: view.title.clone(),
         model: view.model.name.clone(),
         effort: view.model.effort.clone(),
-        context: view.model.context as i64,
+        context: view.model.context.map(|context| context as i64),
         context_used: view.stats.context_used as i64,
+        input: view.stats.input as i64,
+        uncached_input: view.stats.uncached_input as i64,
+        output: view.stats.output as i64,
         queued: view.queued.clone(),
     }
 }
@@ -360,6 +385,12 @@ impl Session {
     pub async fn append_shell(&self, run: String) -> Result<(), MuError> {
         let (client, id) = (self.client.clone(), self.id.clone());
         spawn(&self.runtime, async move { client.append_shell(&id, &run).await }).await
+    }
+
+    pub async fn set_model(&self, name: String, effort: Option<String>) -> Result<(), MuError> {
+        let (client, id) = (self.client.clone(), self.id.clone());
+        let model = Model { name, effort, context: None };
+        spawn(&self.runtime, async move { client.set_model(&id, model).await }).await
     }
 
     pub async fn stop(&self) -> Result<(), MuError> {
@@ -511,9 +542,18 @@ pub struct SessionState {
     pub title: String,
     pub model: String,
     pub effort: Option<String>,
-    pub context: i64,
+    pub context: Option<i64>,
     pub context_used: i64,
+    pub input: i64,
+    pub uncached_input: i64,
+    pub output: i64,
     pub queued: Vec<String>,
+}
+
+#[derive(uniffi::Record)]
+pub struct ModelInfo {
+    pub name: String,
+    pub context: Option<i64>,
 }
 
 #[derive(uniffi::Record)]

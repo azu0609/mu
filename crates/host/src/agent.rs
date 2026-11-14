@@ -1,10 +1,10 @@
 use crate::{
-    Result, api, config, input,
+    Result, api, input,
     session::{self, End, Record, Session},
     skills::{self, Skill},
     tools,
 };
-use mu_wire::{Block, Event, Kind, Mention, Model, Resume, Snapshot, Span, State, Stats, Status, TreeEntry};
+use mu_wire::{Block, Event, Kind, Model, Resume, Snapshot, Span, State, Stats, Status, TreeEntry};
 use std::{
     mem,
     path::PathBuf,
@@ -36,25 +36,13 @@ struct Inner {
 
 pub struct Agent {
     inner: Mutex<Inner>,
-    // Separate from `inner`: indexing a large tree must not stall the stream.
-    files: Mutex<Option<Arc<Vec<String>>>>,
 }
 
-pub fn default_model(name: Option<String>, effort: Option<String>, context: Option<u64>) -> Result<Model> {
-    Ok(Model {
-        name: match name {
-            Some(name) => name,
-            None => config::var("MU_MODEL")?.unwrap_or_else(|| "gpt-6-luna".into()),
-        },
-        effort: match effort {
-            Some(effort) => Some(effort).filter(|effort| !effort.is_empty()),
-            None => Some(config::var("MU_EFFORT")?.unwrap_or_else(|| "xhigh".into())),
-        },
-        context: match context.filter(|&n| n > 0) {
-            Some(context) => context,
-            None => config::var("MU_CONTEXT")?.and_then(|s| s.parse().ok()).filter(|&n| n > 0).unwrap_or(272_000),
-        },
-    })
+pub fn check(model: &Model) -> Result<()> {
+    if model.name.is_empty() || model.context == Some(0) {
+        return Err("A model needs a name, and a positive context size if any".into());
+    }
+    Ok(())
 }
 
 impl Inner {
@@ -154,7 +142,6 @@ impl Agent {
                 next_sink: 0,
                 changed,
             }),
-            files: Mutex::new(None),
         })
     }
 
@@ -384,9 +371,7 @@ impl Agent {
         if inner.cancel.is_some() {
             return Err("Stop the agent before changing models".into());
         }
-        if model.name.is_empty() || model.context == 0 {
-            return Err("A model needs a name and a positive context size".into());
-        }
+        check(&model)?;
         if &model != inner.session.model() {
             inner.session.record(Record::Model(model))?;
         }
@@ -434,25 +419,6 @@ impl Agent {
             inner.emit(event);
         }
         Ok(draft)
-    }
-
-    pub fn complete(&self, text: &str, cursor: usize, refresh: bool) -> Result<Option<Mention>> {
-        let Some((range, query)) = input::mention_at(text, cursor) else {
-            return Ok(None);
-        };
-        let cwd = self.inner().session.header().cwd.clone();
-        let files = if input::is_path(&query) {
-            Arc::default()
-        } else {
-            let mut files = self.files.lock().unwrap();
-            if refresh || files.is_none() {
-                let built = input::index(&cwd);
-                *files = Some(Arc::new(built.as_ref().cloned().unwrap_or_default()));
-                built?;
-            }
-            files.clone().unwrap()
-        };
-        Ok(Some(input::complete(range, query, &cwd, &files)))
     }
 }
 

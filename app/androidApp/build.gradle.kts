@@ -40,6 +40,7 @@ dependencies {
     implementation(libs.androidx.annotation)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.jna) { artifact { type = "aar" } }
+    implementation(libs.code.scanner)
 }
 
 abstract class CargoNdk : DefaultTask() {

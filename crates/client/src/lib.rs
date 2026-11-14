@@ -2,6 +2,7 @@ pub mod hosts;
 mod tls;
 mod view;
 
+use base64::{Engine, engine::general_purpose::STANDARD};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::{
     Request, StatusCode,
@@ -12,8 +13,9 @@ use hyper::{
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use mu_wire::{
     AppendShell, Call, Checkout, CompleteMention, CreateInvite, CreateSession, DeleteSessions, DeleteSnippet, Failure,
-    GetTree, Hello, ListDevices, ListDirectory, ListSessions, ListSkills, MarkRead, PROTOCOL, Pair, RecallQueued,
-    Resume, SaveSnippet, SendMessage, SetDescription, SetIcon, SetModel, Shell, Stop, Subscribe, Unpair, Watch,
+    GetTree, Hello, ListDevices, ListDirectory, ListModels, ListSessions, ListSkills, MarkRead, PROTOCOL, Pair,
+    RecallQueued, Resume, SaveSnippet, SendMessage, SetDescription, SetIcon, SetModel, Shell, Stop, Subscribe, Unpair,
+    Upload, Watch,
 };
 use rustls::pki_types::ServerName;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -34,8 +36,8 @@ use tokio_rustls::TlsConnector;
 
 pub use mu_wire::{
     Block, Deleted, Device, Directory, DirectoryEntry, EntryKind, Event, HostInfo, Invitation, Invite, Kind, Mention,
-    MentionEntry, Model, Profile, SessionSummary, ShellEvent, Skill, Snippet, Span, State, Stats, Status, Tool,
-    ToolOutput, ToolStatus, TreeEntry, WatchEvent,
+    MentionEntry, Model, ModelInfo, Profile, SessionSummary, ShellEvent, Skill, Snippet, Span, State, Stats, Status,
+    Tool, ToolOutput, ToolStatus, TreeEntry, WatchEvent,
 };
 pub use view::{Change, HostView, View};
 
@@ -226,14 +228,8 @@ impl Client {
         self.call(ListSessions {}).await
     }
 
-    pub async fn create(
-        &self,
-        cwd: &Path,
-        model: Option<String>,
-        effort: Option<String>,
-        context: Option<u64>,
-    ) -> Result<String> {
-        self.call(CreateSession { cwd: cwd.into(), model, effort, context }).await
+    pub async fn create(&self, cwd: &Path, model: Model, text: String, skill: Option<String>) -> Result<String> {
+        self.call(CreateSession { cwd: cwd.into(), model, text, skill }).await
     }
 
     pub async fn send(&self, id: &str, text: String, skill: Option<String>) -> Result<()> {
@@ -256,6 +252,10 @@ impl Client {
         self.call(SetModel { session_id: id.into(), model }).await
     }
 
+    pub async fn models(&self) -> Result<Vec<ModelInfo>> {
+        self.call(ListModels {}).await
+    }
+
     pub async fn tree(&self, id: &str) -> Result<Vec<TreeEntry>> {
         self.call(GetTree { session_id: id.into() }).await
     }
@@ -264,8 +264,8 @@ impl Client {
         self.call(Checkout { session_id: id.into(), node }).await
     }
 
-    pub async fn complete(&self, id: &str, text: String, cursor: usize, refresh: bool) -> Result<Option<Mention>> {
-        self.call(CompleteMention { session_id: id.into(), text, cursor, refresh }).await
+    pub async fn complete(&self, cwd: &Path, text: String, cursor: usize, refresh: bool) -> Result<Option<Mention>> {
+        self.call(CompleteMention { cwd: cwd.into(), text, cursor, refresh }).await
     }
 
     pub async fn append_shell(&self, id: &str, run: &str) -> Result<()> {
@@ -304,6 +304,10 @@ impl Client {
 
     pub async fn list_skills(&self, cwd: &Path) -> Result<Vec<Skill>> {
         self.call(ListSkills { cwd: cwd.into() }).await
+    }
+
+    pub async fn upload(&self, name: &str, bytes: &[u8]) -> Result<PathBuf> {
+        self.call(Upload { name: name.into(), data: STANDARD.encode(bytes) }).await
     }
 
     pub async fn shell(&self, cwd: &Path, command: String) -> Result<ShellRun> {

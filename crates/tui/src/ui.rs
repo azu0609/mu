@@ -615,7 +615,7 @@ pub fn draw(app: &mut App) -> Result<()> {
         Clear(ClearType::CurrentLine),
         Print("─".repeat(width))
     )?;
-    let model = &app.view.model;
+    let model = app.model();
     let usage = &app.view.stats;
     let cache = usage.cached.map(counts::compact).unwrap_or_else(|| "?".into());
     let read = usage
@@ -629,14 +629,14 @@ pub fn draw(app: &mut App) -> Result<()> {
         cache,
         read,
         counts::compact(usage.context_used),
-        counts::compact(model.context)
+        model.and_then(|model| model.context).map(counts::compact).unwrap_or_else(|| "?".into())
     );
     let right = clip(
         &format!(
             "{}{}{} ",
             if app.view.running() { "· " } else { "" },
-            model.name,
-            model.effort.as_ref().map(|e| format!(" {e}")).unwrap_or_default()
+            model.map_or("no model · /model", |model| &model.name),
+            model.and_then(|model| model.effort.as_ref()).map(|e| format!(" {e}")).unwrap_or_default()
         ),
         width.saturating_sub(1),
     );
