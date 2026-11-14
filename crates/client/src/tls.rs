@@ -54,7 +54,6 @@ impl ServerCertVerifier for Pinned {
     }
 }
 
-// Whether a failed handshake was the host's certificate not matching the pin.
 pub fn mismatch(error: &std::io::Error) -> bool {
     matches!(error.get_ref().and_then(|e| e.downcast_ref()), Some(rustls::Error::InvalidCertificate(_)))
 }

@@ -1,4 +1,3 @@
-// What this client last heard from a host: a session, and the host itself.
 use mu_wire::{Block, Event, Kind, Model, Profile, SessionSummary, Skill, State, Stats, Status, WatchEvent};
 use std::{mem, path::PathBuf};
 
@@ -17,18 +16,12 @@ pub struct View {
     pub live_notice: Option<Block>,
 }
 
-// What an event did to the view, for a client to react to.
 pub enum Change {
-    // Everything was replaced but the first `keep` blocks of the transcript.
     Reset { keep: usize },
-    // `started` when the agent just began running.
     State { started: bool },
-    // Blocks from this index on were appended to the transcript, and the live step ended.
     Committed { from: usize },
-    // The live block at this index was added or changed.
     Live(usize),
     LiveNotice,
-    // Transient: not part of the session, so not kept in the view.
     Feedback(Block),
 }
 
@@ -101,7 +94,6 @@ impl View {
     }
 }
 
-// A host's profile and its sessions, latest first.
 #[derive(Default)]
 pub struct HostView {
     pub profile: Profile,

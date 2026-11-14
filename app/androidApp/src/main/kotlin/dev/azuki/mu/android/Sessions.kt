@@ -13,10 +13,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
 
-// The core calls listeners on its own threads, so these only hand updates over,
-// in order, to whatever dispatcher collects them.
-
-// A session's updates. None may be dropped: each one builds on the last.
+// None may be dropped: each update builds on the last.
 fun Core.updates(host: String, session: String): Flow<SessionUpdate> =
     callbackFlow {
             val handle =
@@ -33,7 +30,7 @@ fun Core.updates(host: String, session: String): Flow<SessionUpdate> =
         }
         .buffer(Channel.UNLIMITED)
 
-// A host's profile and session list. Each update is all of it, so only the latest matters.
+// Each update is all of it, so only the latest matters.
 fun Core.hostUpdates(host: String): Flow<HostUpdate> =
     callbackFlow {
             val handle =
@@ -49,9 +46,7 @@ fun Core.hostUpdates(host: String): Flow<HostUpdate> =
         }
         .buffer(Channel.CONFLATED)
 
-// A command run in shell mode. The flow completes after its final update, Done or
-// Failed; cancelling it before then kills the command. Each update replaces the last,
-// so only the latest matters.
+// Each update replaces the last, so only the latest matters.
 fun Core.shellUpdates(host: String, cwd: String, command: String): Flow<ShellUpdate> =
     callbackFlow {
             val handle =

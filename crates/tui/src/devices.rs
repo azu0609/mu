@@ -1,4 +1,3 @@
-// Pairing devices with the shared host on this machine, and unpairing them.
 use crate::{Result, remote::Remote};
 use mu_client::{Endpoint, Invite};
 use qrcode::{QrCode, render::unicode::Dense1x2};
@@ -7,9 +6,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-// Shows an invite for one device, as a QR code and a link. `address` is where
-// devices reach this host, for when the host's own guess will not do: a
-// Tailscale name, say.
 pub fn pair(endpoint: Endpoint, address: Option<&str>) -> Result<()> {
     let invitation = Remote::connect(endpoint)?.invite()?;
     let chosen = match address {

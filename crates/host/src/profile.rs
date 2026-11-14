@@ -1,5 +1,3 @@
-// What a host's owner says about it: an icon, a description, and snippets to
-// offer in shell mode. Kept in a file of its own; every client shows it.
 use crate::{Result, devices::short_id, home};
 use mu_wire::{self as wire, Snippet};
 use serde::{Deserialize, Serialize};
@@ -25,7 +23,6 @@ pub struct Profile {
 }
 
 impl Profile {
-    // `name` is the host's, which is not up to its owner.
     pub fn load(path: PathBuf, name: String) -> Result<Self> {
         let stored = match fs::read(&path) {
             Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?,
@@ -62,7 +59,6 @@ impl Profile {
         })
     }
 
-    // Adds a snippet, or replaces the one with `call.id`. Returns its id.
     pub fn save_snippet(&self, call: wire::SaveSnippet) -> Result<String> {
         let name = line("A snippet's name", &call.name, 64)?;
         let command = call.command.trim();
@@ -103,7 +99,6 @@ impl Profile {
         })
     }
 
-    // Changes a copy, and keeps it once it is on disk.
     fn update<T>(&self, change: impl FnOnce(&mut Stored) -> Result<T>) -> Result<T> {
         let mut stored = self.stored.lock().unwrap();
         let mut changed = stored.clone();
@@ -126,7 +121,6 @@ impl Profile {
     }
 }
 
-// Clients map names to icons of their own, so any short name will do.
 fn icon_name(icon: Option<String>) -> Result<Option<String>> {
     let Some(icon) = icon.filter(|icon| !icon.is_empty()) else {
         return Ok(None);

@@ -1,6 +1,3 @@
-// Serves the host's sessions over HTTP/2: each call is a POST of a JSON body,
-// and a session's events stream back as newline-delimited JSON. Local clients
-// come through the unix socket; paired devices through TLS on `MU_LISTEN`.
 use crate::{
     Result,
     agent::{self, Agent},
@@ -48,7 +45,6 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 
-// Where a host listens for local clients.
 pub fn socket_path() -> PathBuf {
     if let Some(path) = env::var_os("MU_SOCKET").filter(|path| !path.is_empty()) {
         return path.into();
@@ -59,7 +55,6 @@ pub fn socket_path() -> PathBuf {
     }
 }
 
-// Where a shared host also listens for paired devices, if anywhere.
 pub fn listen_address() -> Result<Option<SocketAddr>> {
     let Some(address) = config::var("MU_LISTEN")? else {
         return Ok(None);
@@ -69,22 +64,17 @@ pub fn listen_address() -> Result<Option<SocketAddr>> {
     Ok(Some(parsed))
 }
 
-// Who is on the other end of a connection.
 #[derive(Clone, Copy, PartialEq)]
 enum Peer {
-    // Through the unix socket, or the private host's socket pair: this user.
     Local,
-    // Over the network: a paired device, once its token checks out.
     Remote,
 }
 
-// How a host is reachable over the network.
 struct Network {
     bound: SocketAddr,
     cert: String,
 }
 
-// A call that did not go through, with the status and message the client gets.
 struct Failure(StatusCode, String);
 
 type Rpc<T> = std::result::Result<T, Failure>;
@@ -97,28 +87,22 @@ fn internal(error: impl ToString) -> Failure {
     Failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
 }
 
-// What may have changed, for clients watching the host.
 #[derive(Clone)]
 enum Change {
-    // A session's summary.
     Session(String),
-    // Which sessions there are.
     Sessions,
     Profile,
 }
 
-// How many commands run in shell mode stay around to be added to a session.
 const RUNS: usize = 16;
 
-// Sessions held in memory. Lock order: this map, then an agent, then the runs.
+// Lock order: this map, then an agent, then the runs.
 struct Host {
     agents: Mutex<HashMap<String, Arc<Agent>>>,
     changes: broadcast::Sender<Change>,
     name: String,
     profile: Profile,
-    // The latest commands run in shell mode, oldest first, by run id.
     runs: Mutex<VecDeque<(String, tools::Run)>>,
-    // A private host has neither.
     devices: Option<Devices>,
     network: Option<Network>,
 }
@@ -146,7 +130,6 @@ impl Host {
         })
     }
 
-    // Applies a change to the profile, and tells whoever watches.
     fn edit<T>(&self, edit: impl FnOnce(&Profile) -> Result<T>) -> Rpc<T> {
         let result = edit(&self.profile).map_err(failed)?;
         let _ = self.changes.send(Change::Profile);
@@ -199,7 +182,6 @@ impl Host {
         self.load(&mut self.agents.lock().unwrap(), id)
     }
 
-    // Sessions live on disk; memory only holds the ones in use.
     fn sweep(&self) {
         self.agents.lock().unwrap().retain(|_, agent| !agent.disposable());
     }
@@ -218,12 +200,10 @@ impl Host {
             .collect())
     }
 
-    // Everything `Watch` starts from.
     fn host(&self) -> Rpc<WatchEvent> {
         Ok(WatchEvent::Host { profile: self.profile.get(), sessions: self.sessions()? })
     }
 
-    // None until the session is saved, which its first message does.
     fn summary(&self, id: &str) -> Option<wire::SessionSummary> {
         let status = self.agents.lock().unwrap().get(id).map(|agent| agent.status());
         Some(summarize(session::summary_of(id)?, status))
@@ -244,8 +224,6 @@ impl Host {
         let (tx, rx) = mpsc::channel(1024);
         let mut agents = self.agents.lock().unwrap();
         let agent = self.load(&mut agents, &call.session_id)?;
-        // A subscriber that stops reading is dropped rather than buffered without
-        // bound; its stream ends and it can subscribe again, resuming.
         let subscription = agent.subscribe(call.resume, move |event| {
             lines(event).is_some_and(|lines| lines.into_iter().all(|line| tx.try_send(line).is_ok()))
         });
@@ -257,7 +235,6 @@ impl Host {
         Ok(Stream { rx, close: Some(Box::new(close)) })
     }
 
-    // Adds a command's run to a session; it is kept no longer.
     fn append(&self, call: wire::AppendShell) -> Rpc<()> {
         let agent = self.agent(&call.session_id)?;
         agent
@@ -272,8 +249,6 @@ impl Host {
             .map_err(failed)
     }
 
-    // Leaves alone what is in use: sessions running or open in a client of this
-    // host, and sessions another mu has open.
     fn delete_sessions(&self) -> Rpc<wire::Deleted> {
         let mut agents = self.agents.lock().unwrap();
         agents.retain(|_, agent| !agent.disposable());
@@ -291,8 +266,6 @@ impl Host {
     }
 }
 
-// A session in memory knows its status best; the log only knows how runs ended.
-// Running sessions are not unread yet: nobody could have seen their last step.
 fn summarize(summary: session::Summary, loaded: Option<Status>) -> wire::SessionSummary {
     let status = loaded.unwrap_or(summary.status);
     wire::SessionSummary {
@@ -306,7 +279,6 @@ fn summarize(summary: session::Summary, loaded: Option<Status>) -> wire::Session
     }
 }
 
-// The profile and the session list, then each again whenever it changes.
 async fn watch(host: &Arc<Host>) -> Reply {
     // Listening before listing, so no change falls in between.
     let mut changes = host.changes.subscribe();
@@ -330,7 +302,6 @@ async fn watch(host: &Arc<Host>) -> Reply {
                         _ => continue,
                     },
                     Ok(Change::Profile) => WatchEvent::Profile(host.profile.get()),
-                    // Sessions went away, or some changes were missed: start over from everything.
                     Ok(Change::Sessions) | Err(broadcast::error::RecvError::Lagged(_)) => {
                         match run(&host, |host| host.host()).await {
                             Ok(everything) => everything,
@@ -349,8 +320,6 @@ async fn watch(host: &Arc<Host>) -> Reply {
     stream(Stream { rx, close: None })
 }
 
-// Runs a command the user typed, streaming its output, and keeps its result for
-// a while so it can be added to a session. Leaving early kills it.
 fn shell(host: &Arc<Host>, call: wire::Shell) -> Rpc<Stream> {
     if !call.cwd.is_absolute() || !call.cwd.is_dir() {
         return Err(failed(format!("{} is not a directory", call.cwd.display())));
@@ -364,7 +333,6 @@ fn shell(host: &Arc<Host>, call: wire::Shell) -> Rpc<Stream> {
     let (host, stop) = (host.clone(), cancel.clone());
     thread::spawn(move || {
         let run = tools::user(command, call.cwd, &cancel, |output| {
-            // Each preview replaces the last, so a slow client can skip some.
             if let Some(line) = line(&ShellEvent::Output(output)) {
                 let _ = tx.try_send(line);
             }
@@ -384,10 +352,8 @@ fn shell(host: &Arc<Host>, call: wire::Shell) -> Rpc<Stream> {
     Ok(Stream { rx, close: Some(Box::new(move || stop.store(true, Ordering::Relaxed))) })
 }
 
-// An event as lines on the wire, or none if it cannot be encoded (a path that
-// is not UTF-8), which cuts the subscriber off. A commit can carry a whole
-// transcript, a snapshot's, so it goes out in bounded chunks: no line grows
-// with the session.
+// A commit can carry a whole transcript, a snapshot's, so it goes out in bounded
+// chunks: no line grows with the session.
 fn lines(event: &Event) -> Option<Vec<Bytes>> {
     const CHUNK: usize = 256 * 1024;
     let size = |block: &Block| block.text.len() + block.tool.as_ref().map_or(0, |tool| tool.output.text.len());
@@ -420,10 +386,8 @@ fn line(value: &impl Serialize) -> Option<Bytes> {
     Some(line.into())
 }
 
-// Lines for one client, until it leaves or falls too far behind.
 struct Stream {
     rx: mpsc::Receiver<Bytes>,
-    // What to undo when the client leaves: unsubscribe, or kill a command.
     close: Option<Box<dyn FnOnce() + Send>>,
 }
 
@@ -471,12 +435,10 @@ fn stream(lines: Stream) -> Reply {
 }
 
 fn parse<T: DeserializeOwned>(body: &[u8]) -> Rpc<T> {
-    // An empty body is an empty call, so calls without fields are easy to make by hand.
     let body = if body.is_empty() { b"{}".as_slice() } else { body };
     serde_json::from_slice(body).map_err(failed)
 }
 
-// The engine is synchronous (files, locks, processes); keep it off the reactor.
 async fn run<T: Send + 'static>(host: &Arc<Host>, f: impl FnOnce(&Arc<Host>) -> Rpc<T> + Send + 'static) -> Rpc<T> {
     let host = host.clone();
     tokio::task::spawn_blocking(move || f(&host))
@@ -502,8 +464,6 @@ where
     }
 }
 
-// Over the network, everything but saying hello and pairing takes a paired
-// device's token, and managing devices takes a local client.
 fn admit(host: &Host, peer: Peer, request: &Request<Incoming>) -> Rpc<()> {
     let path = request.uri().path();
     if peer == Peer::Local || path == wire::Hello::PATH || path == wire::Pair::PATH {
@@ -655,7 +615,6 @@ async fn connection(host: &Arc<Host>, peer: Peer, stream: impl AsyncRead + Async
         let host = host.clone();
         async move { Ok::<_, Infallible>(handle(host, peer, request).await) }
     });
-    // Pings drop clients that vanished without a word, like a phone that lost its network.
     let _ = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
         .timer(TokioTimer::new())
         .keep_alive_interval(Duration::from_secs(30))
@@ -664,7 +623,6 @@ async fn connection(host: &Arc<Host>, peer: Peer, stream: impl AsyncRead + Async
         .await;
 }
 
-// A device's connection, once it gets through TLS. Pairing happens later, per call.
 async fn remote(host: &Arc<Host>, tls: TlsAcceptor, stream: tokio::net::TcpStream) {
     let _ = stream.set_nodelay(true);
     if let Ok(Ok(stream)) = time::timeout(Duration::from_secs(10), tls.accept(stream)).await {
@@ -672,7 +630,6 @@ async fn remote(host: &Arc<Host>, tls: TlsAcceptor, stream: tokio::net::TcpStrea
     }
 }
 
-// Stopping kills each tool's process group; give the steps a moment to record that.
 async fn shutdown(host: &Host) {
     let agents: Vec<_> = host.agents.lock().unwrap().values().cloned().collect();
     for agent in &agents {
@@ -686,16 +643,11 @@ async fn shutdown(host: &Host) {
     }
 }
 
-// A shared host: serves every client of the socket, and of `address` if given,
-// until SIGINT or SIGTERM. The socket is only open to this user; the network
-// only to paired devices.
 pub fn serve(socket: &Path, address: Option<SocketAddr>) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
     runtime.block_on(listen(socket, address))
 }
 
-// A private host: serves the one client holding the other end of `stream`,
-// and stops everything it was running when that client goes away.
 pub fn serve_stream(stream: StdStream) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build()?;
     runtime.block_on(async {
@@ -746,7 +698,6 @@ async fn listen(socket: &Path, address: Option<SocketAddr>) -> Result<()> {
                     let host = host.clone();
                     tokio::spawn(async move { connection(&host, Peer::Local, stream).await });
                 }
-                // Out of descriptors, most likely; existing connections keep working.
                 Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
             },
             accepted = accept(&tcp) => match accepted {
@@ -766,7 +717,6 @@ async fn listen(socket: &Path, address: Option<SocketAddr>) -> Result<()> {
     Ok(())
 }
 
-// The next device to connect, or never when not on the network.
 async fn accept(tcp: &Option<(TcpListener, TlsAcceptor)>) -> std::io::Result<tokio::net::TcpStream> {
     match tcp {
         Some((listener, _)) => Ok(listener.accept().await?.0),

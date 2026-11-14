@@ -1,6 +1,3 @@
-// Devices allowed to reach this host over the network. Each pairs through a
-// one-time invite and gets a token of its own, so it can be unpaired alone.
-// Only hashes of the tokens are kept.
 use crate::Result;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use mu_wire as wire;
@@ -19,7 +16,6 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
-// How long an invite's code can be used.
 const INVITE_TTL: Duration = Duration::from_secs(10 * 60);
 
 fn random_bytes(len: usize) -> Result<Vec<u8>> {
@@ -28,12 +24,10 @@ fn random_bytes(len: usize) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-// Unpadded base64url, safe in links and headers.
 fn random(len: usize) -> Result<String> {
     Ok(URL_SAFE_NO_PAD.encode(random_bytes(len)?))
 }
 
-// Eight hex digits, for naming things a person may type.
 pub fn short_id() -> Result<String> {
     Ok(random_bytes(4)?.iter().map(|b| format!("{b:02x}")).collect())
 }
@@ -53,7 +47,6 @@ struct Device {
 pub struct Devices {
     path: PathBuf,
     list: Mutex<Vec<Device>>,
-    // Unused invite codes and when they expire; they only live as long as the host.
     invites: Mutex<HashMap<String, Instant>>,
 }
 
@@ -67,7 +60,6 @@ impl Devices {
         Ok(Self { path, list: Mutex::new(list), invites: Mutex::default() })
     }
 
-    // A code that pairs one device, once, within a few minutes.
     pub fn invite(&self) -> Result<String> {
         let code = random(16)?;
         let now = Instant::now();
@@ -77,8 +69,6 @@ impl Devices {
         Ok(code)
     }
 
-    // Uses up the code and returns the new device's token, or none if the code
-    // is unknown, used or expired.
     pub fn pair(&self, code: &str, name: &str) -> Result<Option<String>> {
         if !self.invites.lock().unwrap().remove(code).is_some_and(|expiry| expiry > Instant::now()) {
             return Ok(None);
@@ -110,8 +100,6 @@ impl Devices {
         list.iter().map(|d| wire::Device { id: d.id.clone(), name: d.name.clone(), paired: d.paired }).collect()
     }
 
-    // Whether there was such a device. Its open connections stay up, but every
-    // further call from it is refused.
     pub fn unpair(&self, id: &str) -> Result<bool> {
         let mut list = self.list.lock().unwrap();
         let Some(i) = list.iter().position(|device| device.id == id) else {

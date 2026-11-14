@@ -17,7 +17,6 @@ import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeController
 
-// A placeholder until the real screens: says hello, and what the core reports.
 @Composable
 fun App(version: String, hosts: List<String>) {
     MiuixTheme(controller = remember { ThemeController(ColorSchemeMode.System) }) {

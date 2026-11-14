@@ -1,4 +1,3 @@
-// Directories on the host, for choosing where a session works.
 use crate::{Result, home};
 use mu_wire::{Directory, DirectoryEntry, EntryKind};
 use std::{fs, path::Path};
@@ -18,7 +17,6 @@ pub fn list(path: &Path) -> Result<Directory> {
         .filter_map(|entry| entry.ok())
         .take(4096)
         .filter_map(|entry| {
-            // A name that is not UTF-8 could not be asked for again.
             let name = entry.file_name().into_string().ok().filter(|name| !name.chars().any(char::is_control))?;
             // Following links, as a session started there would.
             let kind = match entry.path() {

@@ -129,8 +129,6 @@ impl Editor {
             self.chars.drain(start..end);
             self.cursor = start;
         } else if start > 0 {
-            // An empty line: remove the preceding newline and move to the
-            // previous line, so another Ctrl+U can clear it too.
             self.chars.remove(start - 1);
             self.cursor = start - 1;
         } else if end < self.chars.len() {
@@ -305,7 +303,6 @@ fn ending(status: ToolStatus) -> Option<String> {
     })
 }
 
-// `marker` tells the agent's calls from the user's own commands.
 fn tool_lines(marker: &str, command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<Line> {
     let color = match tool.status {
         ToolStatus::Running | ToolStatus::TimedOut(_) | ToolStatus::Cancelled => Color::Yellow,
@@ -320,7 +317,6 @@ fn tool_lines(marker: &str, command: &str, tool: &Tool, width: usize, expanded: 
     let command = if expanded {
         wrap(&text, command_width)
     } else if matches!(tool.status, ToolStatus::Pending) {
-        // Follow the newest input on one line while the model is generating it.
         vec![tail_ellipsis(&summary, command_width)]
     } else {
         vec![ellipsis(&summary, command_width)]
@@ -377,7 +373,6 @@ fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
     let (first_prefix, color, limit) = match (block.kind, &block.tool) {
         (Kind::Call, Some(tool)) => return tool_lines("●", &block.text, tool, width, expanded),
         (Kind::Shell, Some(tool)) => return tool_lines("$", &block.text, tool, width, expanded),
-        // A call without its tool has nothing to show beyond its text.
         (Kind::Call | Kind::Shell | Kind::Notice | Kind::Warning, _) => {
             let (marker, color) = if block.kind == Kind::Warning { ("!", Color::Yellow) } else { ("·", GRAY) };
             let mut lines = vec![];
@@ -421,7 +416,6 @@ fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
     result
 }
 
-// Width, expansion state, and rendered transcript length at the last scroll position.
 #[derive(Clone, Copy)]
 pub struct ScrollAnchor {
     pub width: usize,
@@ -429,8 +423,6 @@ pub struct ScrollAnchor {
     pub total: usize,
 }
 
-// Cached line count for the welcome message and the committed transcript,
-// which only grows between snapshots.
 #[derive(Clone, Copy)]
 pub struct CachedLines {
     pub width: usize,
@@ -445,7 +437,6 @@ impl CachedLines {
     }
 }
 
-// One snapshot defines both the transcript's order and the lines used for scroll anchoring.
 struct Transcript {
     welcome: Block,
     pending: Vec<Block>,
@@ -550,7 +541,6 @@ pub fn draw(app: &mut App) -> Result<()> {
                 && old.width == width
                 && old.expanded == app.expanded
             {
-                // Keep the same transcript lines in view as new streamed lines arrive below them.
                 if total >= old.total {
                     app.scroll = app.scroll.saturating_add(total - old.total);
                 } else {

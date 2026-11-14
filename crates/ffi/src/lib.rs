@@ -1,8 +1,3 @@
-// mu's client core for the apps, through UniFFI. It is shaped around what the
-// app does (paired hosts, their sessions, one open session at a time) rather
-// than mirroring the wire, and keeps every rule in mu-client: the app only
-// draws what it is told.
-//
 // Listeners are called on the core's own threads; hop to the UI's before
 // touching its state.
 use mu_client::{
@@ -28,9 +23,7 @@ pub fn version() -> String {
 #[derive(Debug, uniffi::Error)]
 #[uniffi(flat_error)]
 pub enum MuError {
-    // The host no longer accepts this device: pair it again.
     Unpaired(String),
-    // Anything else, worded for a person.
     Failed(String),
 }
 
@@ -61,9 +54,6 @@ async fn spawn<T: Send + 'static>(
     runtime.spawn(future).await.map_err(|e| MuError::Failed(e.to_string()))?.map_err(Into::into)
 }
 
-// A paired host. Its id is its certificate's fingerprint, so pairing with the
-// same host again keeps it. Its name, icon and description are as it last
-// described itself, so they are there while it is away.
 #[derive(uniffi::Record)]
 pub struct Host {
     pub id: String,
@@ -85,18 +75,15 @@ impl From<&Paired> for Host {
     }
 }
 
-// One per app: the paired hosts, and a connection to each one in use.
 #[derive(uniffi::Object)]
 pub struct Core {
     runtime: Runtime,
     hosts: Arc<Mutex<Hosts>>,
-    // By host id. A connection re-establishes itself when it breaks.
     clients: Arc<Mutex<HashMap<String, Client>>>,
 }
 
 #[uniffi::export]
 impl Core {
-    // Keeps its files, the paired hosts' tokens among them, in `dir`.
     #[uniffi::constructor]
     pub fn new(dir: String) -> Result<Arc<Self>, MuError> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -109,18 +96,14 @@ impl Core {
         Ok(Arc::new(Self { runtime, hosts: Arc::new(Mutex::new(hosts)), clients: Arc::default() }))
     }
 
-    // In the order they were paired.
     pub fn hosts(&self) -> Vec<Host> {
         self.hosts.lock().unwrap().list().iter().map(Host::from).collect()
     }
 
-    // Pairs with the host behind a `mu://` invite, as `device` (what the host
-    // lists it as).
     pub async fn pair(&self, invite: String, device: String) -> Result<Host, MuError> {
         let invite: Invite = invite.parse().map_err(MuError::Failed)?;
         let (remote, info) =
             spawn(self.runtime.handle(), async move { mu_client::pair(&invite, &device).await }).await?;
-        // The rest of how it describes itself arrives once it is watched.
         let paired = Paired { name: info.name, icon: None, description: String::new(), remote };
         self.hosts.lock().unwrap().add(paired.clone())?;
         // A connection made with an older token would keep presenting it.
@@ -128,34 +111,26 @@ impl Core {
         Ok(Host::from(&paired))
     }
 
-    // Forgets a host on this device only; the host still lists the device
-    // until it is unpaired there.
     pub fn forget(&self, host: String) -> Result<(), MuError> {
         self.hosts.lock().unwrap().remove(&host)?;
         self.clients.lock().unwrap().remove(&host);
         Ok(())
     }
 
-    // Latest first. To keep a list current, watch the host instead.
     pub async fn sessions(&self, host: String) -> Result<Vec<SessionSummary>, MuError> {
         let sessions = self.on(&host, |client| async move { client.sessions().await }).await?;
         Ok(sessions.into_iter().map(Into::into).collect())
     }
 
-    // Starts a session in `cwd` on the host, with the host's default model.
     pub async fn create_session(&self, host: String, cwd: String) -> Result<String, MuError> {
         self.on(&host, |client| async move { client.create(cwd.as_ref(), None, None, None).await }).await
     }
 
-    // Leaves alone sessions in use: running, or open in some client.
     pub async fn delete_sessions(&self, host: String) -> Result<DeletedSessions, MuError> {
         let deleted = self.on(&host, |client| async move { client.delete_sessions().await }).await?;
         Ok(DeletedSessions { deleted: deleted.sessions as i64, in_use: deleted.in_use as i64 })
     }
 
-    // Follows the host's profile and session list until the returned handle is
-    // closed. The listener hears everything first, then again on every change.
-    // Remembers how the host describes itself, for `hosts` while it is away.
     pub async fn watch_host(&self, host: String, listener: Arc<dyn HostListener>) -> Result<Arc<Watch>, MuError> {
         let mut watch = self.on(&host, |client| async move { client.watch().await }).await?;
         let hosts = self.hosts.clone();
@@ -168,7 +143,6 @@ impl Core {
                         lost = false;
                         view.apply(event);
                         let profile = &view.profile;
-                        // Not worth interrupting the watch over: it is only for while the host is away.
                         let _ = hosts.lock().unwrap().update(&host, |paired| {
                             paired.name = profile.name.clone();
                             paired.icon = profile.icon.clone();
@@ -190,8 +164,6 @@ impl Core {
         Ok(Arc::new(Watch { task }))
     }
 
-    // The profile's changes reach watchers of the host. An unset or empty icon
-    // goes back to the default.
     pub async fn set_icon(&self, host: String, icon: Option<String>) -> Result<(), MuError> {
         self.on(&host, |client| async move { client.set_icon(icon).await }).await
     }
@@ -200,7 +172,6 @@ impl Core {
         self.on(&host, |client| async move { client.set_description(description).await }).await
     }
 
-    // Adds a snippet, or replaces the one with this id. Returns its id.
     pub async fn save_snippet(
         &self,
         host: String,
@@ -216,8 +187,6 @@ impl Core {
         self.on(&host, |client| async move { client.delete_snippet(&id).await }).await
     }
 
-    // A directory on the host, for choosing where a session works. `~` and an
-    // empty path name the host's home; `<path>/..` names a directory's parent.
     pub async fn list_directory(&self, host: String, path: String) -> Result<Directory, MuError> {
         let directory = self.on(&host, |client| async move { client.list_directory(path.as_ref()).await }).await?;
         Ok(Directory {
@@ -237,16 +206,11 @@ impl Core {
         })
     }
 
-    // The skills a session in `cwd` would have, for before there is one.
     pub async fn list_skills(&self, host: String, cwd: String) -> Result<Vec<Skill>, MuError> {
         let skills = self.on(&host, |client| async move { client.list_skills(cwd.as_ref()).await }).await?;
         Ok(skills.into_iter().map(|skill| Skill { name: skill.name, description: skill.description }).collect())
     }
 
-    // Runs a command the user typed, in `cwd` on the host, until it ends or the
-    // returned handle is closed, which kills it. The listener hears its output
-    // as it goes, then how it ended: a run that an open session can add to its
-    // conversation.
     pub async fn shell(
         &self,
         host: String,
@@ -275,8 +239,6 @@ impl Core {
         Ok(Arc::new(Shell { task }))
     }
 
-    // Follows a session until the returned handle is closed. The listener
-    // hears a reset first, and again after every break.
     pub async fn open_session(
         &self,
         host: String,
@@ -293,7 +255,6 @@ impl Core {
         .await?;
         let task = self.runtime.spawn(async move {
             let mut view = View::default();
-            // Retries keep failing while the host is away; that is one loss.
             let mut lost = false;
             loop {
                 let update = match subscription.next().await {
@@ -318,7 +279,6 @@ impl Core {
 }
 
 impl Core {
-    // Runs `call` with the connection to a paired host, on the core's runtime.
     async fn on<T, F>(&self, host: &str, call: impl FnOnce(Client) -> F + Send + 'static) -> Result<T, MuError>
     where
         T: Send + 'static,
@@ -328,7 +288,6 @@ impl Core {
         spawn(self.runtime.handle(), async move { call(connect.await?).await }).await
     }
 
-    // The connection to a paired host, made when first needed.
     fn connect(&self, host: &str) -> Result<impl Future<Output = mu_client::Result<Client>> + use<>, MuError> {
         let cached = self.clients.lock().unwrap().get(host).cloned();
         let hosts = self.hosts.lock().unwrap();
@@ -379,7 +338,6 @@ fn state(view: &View) -> SessionState {
     }
 }
 
-// An open session. Closing it stops following the session, not the session.
 #[derive(uniffi::Object)]
 pub struct Session {
     id: String,
@@ -394,16 +352,11 @@ impl Session {
         self.id.clone()
     }
 
-    // Starts a step, or queues the message as steering while one is running.
-    // `skill` names one of the session's, to invoke with the message.
     pub async fn send(&self, text: String, skill: Option<String>) -> Result<(), MuError> {
         let (client, id) = (self.client.clone(), self.id.clone());
         spawn(&self.runtime, async move { client.send(&id, text, skill).await }).await
     }
 
-    // Adds a command run in shell mode, and its result, to the conversation for
-    // the agent's next step. Only while the agent is not running, and after a
-    // message: a session is never just commands. A refused run can be added later.
     pub async fn append_shell(&self, run: String) -> Result<(), MuError> {
         let (client, id) = (self.client.clone(), self.id.clone());
         spawn(&self.runtime, async move { client.append_shell(&id, &run).await }).await
@@ -414,8 +367,6 @@ impl Session {
         spawn(&self.runtime, async move { client.stop(&id).await }).await
     }
 
-    // Call while the session is on screen and its state says it is not
-    // running: everything the agent did so far has been seen.
     pub async fn mark_read(&self) -> Result<(), MuError> {
         let (client, id) = (self.client.clone(), self.id.clone());
         spawn(&self.runtime, async move { client.mark_read(&id).await }).await
@@ -428,7 +379,6 @@ impl Drop for Session {
     }
 }
 
-// A watched host. Closing it stops watching.
 #[derive(uniffi::Object)]
 pub struct Watch {
     task: tokio::task::JoinHandle<()>,
@@ -447,26 +397,16 @@ pub trait HostListener: Send + Sync {
 
 #[derive(uniffi::Enum)]
 pub enum HostUpdate {
-    // Everything there is to show of the host, whole every time; sessions
-    // latest first.
     Host { profile: HostProfile, sessions: Vec<SessionSummary> },
-    // The connection broke; the host follows again once it is back.
     Lost,
 }
 
-// What a host says of itself.
 #[derive(uniffi::Record)]
 pub struct HostProfile {
-    // The machine's hostname.
     pub name: String,
-    // The home directory of the user the host runs as, for showing paths under it as `~`.
     pub home: String,
-    // The rest is up to its owner. An icon's name in the app's icon set; unset
-    // for the default.
     pub icon: Option<String>,
-    // One line; empty when none was set.
     pub description: String,
-    // Commands to offer in shell mode, in order.
     pub snippets: Vec<Snippet>,
 }
 
@@ -502,15 +442,12 @@ pub struct Snippet {
 #[derive(uniffi::Record)]
 pub struct DeletedSessions {
     pub deleted: i64,
-    // Left alone for being in use: running, or open in some client.
     pub in_use: i64,
 }
 
 #[derive(uniffi::Record)]
 pub struct Directory {
-    // Absolute and canonical.
     pub path: String,
-    // Directories first, then by name. Hidden ones included.
     pub entries: Vec<DirectoryEntry>,
 }
 
@@ -524,11 +461,9 @@ pub struct DirectoryEntry {
 pub enum EntryKind {
     File,
     Directory,
-    // A directory at the top of a git repository.
     Repository,
 }
 
-// A command running in shell mode. Closing it kills the command.
 #[derive(uniffi::Object)]
 pub struct Shell {
     task: tokio::task::JoinHandle<()>,
@@ -545,15 +480,10 @@ pub trait ShellListener: Send + Sync {
     fn on_update(&self, update: ShellUpdate);
 }
 
-// Each update replaces the last; the final one is `Done` or `Failed`.
 #[derive(uniffi::Enum)]
 pub enum ShellUpdate {
-    // The output so far, while it runs.
     Output { tool: Tool },
-    // The command ended. An open session can add `run` to its conversation for
-    // a while: see `Session::append_shell`.
     Done { run: String, tool: Tool },
-    // The connection broke before the command ended; the host killed it.
     Failed { message: String },
 }
 
@@ -562,22 +492,16 @@ pub trait SessionListener: Send + Sync {
     fn on_update(&self, update: SessionUpdate);
 }
 
-// How an open session changed. A reset clears everything but the first `keep`
-// blocks of the transcript; the rest of it then arrives as ordinary commits.
+// A reset clears everything but the first `keep` blocks of the transcript; the
+// rest of it then arrives as ordinary commits.
 #[derive(uniffi::Enum)]
 pub enum SessionUpdate {
     Reset { keep: i32, cwd: String, state: SessionState, skills: Vec<Skill> },
-    // `started` when the agent just began running.
     State { state: SessionState, started: bool },
-    // Appended to the transcript; the live step ended.
     Committed { blocks: Vec<Block> },
-    // The step in progress: the block at `index` was added, or now reads `block`.
     Live { index: i32, block: Block },
-    // A notice about the step in progress, like a cache miss.
     LiveNotice { block: Block },
-    // Transient, not part of the session.
     Feedback { block: Block },
-    // The connection broke; a reset follows once the session is back.
     Lost,
 }
 
@@ -588,9 +512,7 @@ pub struct SessionState {
     pub model: String,
     pub effort: Option<String>,
     pub context: i64,
-    // Tokens the latest response occupied in the context window.
     pub context_used: i64,
-    // Messages waiting to steer the running agent, oldest first.
     pub queued: Vec<String>,
 }
 
@@ -606,11 +528,9 @@ pub struct SessionSummary {
     pub title: String,
     pub cwd: String,
     pub status: Status,
-    // Why its latest run failed.
     pub error: Option<String>,
-    // Not running, with steps no client has shown since they finished.
     pub unread: bool,
-    // When its latest step finished, in milliseconds since the Unix epoch.
+    // Milliseconds since the Unix epoch.
     pub updated: i64,
 }
 
@@ -651,10 +571,7 @@ impl From<mu_client::Status> for Status {
 pub struct Block {
     pub kind: BlockKind,
     pub text: String,
-    // Set for calls.
     pub tool: Option<Tool>,
-    // When the step it belongs to ran; set once it is in the transcript. A
-    // turn's "Worked for" runs from its first block's start to its last's finish.
     pub span: Option<Span>,
 }
 
@@ -690,7 +607,6 @@ pub enum BlockKind {
     Agent,
     Thought,
     Call,
-    // A command the user ran themselves; the text is the command.
     Shell,
     Notice,
     Warning,
@@ -699,7 +615,6 @@ pub enum BlockKind {
 #[derive(uniffi::Record)]
 pub struct Tool {
     pub status: ToolStatus,
-    // A preview when `truncated`; the full log stays on the host.
     pub output: String,
     pub truncated: bool,
 }
@@ -726,6 +641,5 @@ pub enum ToolStatus {
     Exited { code: i32 },
     TimedOut { millis: i64 },
     Cancelled,
-    // The tool could not run at all.
     Failed,
 }

@@ -18,8 +18,7 @@ use std::{
 // Runs under the agent's lock, so it must not block. Returning false unsubscribes.
 type Sink = Box<dyn FnMut(&Event) -> bool + Send>;
 
-// Told a session's id whenever what a session list shows of it may have
-// changed. Runs under the agent's lock, so it must not block.
+// Runs under the agent's lock, so it must not block.
 pub type Changed = Arc<dyn Fn(&str) + Send + Sync>;
 
 struct Inner {
@@ -28,7 +27,6 @@ struct Inner {
     live: Vec<Block>,
     live_notice: Option<Block>,
     queued: Vec<input::Message>,
-    // Present while a step is running.
     cancel: Option<Arc<AtomicBool>>,
     status: Status,
     sinks: Vec<(u64, Sink)>,
@@ -36,15 +34,12 @@ struct Inner {
     changed: Changed,
 }
 
-// One session and the loop driving it. Every client of the session shares it.
 pub struct Agent {
     inner: Mutex<Inner>,
     // Separate from `inner`: indexing a large tree must not stall the stream.
     files: Mutex<Option<Arc<Vec<String>>>>,
 }
 
-// Whatever the client leaves out comes from the host's environment. An empty
-// effort is a choice, not an omission: the model takes none.
 pub fn default_model(name: Option<String>, effort: Option<String>, context: Option<u64>) -> Result<Model> {
     Ok(Model {
         name: match name {
@@ -88,8 +83,6 @@ impl Inner {
         }
     }
 
-    // A reset, then the transcript along the current path, then the step in
-    // progress. A client resuming on the same path only gets the blocks it lacks.
     fn snapshot(&self, resume: Option<Resume>) -> Vec<Event> {
         let epoch = self.session.epoch();
         let blocks: Vec<_> =
@@ -131,7 +124,6 @@ impl Inner {
         }
     }
 
-    // Publish the node the session just pushed.
     fn commit(&mut self) {
         let blocks = self.session.cursor().map(|i| self.session.node(i).blocks.clone()).unwrap_or_default();
         self.live.clear();
@@ -190,13 +182,11 @@ impl Agent {
         self.inner().status
     }
 
-    // Nobody is watching, nothing is running, and everything is on disk.
     pub fn disposable(&self) -> bool {
         let inner = self.inner();
         inner.cancel.is_none() && inner.sinks.is_empty() && inner.session.persisted()
     }
 
-    // The sink receives a snapshot first, with no event lost or repeated after it.
     pub fn subscribe(&self, resume: Option<Resume>, mut sink: impl FnMut(&Event) -> bool + Send + 'static) -> u64 {
         let mut inner = self.inner();
         let id = inner.next_sink;
@@ -211,7 +201,6 @@ impl Agent {
         self.inner().sinks.retain(|(sink, _)| *sink != id);
     }
 
-    // Starts a step, or queues the message as steering while one is running.
     pub fn send(self: &Arc<Self>, text: String, skill: Option<&str>) -> Result<()> {
         if text.trim().is_empty() {
             return Err("Empty message".into());
@@ -219,7 +208,6 @@ impl Agent {
         let (cwd, skill) = {
             let inner = self.inner();
             let skill = match skill {
-                // The last discovered skill wins among equal names.
                 Some(name) => Some(
                     inner
                         .skills
@@ -265,7 +253,6 @@ impl Agent {
         let started = session::now();
         thread::spawn(move || {
             let result = api::step(request, cancel, &|event| agent.live(event));
-            // All streaming events are applied before the finalized items are committed.
             agent.finish(result, started);
         });
         true
@@ -309,7 +296,6 @@ impl Agent {
         let cancelled = inner.cancel.take().is_some_and(|cancel| cancel.load(Ordering::Relaxed));
         match result {
             Ok(mut step) => {
-                // Keep the marker with this response, ahead of its output, not in transient feedback.
                 if step.usage.cache_miss(inner.session.usage()) {
                     step.entries.insert(0, Record::Notice { text: CACHE_MISS.into() });
                 }
@@ -331,7 +317,6 @@ impl Agent {
                     inner.status = if cancelled {
                         Status::Idle
                     } else if again {
-                        // The next step could not start (for example, the session failed to save).
                         Status::Failed
                     } else {
                         Status::Finished
@@ -339,7 +324,6 @@ impl Agent {
                 }
             }
             Err(e) => {
-                // What streamed of the step is gone; the reason stays in the transcript.
                 let end = if cancelled { End::Stopped } else { End::Failed { error: e.to_string() } };
                 inner.status = if cancelled { Status::Idle } else { Status::Failed };
                 inner.session.push(vec![], None, Span { started, finished: session::now() }, Some(end));
@@ -359,8 +343,6 @@ impl Agent {
         }
     }
 
-    // Marks every step so far as seen. Saved right away, so session lists, which
-    // read the log, agree.
     pub fn mark_read(&self) -> Result<()> {
         let mut inner = self.inner();
         if inner.session.mark_read()? {
@@ -370,10 +352,6 @@ impl Agent {
         Ok(())
     }
 
-    // Adds a command the user ran, and its result, to the conversation for the
-    // agent's next step. Never the first thing in it: a session is not saved
-    // until it has a message, and never just for commands. `take` hands the run
-    // over only once it can be added, so a refused one can be added later.
     pub fn append(&self, take: impl FnOnce() -> Result<tools::Run>) -> Result<()> {
         let mut inner = self.inner();
         if inner.cancel.is_some() {
@@ -394,7 +372,6 @@ impl Agent {
         Ok(())
     }
 
-    // Takes the newest queued message back for editing.
     pub fn recall(&self) -> Option<String> {
         let mut inner = self.inner();
         let message = inner.queued.pop()?;
@@ -429,7 +406,6 @@ impl Agent {
             .collect()
     }
 
-    // Checking out a user message moves to its parent and returns its text as a draft.
     pub fn checkout(&self, node: Option<usize>) -> Result<Option<String>> {
         let mut inner = self.inner();
         if inner.cancel.is_some() {
@@ -460,8 +436,6 @@ impl Agent {
         Ok(draft)
     }
 
-    // Completes the @file mention at the cursor (a character offset), if there is one.
-    // `refresh` rebuilds the file index; a failed build is reported once and then stays empty.
     pub fn complete(&self, text: &str, cursor: usize, refresh: bool) -> Result<Option<Mention>> {
         let Some((range, query)) = input::mention_at(text, cursor) else {
             return Ok(None);

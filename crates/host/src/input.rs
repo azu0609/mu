@@ -116,7 +116,6 @@ pub fn prepare(text: String, cwd: &Path, skill: Option<&Skill>) -> Result<Messag
             return Err("Attached context exceeds 4 MiB".into());
         }
         seen.insert(canonical);
-        // Keep the discovered (possibly symlinked) skill path used in the instructions.
         snapshots.push(Record::Attachment { label, path: skill.path.clone(), text: body });
     }
     let mut images = 0;
@@ -177,8 +176,9 @@ fn file_entry(name: String) -> MentionEntry {
     let token = if name.chars().any(|c| c.is_whitespace() || matches!(c, '"' | '\\')) || name.starts_with('@') {
         let mut quoted = serde_json::to_string(&name).unwrap();
         if directory {
+            // Keep the quoted path open while navigating.
             quoted.pop();
-        } // Keep the quoted path open while navigating.
+        }
         quoted
     } else {
         name.clone()
@@ -186,8 +186,6 @@ fn file_entry(name: String) -> MentionEntry {
     MentionEntry { text: format!("@{token}{}", if directory { "" } else { " " }), label: name }
 }
 
-// The mention being typed at the cursor: the range to replace and its query.
-// Offsets are in characters.
 pub fn mention_at(text: &str, cursor: usize) -> Option<(Range<usize>, String)> {
     let prefix: String = text.chars().take(cursor).collect();
     let mention = mentions(&prefix).pop()?;
@@ -198,7 +196,6 @@ pub fn mention_at(text: &str, cursor: usize) -> Option<(Range<usize>, String)> {
     Some((range, mention.path))
 }
 
-// Explicit paths list their directory; anything else searches the file index.
 pub fn is_path(query: &str) -> bool {
     ["/", "~/", "./", "../"].iter().any(|p| query.starts_with(p))
 }

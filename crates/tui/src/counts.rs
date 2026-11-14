@@ -1,4 +1,3 @@
-// Token counts use decimal units, not binary byte units.
 const UNITS: [(char, u64); 6] = [
     ('k', 1_000),
     ('M', 1_000_000),
@@ -23,8 +22,6 @@ pub fn compact(n: u64) -> String {
     format!("{:.1}{suffix}", n as f64 / multiplier as f64)
 }
 
-// The parsing direction must be exact: fractional inputs cannot silently
-// round down, and overflowing counts are invalid.
 pub fn parse(text: &str) -> Option<u64> {
     let suffix = text.chars().last()?;
     let multiplier = UNITS

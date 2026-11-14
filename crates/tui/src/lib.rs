@@ -33,13 +33,10 @@ struct Picker {
     selected: usize,
 }
 
-// Kept current while it is open.
 const SESSIONS: &str = "resume session";
 
-// A command running in shell mode, shown below the transcript until it ends.
 struct Shell {
     seq: u64,
-    // Where to add it once it ends, if anywhere.
     session: Option<String>,
     block: Block,
 }
@@ -63,7 +60,6 @@ struct App {
     feedback: Vec<Block>,
     completion: Option<input::Menu>,
     dismissed: bool,
-    // The input the host was last asked to complete; answers to older requests are ignored.
     mention_key: Option<(String, usize)>,
     mention_open: bool,
     mention_seq: u64,
@@ -104,7 +100,6 @@ impl App {
 
     fn apply(&mut self, event: Event) {
         let change = self.view.apply(event);
-        // On screen and not running: whatever the agent did has been seen.
         if matches!(change, Change::Reset { .. } | Change::State { .. }) && !self.view.running() {
             self.remote.mark_read(&self.view.id);
         }
@@ -212,7 +207,6 @@ impl App {
         let shell = self.shell.take().expect("matched");
         let error = match (run, &shell.session) {
             (Some(run), Some(session)) => match self.remote.append_shell(session, &run) {
-                // It comes back on the session's stream, into the transcript.
                 Ok(()) => return,
                 Err(e) => Some(format!("Not added to the conversation: {e}")),
             },
@@ -224,7 +218,6 @@ impl App {
         }
     }
 
-    // `append` adds the command and its output to the conversation once it ends.
     fn run_shell(&mut self, command: &str, append: bool) -> Result<()> {
         if command.is_empty() {
             return Err("!command runs a command and adds it to the conversation; !!command only runs it".into());
@@ -232,7 +225,6 @@ impl App {
         if self.shell.is_some() {
             return Err("A command is still running; Ctrl+C stops it".into());
         }
-        // The host would refuse to add it; better to say so before it runs.
         if append && self.view.blocks.is_empty() {
             return Err("The conversation is empty: send a message first, or use !! to only run it".into());
         }
@@ -264,10 +256,8 @@ impl App {
         Ok(())
     }
 
-    // Leaving stops this session's agent, also on a shared host: nothing keeps working unseen.
     fn quit(&mut self) {
         self.quitting = true;
-        // Asked regardless of what we last heard: a step may have started since.
         let _ = self.remote.stop(&self.view.id);
     }
 
@@ -392,7 +382,6 @@ impl App {
                 commands::Choice::Skill(i) => skill = Some(self.view.skills[i].name.clone()),
             }
         }
-        // The host reads the mentioned files and decides whether this starts a step or steers one.
         self.remote.send(&self.view.id, text, skill)?;
         self.editor.clear();
         Ok(())
@@ -429,7 +418,6 @@ impl App {
             self.close_mention();
             return;
         }
-        // No mentions in shell commands: `@` means other things there.
         if self.dismissed || self.picker.is_some() || shell || !text.contains('@') {
             self.completion = None;
             self.close_mention();
@@ -439,7 +427,6 @@ impl App {
             return;
         }
         self.mention_seq += 1;
-        // Opening a mention re-indexes the host's files; typing on within it reuses that index.
         self.remote.complete(self.mention_seq, &self.view.id, text.clone(), cursor, !self.mention_open);
         self.mention_open = true;
         self.mention_key = Some((text, cursor));
@@ -464,7 +451,6 @@ impl App {
         if let Some((target, _)) = picker.entries.into_iter().nth(picker.selected) {
             match target {
                 Target::Node(node) => {
-                    // The host answers with a fresh snapshot on the session's stream.
                     let draft = self.remote.checkout(&self.view.id, node)?;
                     if let Some(text) = draft {
                         self.editor.clear();
@@ -637,7 +623,6 @@ impl App {
                 ui::draw(self)?;
                 dirty = false;
             }
-            // The host can speak at any time (another client may be driving this session).
             let busy = self.view.running() || self.shell.is_some() || self.mention_done < self.mention_seq;
             if event::poll(Duration::from_millis(if busy { 33 } else { 250 }))? {
                 let before = (self.editor.text(), self.editor.cursor);
@@ -699,11 +684,8 @@ fn var(name: &str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.is_empty())
 }
 
-// Opens a new session in the current directory on the host at `endpoint`.
-// Quitting stops the session's agent; the saved session remains.
 pub fn run(endpoint: Endpoint) -> Result<()> {
     let remote = Remote::connect(endpoint)?;
-    // What this terminal asks for wins over the defaults of a shared host.
     let id = remote.create(
         &env::current_dir()?,
         var("MU_MODEL"),

@@ -10,7 +10,6 @@ name = "mu_ffi"
 crate-type = ["cdylib", "lib"]
 
 [[bin]]
-# Generates the Kotlin bindings from the built library; the app's Gradle build runs it.
 name = "uniffi-bindgen"
 required-features = ["bindgen"]
 

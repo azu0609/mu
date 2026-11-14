@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
-# The `mu` binary. mu-ffi only builds for the Android app, through its Gradle build.
+# mu-ffi only builds for the Android app, through its Gradle build.
 default-members = ["crates/mu"]
 
 [workspace.package]

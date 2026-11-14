@@ -1,5 +1,3 @@
-// The host on the network: TLS with a self-signed certificate that clients pin
-// when they pair, so no certificate authority is involved.
 use crate::{Result, devices::sha256};
 use rustls::{
     ServerConfig,
@@ -16,11 +14,9 @@ use std::{
 
 pub struct Identity {
     pub tls: Arc<ServerConfig>,
-    // What clients pin: the certificate's SHA-256, unpadded base64url.
     pub cert: String,
 }
 
-// Made on first use and kept, since every paired client pins the certificate.
 pub fn identity(dir: &Path) -> Result<Identity> {
     let (cert_path, key_path) = (dir.join("cert.der"), dir.join("key.der"));
     let (cert, key) = match (fs::read(&cert_path), fs::read(&key_path)) {
@@ -57,8 +53,7 @@ pub fn hostname() -> String {
     String::from_utf8_lossy(&name[..end]).into_owned()
 }
 
-// Where other devices may reach a host bound to `bound`, likeliest first:
-// Tailscale, then private networks, then the rest.
+// Likeliest first: Tailscale, then private networks, then the rest.
 pub fn addresses(bound: IpAddr) -> Vec<IpAddr> {
     if !bound.is_unspecified() {
         return vec![bound];

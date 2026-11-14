@@ -34,8 +34,6 @@ impl Source<'_> {
     }
 }
 
-// Use source offsets to keep markers visible without recognizing syntax ourselves.
-// Nested styles compose on a stack.
 fn parse(text: &str) -> (Source<'_>, Vec<Table>) {
     let plain = Style::new(Color::Reset);
     let mut source = Source { text, styles: vec![], cursor: 0 };
@@ -101,7 +99,6 @@ fn parse(text: &str) -> (Source<'_>, Vec<Table>) {
 
 fn table_lines(source: &Source<'_>, table: &Table, width: usize) -> Option<Vec<Line>> {
     let columns = table.alignment.len();
-    // If even two characters per cell cannot fit, show the wrapped source.
     if columns == 0 || columns * 2 + (columns - 1) * 3 > width {
         return None;
     }
@@ -134,7 +131,6 @@ fn table_lines(source: &Source<'_>, table: &Table, width: usize) -> Option<Vec<L
                 .min(available)
         })
         .collect();
-    // Shrink the widest columns first, leaving short columns alone.
     let mut total: usize = sizes.iter().sum();
     while total > available {
         let col = sizes.iter().enumerate().max_by_key(|(_, size)| **size).unwrap().0;
@@ -176,7 +172,6 @@ fn table_lines(source: &Source<'_>, table: &Table, width: usize) -> Option<Vec<L
     Some(result)
 }
 
-/// Render sanitized, source-visible Markdown within `width` columns, without UI indentation.
 pub(crate) fn render(text: &str, width: usize) -> Vec<Line> {
     let text = clean(text);
     let (source, tables) = parse(&text);
@@ -184,7 +179,6 @@ pub(crate) fn render(text: &str, width: usize) -> Vec<Line> {
     let mut cursor = 0;
     for table in tables {
         let Some(lines) = table_lines(&source, &table, width) else { continue };
-        // Replace the whole source line, including optional table indentation.
         let start = text[..table.range.start].rfind('\n').map_or(0, |i| i + 1);
         output.spans.extend(source.spans(cursor..start));
         for (i, line) in lines.into_iter().enumerate() {

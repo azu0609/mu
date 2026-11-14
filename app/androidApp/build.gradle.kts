@@ -1,12 +1,10 @@
 import javax.inject.Inject
 
-// The Android app: the shared UI, plus the Rust core (mu-ffi) and its UniFFI bindings.
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.compose.compiler)
 }
 
-// The Cargo workspace this app lives in.
 val rust = rootProject.layout.projectDirectory.dir("..")
 val rustSources = files(rust.file("Cargo.toml"), rust.file("Cargo.lock"), rust.dir("crates"))
 val rustAbis =
@@ -28,7 +26,6 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
-        // Only where the Rust core is built for, whatever else dependencies bring.
         ndk { abiFilters += rustAbis.get() }
     }
 
@@ -45,7 +42,6 @@ dependencies {
     implementation(libs.jna) { artifact { type = "aar" } }
 }
 
-// Builds mu-ffi for each ABI with cargo-ndk, into `output/<abi>/libmu_ffi.so`.
 abstract class CargoNdk : DefaultTask() {
     @get:Inject abstract val exec: ExecOperations
 
@@ -87,8 +83,6 @@ abstract class CargoNdk : DefaultTask() {
     }
 }
 
-// Generates the Kotlin bindings from a built mu-ffi, with the uniffi-bindgen
-// that comes with it, so the two always match.
 abstract class UniffiBindings : DefaultTask() {
     @get:Inject abstract val exec: ExecOperations
 
@@ -136,7 +130,6 @@ androidComponents {
         val cargo =
             tasks.register<CargoNdk>("cargoNdk$name") {
                 sources.from(rustSources)
-                // Release builds unwind on panic; see the workspace's Cargo.toml.
                 profile = if (variant.buildType == "release") "android" else "dev"
                 abis = rustAbis
                 platform = variant.minSdk.apiLevel

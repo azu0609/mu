@@ -25,7 +25,6 @@ pub enum Event {
     CacheMiss,
 }
 
-// Called from the request thread and from every tool thread.
 pub type Emit<'a> = &'a (dyn Fn(Event) + Sync);
 
 pub struct Step {
@@ -60,7 +59,6 @@ impl Request {
     }
 }
 
-// The agent owns the rendered blocks; API output indices map to stable slots.
 struct Live<'a> {
     emit: Emit<'a>,
     slots: BTreeMap<usize, usize>,
@@ -237,8 +235,6 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, emit: Emit) -> Result<Ste
         }
     }
     let results = thread::scope(|scope| {
-        // Every task owns its call block and streams to that stable slot. A slow
-        // first command cannot delay another command's execution or UI updates.
         let handles: Vec<_> = output
             .iter()
             .enumerate()
@@ -278,7 +274,6 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, emit: Emit) -> Result<Ste
                 })
             })
             .collect();
-        // Keep replay/results in model call order, regardless of completion order.
         handles.into_iter().map(|h| h.join().map_err(|_| "Tool worker panicked".into())).collect::<Result<Vec<_>>>()
     })?;
     let again = !results.is_empty() && !cancel.load(Ordering::Relaxed);

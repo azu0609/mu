@@ -1,5 +1,3 @@
-// Connects to a mu host: the shared core of mu's clients. Call from within a
-// tokio runtime.
 pub mod hosts;
 mod tls;
 mod view;
@@ -41,15 +39,13 @@ pub use mu_wire::{
 };
 pub use view::{Change, HostView, View};
 
-// The most a single reply or event may take. The host accepts calls up to 4 MiB,
-// and a user message near that must still fit when it comes back as an event.
+// The host accepts calls up to 4 MiB, and a user message near that must still
+// fit when it comes back as an event.
 const LIMIT: usize = 64 * 1024 * 1024;
 
-// How long a host on the network gets to accept a connection.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub enum Error {
-    // The host refused this device's token: it was never paired, or unpaired since.
     Unpaired(String),
     Other(String),
 }
@@ -98,29 +94,20 @@ error_from!(io::Error, hyper::Error, serde_json::Error, rustls::Error, Box<dyn s
 pub type Result<T> = std::result::Result<T, Error>;
 
 pub enum Endpoint {
-    // A host listening for any number of clients.
     Socket(PathBuf),
-    // One end of a socket pair whose other end a host is already serving:
-    // a private host that nothing else can reach.
     Stream(StdStream),
-    // A host on the network.
     Remote(Remote),
 }
 
-// A host on the network, and what this device proves itself with.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Remote {
-    // host:port, with brackets around an IPv6 host.
     pub address: String,
-    // The fingerprint of the host's certificate, pinned when pairing.
     pub cert: String,
-    // Unset only until this device pairs.
     pub token: Option<String>,
 }
 
 enum Target {
     Socket(PathBuf),
-    // Taken by the first connection; the host ends with it.
     Stream(sync::Mutex<Option<StdStream>>),
     Remote { address: String, tls: TlsConnector },
 }
@@ -130,17 +117,12 @@ pub struct Client(Arc<Connection>);
 
 struct Connection {
     target: Target,
-    // Sent with every call.
     authorization: Option<HeaderValue>,
     sender: Mutex<Option<SendRequest<Full<Bytes>>>>,
-    // What the host said in its latest hello.
     host: sync::Mutex<Option<HostInfo>>,
 }
 
 impl Client {
-    // Fails now, with the real reason, rather than on the first call. Socket and
-    // network connections re-establish themselves if the host restarts; a
-    // private stream ends with its host.
     pub async fn connect(endpoint: Endpoint) -> Result<Self> {
         let (target, authorization) = match endpoint {
             Endpoint::Socket(path) => (Target::Socket(path), None),
@@ -167,12 +149,10 @@ impl Client {
         Ok(client)
     }
 
-    // What the host said when this client last connected.
     pub fn host(&self) -> Option<HostInfo> {
         self.0.host.lock().unwrap().clone()
     }
 
-    // The open connection, or a new one that has said hello.
     async fn sender(&self) -> Result<SendRequest<Full<Bytes>>> {
         let mut slot = self.0.sender.lock().await;
         if let Some(sender) = slot.as_ref().filter(|sender| !sender.is_closed()) {
@@ -226,32 +206,26 @@ impl Client {
         self::call(&mut self.sender().await?, self.0.authorization.as_ref(), &call).await
     }
 
-    // Trades an invite's one-time code for a token naming this device.
     pub async fn pair(&self, code: &str, device: &str) -> Result<String> {
         self.call(Pair { code: code.into(), device: device.into() }).await
     }
 
-    // Local clients only: lets one more device pair.
     pub async fn invite(&self) -> Result<Invitation> {
         self.call(CreateInvite {}).await
     }
 
-    // Local clients only.
     pub async fn devices(&self) -> Result<Vec<Device>> {
         self.call(ListDevices {}).await
     }
 
-    // Local clients only: refuses the device's token from now on.
     pub async fn unpair(&self, device_id: &str) -> Result<()> {
         self.call(Unpair { device_id: device_id.into() }).await
     }
 
-    // Most recently used first.
     pub async fn sessions(&self) -> Result<Vec<SessionSummary>> {
         self.call(ListSessions {}).await
     }
 
-    // Unset fields fall back to the host's defaults; an empty effort means none.
     pub async fn create(
         &self,
         cwd: &Path,
@@ -262,7 +236,6 @@ impl Client {
         self.call(CreateSession { cwd: cwd.into(), model, effort, context }).await
     }
 
-    // Starts a step, or queues the message as steering while one is running.
     pub async fn send(&self, id: &str, text: String, skill: Option<String>) -> Result<()> {
         self.call(SendMessage { session_id: id.into(), text, skill }).await
     }
@@ -271,13 +244,10 @@ impl Client {
         self.call(Stop { session_id: id.into() }).await
     }
 
-    // Tells the host the session is on screen with its latest steps seen; call
-    // it whenever that holds and the agent is not running.
     pub async fn mark_read(&self, id: &str) -> Result<()> {
         self.call(MarkRead { session_id: id.into() }).await
     }
 
-    // Takes the newest queued message back for editing.
     pub async fn recall(&self, id: &str) -> Result<Option<String>> {
         self.call(RecallQueued { session_id: id.into() }).await
     }
@@ -290,31 +260,22 @@ impl Client {
         self.call(GetTree { session_id: id.into() }).await
     }
 
-    // Checking out a user message moves to its parent and returns its text for editing.
-    // The session's stream answers with a fresh snapshot.
     pub async fn checkout(&self, id: &str, node: Option<usize>) -> Result<Option<String>> {
         self.call(Checkout { session_id: id.into(), node }).await
     }
 
-    // The @file mention at `cursor` (in characters), completed against the host's
-    // files. Set `refresh` when a mention is first opened to rebuild the index.
     pub async fn complete(&self, id: &str, text: String, cursor: usize, refresh: bool) -> Result<Option<Mention>> {
         self.call(CompleteMention { session_id: id.into(), text, cursor, refresh }).await
     }
 
-    // Adds a command run in shell mode, and its result, to the session's
-    // conversation. Only while its agent is not running, and after a message.
     pub async fn append_shell(&self, id: &str, run: &str) -> Result<()> {
         self.call(AppendShell { session_id: id.into(), run: run.into() }).await
     }
 
-    // Leaves alone sessions in use: running, or open in a client.
     pub async fn delete_sessions(&self) -> Result<Deleted> {
         self.call(DeleteSessions {}).await
     }
 
-    // The profile's changes reach clients through `watch`. An unset or empty
-    // icon goes back to the clients' default.
     pub async fn set_icon(&self, icon: Option<String>) -> Result<()> {
         self.call(SetIcon { icon }).await
     }
@@ -323,7 +284,6 @@ impl Client {
         self.call(SetDescription { description }).await
     }
 
-    // Adds a snippet, or replaces the one with this id. Returns its id.
     pub async fn save_snippet(
         &self,
         id: Option<String>,
@@ -338,30 +298,24 @@ impl Client {
         self.call(DeleteSnippet { id: id.into() }).await
     }
 
-    // `~` and an empty path name the host's home.
     pub async fn list_directory(&self, path: &Path) -> Result<Directory> {
         self.call(ListDirectory { path: path.into() }).await
     }
 
-    // The skills a session in `cwd` would have, for before there is one.
     pub async fn list_skills(&self, cwd: &Path) -> Result<Vec<Skill>> {
         self.call(ListSkills { cwd: cwd.into() }).await
     }
 
-    // Runs a command the user typed, in `cwd` on the host. Resolves once it has
-    // started; dropping the run kills it.
     pub async fn shell(&self, cwd: &Path, command: String) -> Result<ShellRun> {
         let call = Shell { cwd: cwd.into(), command };
         let body = post(&mut self.sender().await?, self.0.authorization.as_ref(), Shell::PATH, &call).await?;
         Ok(ShellRun { lines: Lines { body, buf: vec![], scanned: 0 } })
     }
 
-    // Resolves with the session's first event, so an error means the session cannot be opened.
     pub async fn subscribe(&self, id: &str) -> Result<Subscription> {
         self.follow(Feed::Session { id: id.into(), resume: None }).await
     }
 
-    // The host's profile and session list, kept current; see `HostView`.
     pub async fn watch(&self) -> Result<Subscription<WatchEvent>> {
         self.follow(Feed::Host).await
     }
@@ -386,8 +340,6 @@ impl Client {
     }
 }
 
-// Pairs with the host an invite points to, as `device`. What it returns is how
-// to reach that host from now on, so keep it, like in `hosts::Hosts`.
 pub async fn pair(invite: &Invite, device: &str) -> Result<(Remote, HostInfo)> {
     let remote = Remote { address: invite.address.clone(), cert: invite.cert.clone(), token: None };
     let client = Client::connect(Endpoint::Remote(remote.clone())).await?;
@@ -396,8 +348,6 @@ pub async fn pair(invite: &Invite, device: &str) -> Result<(Remote, HostInfo)> {
     Ok((Remote { token: Some(token), ..remote }, host))
 }
 
-// Pings notice a connection that died without closing, like a phone's after it
-// changes networks, so subscriptions can report it and start over.
 async fn handshake(stream: impl AsyncRead + AsyncWrite + Unpin + Send + 'static) -> Result<SendRequest<Full<Bytes>>> {
     let (sender, connection) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
         .timer(TokioTimer::new())
@@ -447,18 +397,14 @@ async fn call<C: Call + Sync>(
 
 pub enum Update<T = Event> {
     Event(T),
-    // The stream broke; it picks up again once the host is back.
     Lost,
 }
 
-// What a subscription follows.
 enum Feed {
-    // A session, and what this client was given of its transcript so far.
     Session { id: String, resume: Option<Resume> },
     Host,
 }
 
-// Follows a session, or the session list, for as long as it is polled.
 pub struct Subscription<T = Event> {
     client: Client,
     feed: Feed,
@@ -467,8 +413,6 @@ pub struct Subscription<T = Event> {
 }
 
 impl<T: DeserializeOwned> Subscription<T> {
-    // Whenever the stream breaks this reports `Lost`, then follows again a
-    // second later.
     async fn pull(&mut self) -> Update<T> {
         if let Some(event) = self.first.take() {
             return Update::Event(event);
@@ -492,8 +436,6 @@ impl<T: DeserializeOwned> Subscription<T> {
 }
 
 impl Subscription<Event> {
-    // After a break the session resumes with a snapshot that keeps the
-    // transcript it already passed on, as long as the path stayed the same.
     pub async fn next(&mut self) -> Update {
         let update = self.pull().await;
         if let (Update::Event(event), Feed::Session { resume, .. }) = (&update, &mut self.feed) {
@@ -512,31 +454,24 @@ impl Subscription<Event> {
 }
 
 impl Subscription<WatchEvent> {
-    // After a break it starts over, with everything.
     pub async fn next(&mut self) -> Update<WatchEvent> {
         self.pull().await
     }
 }
 
-// A command running in shell mode. It cannot be picked up again once its
-// stream breaks; dropping it kills the command.
 pub struct ShellRun {
     lines: Lines,
 }
 
 impl ShellRun {
-    // `None` once the stream ends, which follows `ShellEvent::Done`, unless the
-    // connection broke first.
     pub async fn next(&mut self) -> Result<Option<ShellEvent>> {
         self.lines.next().await
     }
 }
 
-// Newline-delimited events on a response body.
 struct Lines {
     body: Incoming,
     buf: Vec<u8>,
-    // Bytes of `buf` already known to hold no newline.
     scanned: usize,
 }
 

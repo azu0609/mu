@@ -10,7 +10,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-// Milliseconds since the Unix epoch.
 pub fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
@@ -73,8 +72,7 @@ pub fn block_from_item(item: &Value, partial: bool) -> Option<Block> {
     }
 }
 
-// Read only a top-level command, skipping complete fields before it. A partial
-// JSON string is display-only: execution still uses the final, validated args.
+// A partial JSON string is display-only: execution still uses the final, validated args.
 fn command_prefix(raw: &str) -> Option<String> {
     let mut rest = raw.trim_start().strip_prefix('{')?;
     loop {
@@ -150,12 +148,10 @@ pub enum Record {
     ImageAttachment { path: PathBuf, image: Value },
     Notice { text: String },
     Tool(Tool),
-    // A command the user ran, and its result. `cwd` is set when it was not the session's.
     Shell { command: String, cwd: Option<PathBuf>, status: ToolStatus, output: ToolOutput },
     Node(Node),
     Cursor { node: Option<usize> },
     Model(Model),
-    // A client showed every step before this.
     Read,
 }
 
@@ -183,7 +179,6 @@ impl Record {
             }
             Self::Notice { .. } => return None,
             Self::Tool(tool) => tool_item(tool),
-            // As a prompt and what followed it, from the user.
             Self::Shell { command, cwd, status, output } => {
                 let prompt = cwd.as_ref().map(|cwd| cwd.display().to_string()).unwrap_or_default();
                 let text = format!("{prompt}$ {command}\n{}", tool_text(*status, output).trim_start_matches('\n'));
@@ -194,8 +189,6 @@ impl Record {
     }
 }
 
-// How a run ended, on its last node. Stops and failures also show in the
-// transcript, so clients that were not watching learn of them.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum End {
@@ -234,7 +227,6 @@ fn tool_item(tool: &Tool) -> Value {
     json!({"type":"function_call_output", "call_id":tool.call_id, "output":tool_text(tool.status, &tool.output)})
 }
 
-// A command's result, as the model reads it.
 fn tool_text(status: ToolStatus, output: &ToolOutput) -> String {
     let mut text = output.text.clone();
     if let Some(summary) = summary(status) {
@@ -339,7 +331,6 @@ impl Session {
         matches!(self.records.get(i), Some(Record::Node(_)))
     }
 
-    // Nothing would be lost by dropping this session from memory.
     pub fn persisted(&self) -> bool {
         self.file.is_some() && self.saved == self.records.len()
     }
@@ -400,7 +391,6 @@ impl Session {
         self.record(Record::Node(node)).expect("valid cursor");
     }
 
-    // How the latest run ended, unless the path moved since.
     pub fn status(&self) -> Status {
         self.records
             .iter()
@@ -429,7 +419,6 @@ impl Session {
         self.records.iter().rposition(|r| matches!(r, Record::Cursor { .. })).map_or(0, |i| i as u64 + 1)
     }
 
-    // Whether some step was not read yet, and now is.
     pub fn mark_read(&mut self) -> Result<bool> {
         let unread = self.records.iter().rev().find_map(|r| match r {
             Record::Node(_) => Some(true),
@@ -443,8 +432,6 @@ impl Session {
         Ok(true)
     }
 
-    // Live changes and replay use the same path. Control records cannot split a
-    // node, and every parent/cursor must point to an already committed node.
     pub fn record(&mut self, mut record: Record) -> Result<()> {
         if !record.is_entry() && !matches!(record, Record::Node(_)) && self.records.last().is_some_and(Record::is_entry)
         {
@@ -578,8 +565,7 @@ impl Session {
         Ok(session)
     }
 
-    // Iterative DFS: very deep tool loops don't consume the stack. Linear
-    // paths stay flat; fork guides continue through their descendants.
+    // Iterative DFS: very deep tool loops don't consume the stack.
     pub fn tree(&self) -> Vec<(Option<usize>, String)> {
         struct Frame {
             node: Option<usize>,
@@ -651,7 +637,6 @@ fn path(id: &str) -> Result<PathBuf> {
     Ok(state_dir().join(format!("{id}.jsonl")))
 }
 
-// Deletes a saved session, unless some mu has it open. Whether it is gone.
 pub fn delete(id: &str) -> Result<bool> {
     let path = path(id)?;
     let file = match fs::File::open(&path) {
@@ -673,17 +658,12 @@ pub struct Summary {
     pub id: String,
     pub title: String,
     pub cwd: PathBuf,
-    // How the latest run ended, if the path has not moved since.
     pub status: Status,
-    // Why it failed.
     pub error: Option<String>,
-    // Some step was never read; running or not.
     pub unread: bool,
-    // When its latest step finished, or the log was last written for steps without times.
     pub updated: u64,
 }
 
-// A saved session, as its log's first and last lines tell it.
 pub fn summary_of(id: &str) -> Option<Summary> {
     summarize(&path(id).ok()?)
 }
@@ -723,14 +703,10 @@ fn summarize(path: &Path) -> Option<Summary> {
 
 struct Tail {
     node: Option<Node>,
-    // A read marker follows the node.
     read: bool,
-    // So does a cursor: the path moved.
     moved: bool,
 }
 
-// The log's latest node and what follows it. Control records are small and
-// come last, so this rarely reads more than a few kilobytes.
 fn tail(file: &mut fs::File) -> io::Result<Tail> {
     let len = file.metadata()?.len();
     let mut window = 16 * 1024;
@@ -765,7 +741,6 @@ fn tail(file: &mut fs::File) -> io::Result<Tail> {
     }
 }
 
-// Latest first.
 pub fn sessions() -> Result<Vec<Summary>> {
     let dir = &state_dir();
     if !dir.exists() {

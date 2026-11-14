@@ -33,8 +33,6 @@ pub enum Choice {
     Skill(usize),
 }
 
-// Both completion and submission use these same choices. Built-ins win
-// collisions; the last discovered skill wins among skills.
 pub fn choices(skills: &[Skill]) -> BTreeMap<String, (Choice, String)> {
     let mut entries = BTreeMap::new();
     for (i, skill) in skills.iter().enumerate() {

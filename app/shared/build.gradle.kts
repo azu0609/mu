@@ -1,5 +1,3 @@
-// The app's UI, in Compose Multiplatform. It knows nothing of the Rust core:
-// the platform app hands it what to show.
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.android.kotlin.multiplatform.library)

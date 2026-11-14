@@ -121,8 +121,6 @@ impl Line {
     }
 }
 
-// Carry styles with the text, rather than rediscovering Markdown on each
-// screen row. Delimiters and styled ranges can themselves cross a soft wrap.
 pub(crate) fn wrap_spans(spans: Vec<Span>, width: usize) -> Vec<Line> {
     let width = width.max(1);
     if !spans.iter().any(|span| span.text.contains('\n'))

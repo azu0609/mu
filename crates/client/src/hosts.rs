@@ -1,5 +1,3 @@
-// The hosts a client has paired with, kept in a file of its own. A host is
-// known by its certificate: pairing with it again replaces the old entry.
 use crate::{Remote, Result};
 use serde::{Deserialize, Serialize};
 use std::{
@@ -11,7 +9,6 @@ use std::{
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Paired {
-    // How the host last described itself, for showing it while it is away.
     pub name: String,
     pub icon: Option<String>,
     pub description: String,
@@ -34,7 +31,6 @@ impl Hosts {
         Ok(Self { path, list })
     }
 
-    // In the order they were paired.
     pub fn list(&self) -> &[Paired] {
         &self.list
     }
@@ -52,7 +48,6 @@ impl Hosts {
         self.save(list)
     }
 
-    // Changes a known host, saving only if that changed anything.
     pub fn update(&mut self, cert: &str, change: impl FnOnce(&mut Paired)) -> Result<()> {
         let mut list = self.list.clone();
         let Some(host) = list.iter_mut().find(|host| host.remote.cert == cert) else {
@@ -65,7 +60,6 @@ impl Hosts {
         self.save(list)
     }
 
-    // Whether there was such a host.
     pub fn remove(&mut self, cert: &str) -> Result<bool> {
         let mut list = self.list.clone();
         list.retain(|host| host.remote.cert != cert);
@@ -74,7 +68,6 @@ impl Hosts {
         Ok(removed)
     }
 
-    // The tokens in here are credentials: only this user may read them.
     fn save(&mut self, list: Vec<Paired>) -> Result<()> {
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;

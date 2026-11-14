@@ -24,8 +24,6 @@ pub struct BashResult {
     pub images: Vec<Value>,
 }
 
-// Small results stay in the session. Only overflow needs a separate, temporary
-// file; retain the beginning and a rolling tail in the transcript.
 #[derive(Default)]
 struct Capture {
     head: Vec<u8>,
@@ -114,7 +112,6 @@ impl Drop for Temp {
     }
 }
 
-// Called by the tiny `view_image` executable placed on each shell's PATH.
 pub fn view_image(path: &Path) -> Result<()> {
     let manifest = env::var_os("MU_IMAGES").ok_or("view_image is only available inside mu's bash tool")?;
     let path = path.canonicalize()?;
@@ -142,19 +139,15 @@ pub fn bash(
     run(&args.command, cwd, Some(timeout), false, cancel, progress)
 }
 
-// A command the user ran themselves, in shell mode.
 pub struct Run {
     pub command: String,
     pub cwd: PathBuf,
     pub span: Span,
     pub status: ToolStatus,
     pub output: ToolOutput,
-    // Queued with view_image, as user messages.
     pub images: Vec<Value>,
 }
 
-// Runs a command the user typed. It has no time limit, since they stop it by
-// leaving, and MU_USER_TRIGGERED=1 tells it who asked.
 pub fn user(command: String, cwd: PathBuf, cancel: &Arc<AtomicBool>, mut progress: impl FnMut(ToolOutput)) -> Run {
     let started = now();
     let mut shown = ToolOutput::default();
@@ -172,7 +165,6 @@ pub fn user(command: String, cwd: PathBuf, cancel: &Arc<AtomicBool>, mut progres
     Run { command, cwd, span: Span { started, finished: now() }, status, output, images }
 }
 
-// `timeout` in milliseconds.
 fn run(
     command: &str,
     cwd: &Path,
@@ -206,8 +198,6 @@ fn run(
     let exit =
         process::run(&mut bash, None, timeout.map_or(Duration::MAX, Duration::from_millis), cancel, |_, chunk| {
             capture.push(chunk)?;
-            // Replace a bounded preview instead of accumulating unbounded UI
-            // deltas. Raw bytes are decoded together, not at pipe boundaries.
             if capture.total != published && (published == 0 || updated.elapsed() >= Duration::from_millis(100)) {
                 capture.flush()?;
                 progress(capture.preview());

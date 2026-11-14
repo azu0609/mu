@@ -70,7 +70,6 @@ impl Menu {
         self.entries.get(self.selected).map(|e| e.text.clone())
     }
 
-    // Typing on within the same completion keeps the user's place in it.
     pub fn inherit(&mut self, old: Option<&Menu>) {
         if let Some(old) = old
             && self.range == old.range
@@ -83,7 +82,6 @@ impl Menu {
     }
 }
 
-// Commands and skills complete here; @file mentions are completed by the host.
 pub fn command_menu(text: &str, cursor: usize, skills: &[Skill]) -> Option<Menu> {
     let prefix: String = text.chars().take(cursor).collect();
     let trimmed = prefix.trim_start();
@@ -108,8 +106,6 @@ pub fn command_menu(text: &str, cursor: usize, skills: &[Skill]) -> Option<Menu>
     })
 }
 
-// Shell mode: `!command` runs it and adds it to the conversation, `!!command`
-// only runs it. Returns which, and the command.
 pub fn shell_command(text: &str) -> Option<(bool, &str)> {
     let rest = text.trim_start().strip_prefix('!')?;
     Some(match rest.strip_prefix('!') {
@@ -118,8 +114,6 @@ pub fn shell_command(text: &str) -> Option<(bool, &str)> {
     })
 }
 
-// While the first line of a shell command is typed, the host's snippets
-// matching what is typed so far.
 pub fn shell_menu(text: &str, cursor: usize, snippets: &[Snippet]) -> Option<Menu> {
     let prefix: String = text.chars().take(cursor).collect();
     if prefix.contains('\n') {
