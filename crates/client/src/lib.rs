@@ -13,8 +13,9 @@ use hyper::{
 };
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use mu_wire::{
-    Call, Checkout, CompleteMention, CreateInvite, CreateSession, Failure, GetTree, Hello, ListDevices, ListSessions,
-    MarkRead, PROTOCOL, Pair, RecallQueued, Resume, SendMessage, SetModel, Stop, Subscribe, Unpair, Watch,
+    AppendShell, Call, Checkout, CompleteMention, CreateInvite, CreateSession, DeleteSessions, DeleteSnippet, Failure,
+    GetTree, Hello, ListDevices, ListDirectory, ListSessions, ListSkills, MarkRead, PROTOCOL, Pair, RecallQueued,
+    Resume, SaveSnippet, SendMessage, SetDescription, SetIcon, SetModel, Shell, Stop, Subscribe, Unpair, Watch,
 };
 use rustls::pki_types::ServerName;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -34,10 +35,11 @@ use tokio::{
 use tokio_rustls::TlsConnector;
 
 pub use mu_wire::{
-    Block, Device, Event, HostInfo, Invitation, Invite, Kind, Mention, MentionEntry, Model, SessionSummary, Skill,
-    Span, State, Stats, Status, Tool, ToolOutput, ToolStatus, TreeEntry, WatchEvent,
+    Block, Deleted, Device, Directory, DirectoryEntry, EntryKind, Event, HostInfo, Invitation, Invite, Kind, Mention,
+    MentionEntry, Model, Profile, SessionSummary, ShellEvent, Skill, Snippet, Span, State, Stats, Status, Tool,
+    ToolOutput, ToolStatus, TreeEntry, WatchEvent,
 };
-pub use view::{Change, SessionList, View};
+pub use view::{Change, HostView, View};
 
 // The most a single reply or event may take. The host accepts calls up to 4 MiB,
 // and a user message near that must still fit when it comes back as an event.
@@ -106,7 +108,7 @@ pub enum Endpoint {
 }
 
 // A host on the network, and what this device proves itself with.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Remote {
     // host:port, with brackets around an IPv6 host.
     pub address: String,
@@ -300,14 +302,68 @@ impl Client {
         self.call(CompleteMention { session_id: id.into(), text, cursor, refresh }).await
     }
 
+    // Adds a command run in shell mode, and its result, to the session's
+    // conversation. Only while its agent is not running, and after a message.
+    pub async fn append_shell(&self, id: &str, run: &str) -> Result<()> {
+        self.call(AppendShell { session_id: id.into(), run: run.into() }).await
+    }
+
+    // Leaves alone sessions in use: running, or open in a client.
+    pub async fn delete_sessions(&self) -> Result<Deleted> {
+        self.call(DeleteSessions {}).await
+    }
+
+    // The profile's changes reach clients through `watch`. An unset or empty
+    // icon goes back to the clients' default.
+    pub async fn set_icon(&self, icon: Option<String>) -> Result<()> {
+        self.call(SetIcon { icon }).await
+    }
+
+    pub async fn set_description(&self, description: String) -> Result<()> {
+        self.call(SetDescription { description }).await
+    }
+
+    // Adds a snippet, or replaces the one with this id. Returns its id.
+    pub async fn save_snippet(
+        &self,
+        id: Option<String>,
+        name: String,
+        command: String,
+        icon: Option<String>,
+    ) -> Result<String> {
+        self.call(SaveSnippet { id, name, command, icon }).await
+    }
+
+    pub async fn delete_snippet(&self, id: &str) -> Result<()> {
+        self.call(DeleteSnippet { id: id.into() }).await
+    }
+
+    // `~` and an empty path name the host's home.
+    pub async fn list_directory(&self, path: &Path) -> Result<Directory> {
+        self.call(ListDirectory { path: path.into() }).await
+    }
+
+    // The skills a session in `cwd` would have, for before there is one.
+    pub async fn list_skills(&self, cwd: &Path) -> Result<Vec<Skill>> {
+        self.call(ListSkills { cwd: cwd.into() }).await
+    }
+
+    // Runs a command the user typed, in `cwd` on the host. Resolves once it has
+    // started; dropping the run kills it.
+    pub async fn shell(&self, cwd: &Path, command: String) -> Result<ShellRun> {
+        let call = Shell { cwd: cwd.into(), command };
+        let body = post(&mut self.sender().await?, self.0.authorization.as_ref(), Shell::PATH, &call).await?;
+        Ok(ShellRun { lines: Lines { body, buf: vec![], scanned: 0 } })
+    }
+
     // Resolves with the session's first event, so an error means the session cannot be opened.
     pub async fn subscribe(&self, id: &str) -> Result<Subscription> {
         self.follow(Feed::Session { id: id.into(), resume: None }).await
     }
 
-    // The session list, kept current; see `SessionList`.
+    // The host's profile and session list, kept current; see `HostView`.
     pub async fn watch(&self) -> Result<Subscription<WatchEvent>> {
-        self.follow(Feed::Sessions).await
+        self.follow(Feed::Host).await
     }
 
     async fn follow<T: DeserializeOwned>(&self, feed: Feed) -> Result<Subscription<T>> {
@@ -324,7 +380,7 @@ impl Client {
                 let call = Subscribe { session_id: id.clone(), resume: *resume };
                 post(sender, authorization, Subscribe::PATH, &call).await?
             }
-            Feed::Sessions => post(sender, authorization, Watch::PATH, &Watch {}).await?,
+            Feed::Host => post(sender, authorization, Watch::PATH, &Watch {}).await?,
         };
         Ok(Lines { body, buf: vec![], scanned: 0 })
     }
@@ -399,7 +455,7 @@ pub enum Update<T = Event> {
 enum Feed {
     // A session, and what this client was given of its transcript so far.
     Session { id: String, resume: Option<Resume> },
-    Sessions,
+    Host,
 }
 
 // Follows a session, or the session list, for as long as it is polled.
@@ -456,9 +512,23 @@ impl Subscription<Event> {
 }
 
 impl Subscription<WatchEvent> {
-    // After a break the list starts over, whole.
+    // After a break it starts over, with everything.
     pub async fn next(&mut self) -> Update<WatchEvent> {
         self.pull().await
+    }
+}
+
+// A command running in shell mode. It cannot be picked up again once its
+// stream breaks; dropping it kills the command.
+pub struct ShellRun {
+    lines: Lines,
+}
+
+impl ShellRun {
+    // `None` once the stream ends, which follows `ShellEvent::Done`, unless the
+    // connection broke first.
+    pub async fn next(&mut self) -> Result<Option<ShellEvent>> {
+        self.lines.next().await
     }
 }
 

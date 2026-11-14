@@ -305,7 +305,8 @@ fn ending(status: ToolStatus) -> Option<String> {
     })
 }
 
-fn tool_lines(command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<Line> {
+// `marker` tells the agent's calls from the user's own commands.
+fn tool_lines(marker: &str, command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<Line> {
     let color = match tool.status {
         ToolStatus::Running | ToolStatus::TimedOut(_) | ToolStatus::Cancelled => Color::Yellow,
         ToolStatus::Exited(0) => Color::Green,
@@ -326,7 +327,7 @@ fn tool_lines(command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<L
     };
     let mut result = vec![];
     for (i, line) in command.into_iter().enumerate() {
-        let mut rendered = Line::new(if i == 0 { "●" } else { " " }, if i == 0 { color } else { Color::Reset });
+        let mut rendered = Line::new(if i == 0 { marker } else { " " }, if i == 0 { color } else { Color::Reset });
         rendered.push(&format!(" {line}"), Style::new(Color::Reset));
         result.push(rendered);
     }
@@ -374,9 +375,10 @@ fn tool_lines(command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<L
 
 fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
     let (first_prefix, color, limit) = match (block.kind, &block.tool) {
-        (Kind::Call, Some(tool)) => return tool_lines(&block.text, tool, width, expanded),
+        (Kind::Call, Some(tool)) => return tool_lines("●", &block.text, tool, width, expanded),
+        (Kind::Shell, Some(tool)) => return tool_lines("$", &block.text, tool, width, expanded),
         // A call without its tool has nothing to show beyond its text.
-        (Kind::Call | Kind::Notice | Kind::Warning, _) => {
+        (Kind::Call | Kind::Shell | Kind::Notice | Kind::Warning, _) => {
             let (marker, color) = if block.kind == Kind::Warning { ("!", Color::Yellow) } else { ("·", GRAY) };
             let mut lines = vec![];
             for (i, line) in wrap(&clean(&block.text), width.saturating_sub(4)).into_iter().enumerate() {
@@ -454,7 +456,7 @@ impl Transcript {
         Self {
             welcome: Block::new(
                 Kind::Notice,
-                "mu · escape to interrupt · / for commands & skills · ctrl+o to expand/collapse · ctrl+g to edit prompt",
+                "mu · escape to interrupt · / for commands & skills · ! to run a command for the agent, !! just for you · ctrl+o to expand/collapse · ctrl+g to edit prompt",
             ),
             pending: app
                 .view
@@ -474,7 +476,13 @@ impl Transcript {
     }
 
     fn dynamic_blocks<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = &'a Block> + 'a {
-        app.view.live_notice.iter().chain(app.view.live.iter()).chain(app.feedback.iter()).chain(self.pending.iter())
+        app.view
+            .live_notice
+            .iter()
+            .chain(app.view.live.iter())
+            .chain(app.feedback.iter())
+            .chain(app.shell.iter().map(|shell| &shell.block))
+            .chain(self.pending.iter())
     }
 
     fn blocks<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = &'a Block> + 'a {

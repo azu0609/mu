@@ -150,6 +150,8 @@ pub enum Record {
     ImageAttachment { path: PathBuf, image: Value },
     Notice { text: String },
     Tool(Tool),
+    // A command the user ran, and its result. `cwd` is set when it was not the session's.
+    Shell { command: String, cwd: Option<PathBuf>, status: ToolStatus, output: ToolOutput },
     Node(Node),
     Cursor { node: Option<usize> },
     Model(Model),
@@ -166,6 +168,7 @@ impl Record {
                 | Self::ImageAttachment { .. }
                 | Self::Notice { .. }
                 | Self::Tool(_)
+                | Self::Shell { .. }
         )
     }
 
@@ -180,6 +183,12 @@ impl Record {
             }
             Self::Notice { .. } => return None,
             Self::Tool(tool) => tool_item(tool),
+            // As a prompt and what followed it, from the user.
+            Self::Shell { command, cwd, status, output } => {
+                let prompt = cwd.as_ref().map(|cwd| cwd.display().to_string()).unwrap_or_default();
+                let text = format!("{prompt}$ {command}\n{}", tool_text(*status, output).trim_start_matches('\n'));
+                json!({"role":"user", "content":text.trim_end()})
+            }
             _ => return None,
         })
     }
@@ -222,19 +231,24 @@ impl Node {
 }
 
 fn tool_item(tool: &Tool) -> Value {
-    let mut text = tool.output.text.clone();
-    if let Some(summary) = summary(tool.status) {
+    json!({"type":"function_call_output", "call_id":tool.call_id, "output":tool_text(tool.status, &tool.output)})
+}
+
+// A command's result, as the model reads it.
+fn tool_text(status: ToolStatus, output: &ToolOutput) -> String {
+    let mut text = output.text.clone();
+    if let Some(summary) = summary(status) {
         text.push_str(&format!("\n[{summary}]"));
     }
-    if tool.output.truncated
-        && let Some(log) = &tool.output.log
+    if output.truncated
+        && let Some(log) = &output.log
     {
         text.push_str(&format!(
             "\n[Output log (temporary): {} — read needed ranges with sed, tail, or grep]",
             log.display()
         ));
     }
-    json!({"type":"function_call_output", "call_id":tool.call_id, "output":text})
+    text
 }
 
 #[derive(Serialize, Deserialize)]
@@ -463,6 +477,11 @@ impl Session {
                                 block.tool = Some(tool.clone());
                             }
                         }
+                        Record::Shell { command, status, output, .. } => {
+                            let mut block = Block::new(Kind::Shell, command);
+                            block.tool = Some(Tool { call_id: String::new(), status: *status, output: output.clone() });
+                            node.blocks.push(block);
+                        }
                         _ => unreachable!(),
                     }
                 }
@@ -581,7 +600,7 @@ impl Session {
                     let blocks = &self.node(i).blocks;
                     blocks
                         .iter()
-                        .find(|b| matches!(b.kind, Kind::User | Kind::Agent | Kind::Call))
+                        .find(|b| matches!(b.kind, Kind::User | Kind::Agent | Kind::Call | Kind::Shell))
                         .or_else(|| blocks.iter().find(|b| b.kind == Kind::Warning))
                         .map(|b| {
                             format!(
@@ -630,6 +649,24 @@ fn path(id: &str) -> Result<PathBuf> {
         return Err("Invalid session id".into());
     }
     Ok(state_dir().join(format!("{id}.jsonl")))
+}
+
+// Deletes a saved session, unless some mu has it open. Whether it is gone.
+pub fn delete(id: &str) -> Result<bool> {
+    let path = path(id)?;
+    let file = match fs::File::open(&path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(true),
+        Err(e) => return Err(e.into()),
+    };
+    // Held until the file is gone: a mu loading it meanwhile fails to lock it.
+    match file.try_lock() {
+        Ok(()) => (),
+        Err(fs::TryLockError::WouldBlock) => return Ok(false),
+        Err(fs::TryLockError::Error(e)) => return Err(e.into()),
+    }
+    fs::remove_file(&path)?;
+    Ok(true)
 }
 
 pub struct Summary {

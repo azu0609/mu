@@ -33,6 +33,11 @@ fn random(len: usize) -> Result<String> {
     Ok(URL_SAFE_NO_PAD.encode(random_bytes(len)?))
 }
 
+// Eight hex digits, for naming things a person may type.
+pub fn short_id() -> Result<String> {
+    Ok(random_bytes(4)?.iter().map(|b| format!("{b:02x}")).collect())
+}
+
 pub fn sha256(data: &[u8]) -> String {
     URL_SAFE_NO_PAD.encode(digest::digest(&digest::SHA256, data))
 }
@@ -81,7 +86,7 @@ impl Devices {
         let token = random(32)?;
         let name: String = name.chars().filter(|c| !c.is_control()).take(64).collect();
         let device = Device {
-            id: random_bytes(4)?.iter().map(|b| format!("{b:02x}")).collect(),
+            id: short_id()?,
             name: if name.trim().is_empty() { "Unnamed device".into() } else { name },
             paired: SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs(),
             token_sha256: sha256(token.as_bytes()),

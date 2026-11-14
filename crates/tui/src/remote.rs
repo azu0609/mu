@@ -1,7 +1,9 @@
 // The host, as the synchronous UI loop sees it: short calls block, while the
 // session's events and slow answers arrive on a channel.
 use crate::Result;
-use mu_client::{Client, Device, Endpoint, Event, Invitation, Mention, Model, TreeEntry, Update, WatchEvent};
+use mu_client::{
+    Client, Device, Endpoint, Event, Invitation, Mention, Model, ShellEvent, TreeEntry, Update, WatchEvent,
+};
 use std::{future::Future, path::Path, sync::mpsc, time::Duration};
 use tokio::{runtime::Runtime, task::JoinHandle, time};
 
@@ -10,8 +12,10 @@ pub enum Incoming {
     Event(u64, Event),
     Lost(u64),
     Mention(u64, Result<Option<Mention>>),
-    // The host's session list changed.
-    Sessions(WatchEvent),
+    // The host's profile or session list changed.
+    Host(WatchEvent),
+    // How the command started as `seq` is going. An error ends it.
+    Shell(u64, Result<ShellEvent>),
 }
 
 pub struct Remote {
@@ -21,6 +25,8 @@ pub struct Remote {
     pub rx: mpsc::Receiver<Incoming>,
     subscription: Option<JoinHandle<()>>,
     subscriptions: u64,
+    // Following the command running in shell mode; aborting it kills the command.
+    shell: Option<JoinHandle<()>>,
     // The subscription whose events are current; older ones may still be in the channel.
     pub generation: u64,
 }
@@ -37,18 +43,18 @@ impl Remote {
             runtime.block_on(Client::connect(endpoint)).map_err(|e| format!("Cannot reach the mu host{place}: {e}"))?;
         let (tx, rx) = mpsc::channel();
         let mut watch = runtime.block_on(client.watch())?;
-        let sessions = tx.clone();
+        let host = tx.clone();
         runtime.spawn(async move {
             loop {
-                // A break needs no word here; the list starts over when the host is back.
+                // A break needs no word here; everything comes again when the host is back.
                 if let Update::Event(event) = watch.next().await
-                    && sessions.send(Incoming::Sessions(event)).is_err()
+                    && host.send(Incoming::Host(event)).is_err()
                 {
                     return;
                 }
             }
         });
-        Ok(Self { runtime, client, tx, rx, subscription: None, subscriptions: 0, generation: 0 })
+        Ok(Self { runtime, client, tx, rx, subscription: None, subscriptions: 0, shell: None, generation: 0 })
     }
 
     fn call<T>(&self, call: impl Future<Output = mu_client::Result<T>>) -> Result<T> {
@@ -132,6 +138,44 @@ impl Remote {
 
     pub fn unpair(&self, id: &str) -> Result<()> {
         self.call(self.client.unpair(id))
+    }
+
+    pub fn append_shell(&self, id: &str, run: &str) -> Result<()> {
+        self.call(self.client.append_shell(id, run))
+    }
+
+    // Starts a command; how it goes arrives as `Incoming::Shell(seq, …)`.
+    pub fn shell(&mut self, seq: u64, cwd: &Path, command: String) -> Result<()> {
+        let mut run = self.call(self.client.shell(cwd, command))?;
+        let tx = self.tx.clone();
+        let task = self.runtime.spawn(async move {
+            loop {
+                let (incoming, done) = match run.next().await {
+                    Ok(Some(event)) => {
+                        let done = matches!(event, ShellEvent::Done { .. });
+                        (Incoming::Shell(seq, Ok(event)), done)
+                    }
+                    Ok(None) => {
+                        (Incoming::Shell(seq, Err("The host stopped sending the command's output".into())), true)
+                    }
+                    Err(e) => (Incoming::Shell(seq, Err(e.into())), true),
+                };
+                if tx.send(incoming).is_err() || done {
+                    return;
+                }
+            }
+        });
+        if let Some(old) = self.shell.replace(task) {
+            old.abort();
+        }
+        Ok(())
+    }
+
+    // Kills the command, if it is still running.
+    pub fn cancel_shell(&mut self) {
+        if let Some(task) = self.shell.take() {
+            task.abort();
+        }
     }
 
     // Indexing a large tree takes a while, so the answer arrives as `Incoming::Mention(seq, …)`.

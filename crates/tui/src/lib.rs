@@ -12,7 +12,7 @@ use crossterm::event::{
 };
 pub use devices::{devices, pair, unpair};
 pub use mu_client::Endpoint;
-use mu_client::{Block, Change, Event, Kind, Model, SessionList, View};
+use mu_client::{Block, Change, Event, HostView, Kind, Model, ShellEvent, Tool, ToolOutput, ToolStatus, View};
 use remote::{Incoming, Remote};
 use std::{
     env,
@@ -36,6 +36,14 @@ struct Picker {
 // Kept current while it is open.
 const SESSIONS: &str = "resume session";
 
+// A command running in shell mode, shown below the transcript until it ends.
+struct Shell {
+    seq: u64,
+    // Where to add it once it ends, if anywhere.
+    session: Option<String>,
+    block: Block,
+}
+
 fn cycle_selection(selected: usize, len: usize, up: bool) -> usize {
     if len == 0 {
         0
@@ -50,7 +58,7 @@ struct App {
     remote: Remote,
     connected: bool,
     view: View,
-    sessions: SessionList,
+    host: HostView,
     editor: ui::Editor,
     feedback: Vec<Block>,
     completion: Option<input::Menu>,
@@ -61,6 +69,8 @@ struct App {
     mention_seq: u64,
     mention_done: u64,
     picker: Option<Picker>,
+    shell: Option<Shell>,
+    shell_seq: u64,
     expanded: bool,
     scroll: usize,
     scroll_layout: Option<ui::ScrollAnchor>,
@@ -126,14 +136,14 @@ impl App {
                 self.connected = false;
                 self.warn("Lost the mu host; reconnecting…");
             }
-            Incoming::Sessions(event) => {
-                self.sessions.apply(event);
+            Incoming::Host(event) => {
+                self.host.apply(event);
                 if let Some(picker) = self.picker.as_mut().filter(|picker| picker.title == SESSIONS) {
                     let selected = match picker.entries.get(picker.selected) {
                         Some((Target::Session(id), _)) => Some(id.clone()),
                         _ => None,
                     };
-                    picker.entries = session_entries(&self.sessions);
+                    picker.entries = session_entries(&self.host);
                     picker.selected = picker
                         .entries
                         .iter()
@@ -174,7 +184,76 @@ impl App {
                     }
                 }
             }
+            Incoming::Shell(seq, result) => self.shell_update(seq, result),
             _ => (),
+        }
+    }
+
+    fn shell_update(&mut self, seq: u64, result: Result<ShellEvent>) {
+        let Some(shell) = self.shell.as_mut().filter(|shell| shell.seq == seq) else {
+            return;
+        };
+        let tool = shell.block.tool.as_mut().expect("a shell block has its tool");
+        let (run, error) = match result {
+            Ok(ShellEvent::Output(output)) => {
+                tool.output = output;
+                return;
+            }
+            Ok(ShellEvent::Done { run, status, output }) => {
+                tool.status = status;
+                tool.output = output;
+                (Some(run), None)
+            }
+            Err(e) => {
+                tool.status = ToolStatus::Error;
+                (None, Some(e.to_string()))
+            }
+        };
+        let shell = self.shell.take().expect("matched");
+        let error = match (run, &shell.session) {
+            (Some(run), Some(session)) => match self.remote.append_shell(session, &run) {
+                // It comes back on the session's stream, into the transcript.
+                Ok(()) => return,
+                Err(e) => Some(format!("Not added to the conversation: {e}")),
+            },
+            _ => error,
+        };
+        self.push_feedback(shell.block);
+        if let Some(error) = error {
+            self.warn(error);
+        }
+    }
+
+    // `append` adds the command and its output to the conversation once it ends.
+    fn run_shell(&mut self, command: &str, append: bool) -> Result<()> {
+        if command.is_empty() {
+            return Err("!command runs a command and adds it to the conversation; !!command only runs it".into());
+        }
+        if self.shell.is_some() {
+            return Err("A command is still running; Ctrl+C stops it".into());
+        }
+        // The host would refuse to add it; better to say so before it runs.
+        if append && self.view.blocks.is_empty() {
+            return Err("The conversation is empty: send a message first, or use !! to only run it".into());
+        }
+        if append && self.view.running() {
+            return Err("The agent is running: wait or stop it, or use !! to only run it".into());
+        }
+        self.shell_seq += 1;
+        self.remote.shell(self.shell_seq, &self.view.cwd, command.into())?;
+        let mut block = Block::new(Kind::Shell, command);
+        block.tool = Some(Tool { call_id: String::new(), status: ToolStatus::Running, output: ToolOutput::default() });
+        self.shell = Some(Shell { seq: self.shell_seq, session: append.then(|| self.view.id.clone()), block });
+        Ok(())
+    }
+
+    fn cancel_shell(&mut self) {
+        self.remote.cancel_shell();
+        if let Some(mut shell) = self.shell.take() {
+            if let Some(tool) = &mut shell.block.tool {
+                tool.status = ToolStatus::Cancelled;
+            }
+            self.push_feedback(shell.block);
         }
     }
 
@@ -271,7 +350,7 @@ impl App {
                 self.picker = Some(Picker { title: "conversation tree", entries, selected });
             }
             commands::BuiltinKind::Resume => {
-                let entries = session_entries(&self.sessions);
+                let entries = session_entries(&self.host);
                 if entries.is_empty() {
                     return Err("No saved sessions".into());
                 }
@@ -294,6 +373,11 @@ impl App {
 
     fn send_input(&mut self) -> Result<()> {
         let mut text = self.editor.text();
+        if let Some((append, command)) = input::shell_command(&text) {
+            self.run_shell(command, append)?;
+            self.editor.clear();
+            return Ok(());
+        }
         let mut skill = None;
         if text.trim_start().starts_with('/') {
             let word = text.split_whitespace().next().unwrap();
@@ -332,10 +416,12 @@ impl App {
     fn refresh_completion(&mut self) {
         let text = self.editor.text();
         let cursor = self.editor.cursor;
+        let shell = input::shell_command(&text).is_some();
         let menu = if self.dismissed || self.picker.is_some() {
             None
         } else {
             input::command_menu(&text, cursor, &self.view.skills)
+                .or_else(|| input::shell_menu(&text, cursor, &self.host.profile.snippets))
         };
         if let Some(mut menu) = menu {
             menu.inherit(self.completion.as_ref());
@@ -343,7 +429,8 @@ impl App {
             self.close_mention();
             return;
         }
-        if self.dismissed || self.picker.is_some() || !text.contains('@') {
+        // No mentions in shell commands: `@` means other things there.
+        if self.dismissed || self.picker.is_some() || shell || !text.contains('@') {
             self.completion = None;
             self.close_mention();
             return;
@@ -481,7 +568,9 @@ impl App {
         }
         match key.code {
             Key::Char('c') if ctrl => {
-                if self.view.running() {
+                if self.shell.is_some() {
+                    self.cancel_shell();
+                } else if self.view.running() {
                     self.stop();
                 } else if !self.editor.chars.is_empty() {
                     self.editor.clear();
@@ -490,6 +579,7 @@ impl App {
                 }
             }
             Key::Char('d') if ctrl && self.editor.chars.is_empty() => self.quit(),
+            Key::Esc if self.shell.is_some() => self.cancel_shell(),
             Key::Esc => self.stop(),
             Key::PageUp => self.scroll_up(10),
             Key::PageDown => self.scroll_down(10),
@@ -548,7 +638,7 @@ impl App {
                 dirty = false;
             }
             // The host can speak at any time (another client may be driving this session).
-            let busy = self.view.running() || self.mention_done < self.mention_seq;
+            let busy = self.view.running() || self.shell.is_some() || self.mention_done < self.mention_seq;
             if event::poll(Duration::from_millis(if busy { 33 } else { 250 }))? {
                 let before = (self.editor.text(), self.editor.cursor);
                 match event::read()? {
@@ -588,8 +678,8 @@ fn copy(text: &str) -> Result<()> {
     Ok(())
 }
 
-fn session_entries(list: &SessionList) -> Vec<(Target, String)> {
-    list.sessions
+fn session_entries(host: &HostView) -> Vec<(Target, String)> {
+    host.sessions
         .iter()
         .map(|session| {
             let label = format!(
@@ -624,7 +714,7 @@ pub fn run(endpoint: Endpoint) -> Result<()> {
         remote,
         connected: true,
         view: View::default(),
-        sessions: SessionList::default(),
+        host: HostView::default(),
         editor: ui::Editor::default(),
         feedback: vec![],
         completion: None,
@@ -634,6 +724,8 @@ pub fn run(endpoint: Endpoint) -> Result<()> {
         mention_seq: 0,
         mention_done: 0,
         picker: None,
+        shell: None,
+        shell_seq: 0,
         expanded: false,
         scroll: 0,
         scroll_layout: None,

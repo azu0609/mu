@@ -1,5 +1,8 @@
-use crate::{Result, image, process, session::unique_id};
-use mu_wire::{ToolOutput, ToolStatus};
+use crate::{
+    Result, image, process,
+    session::{now, unique_id},
+};
+use mu_wire::{Span, ToolOutput, ToolStatus};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
@@ -129,13 +132,55 @@ pub fn bash(
     arguments: &str,
     cwd: &Path,
     cancel: &Arc<AtomicBool>,
-    mut progress: impl FnMut(ToolOutput),
+    progress: impl FnMut(ToolOutput),
 ) -> Result<BashResult> {
     let args: Args = serde_json::from_str(arguments)?;
     let timeout = args.timeout_ms.unwrap_or(120_000);
     if timeout == 0 {
         return Err("timeoutMs must be positive".into());
     }
+    run(&args.command, cwd, Some(timeout), false, cancel, progress)
+}
+
+// A command the user ran themselves, in shell mode.
+pub struct Run {
+    pub command: String,
+    pub cwd: PathBuf,
+    pub span: Span,
+    pub status: ToolStatus,
+    pub output: ToolOutput,
+    // Queued with view_image, as user messages.
+    pub images: Vec<Value>,
+}
+
+// Runs a command the user typed. It has no time limit, since they stop it by
+// leaving, and MU_USER_TRIGGERED=1 tells it who asked.
+pub fn user(command: String, cwd: PathBuf, cancel: &Arc<AtomicBool>, mut progress: impl FnMut(ToolOutput)) -> Run {
+    let started = now();
+    let mut shown = ToolOutput::default();
+    let result = run(&command, &cwd, None, true, cancel, |output| {
+        shown = output.clone();
+        progress(output);
+    });
+    let (status, output, images) = match result {
+        Ok(result) => (result.status, result.output, result.images),
+        Err(e) => {
+            shown.text.push_str(&format!("\n[error: {e}]"));
+            (ToolStatus::Error, shown, vec![])
+        }
+    };
+    Run { command, cwd, span: Span { started, finished: now() }, status, output, images }
+}
+
+// `timeout` in milliseconds.
+fn run(
+    command: &str,
+    cwd: &Path,
+    timeout: Option<u64>,
+    user: bool,
+    cancel: &Arc<AtomicBool>,
+    mut progress: impl FnMut(ToolOutput),
+) -> Result<BashResult> {
     let dir = Temp(env::temp_dir().join(format!("mu-{}", unique_id())));
     fs::create_dir(&dir.0)?;
     fs::set_permissions(&dir.0, fs::Permissions::from_mode(0o700))?;
@@ -147,17 +192,19 @@ pub fn bash(
     let mut capture = Capture::default();
     let mut updated = Instant::now();
     let mut published = 0;
-    let exit = process::run(
-        Command::new("bash")
-            .args(["-c", &args.command])
-            .current_dir(cwd)
-            .env("PATH", path)
-            .env("MU_EXE", env::current_exe()?)
-            .env("MU_IMAGES", &manifest),
-        None,
-        Duration::from_millis(timeout),
-        cancel,
-        |_, chunk| {
+    let mut bash = Command::new("bash");
+    bash.args(["-c", command])
+        .current_dir(cwd)
+        .env("PATH", path)
+        .env("MU_EXE", env::current_exe()?)
+        .env("MU_IMAGES", &manifest);
+    // Never inherited: only the user's own commands get it.
+    match user {
+        true => bash.env("MU_USER_TRIGGERED", "1"),
+        false => bash.env_remove("MU_USER_TRIGGERED"),
+    };
+    let exit =
+        process::run(&mut bash, None, timeout.map_or(Duration::MAX, Duration::from_millis), cancel, |_, chunk| {
             capture.push(chunk)?;
             // Replace a bounded preview instead of accumulating unbounded UI
             // deltas. Raw bytes are decoded together, not at pipe boundaries.
@@ -168,8 +215,7 @@ pub fn bash(
                 updated = Instant::now();
             }
             Ok(())
-        },
-    );
+        });
     let flushed = capture.flush();
     let mut output = capture.preview();
     progress(output.clone());
@@ -178,7 +224,7 @@ pub fn bash(
     let status = if exit.cancelled {
         ToolStatus::Cancelled
     } else if exit.timed_out {
-        ToolStatus::TimedOut(timeout)
+        ToolStatus::TimedOut(timeout.unwrap_or_default())
     } else {
         ToolStatus::Exited(exit.code)
     };

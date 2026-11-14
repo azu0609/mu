@@ -6,7 +6,7 @@
 // Listeners are called on the core's own threads; hop to the UI's before
 // touching its state.
 use mu_client::{
-    Change, Client, Endpoint, Invite, SessionList, Update, View,
+    Change, Client, Endpoint, HostView, Invite, ShellEvent, Update, View,
     hosts::{Hosts, Paired},
 };
 use std::{
@@ -62,17 +62,26 @@ async fn spawn<T: Send + 'static>(
 }
 
 // A paired host. Its id is its certificate's fingerprint, so pairing with the
-// same host again keeps it.
+// same host again keeps it. Its name, icon and description are as it last
+// described itself, so they are there while it is away.
 #[derive(uniffi::Record)]
 pub struct Host {
     pub id: String,
     pub name: String,
+    pub icon: Option<String>,
+    pub description: String,
     pub address: String,
 }
 
 impl From<&Paired> for Host {
     fn from(host: &Paired) -> Self {
-        Self { id: host.remote.cert.clone(), name: host.name.clone(), address: host.remote.address.clone() }
+        Self {
+            id: host.remote.cert.clone(),
+            name: host.name.clone(),
+            icon: host.icon.clone(),
+            description: host.description.clone(),
+            address: host.remote.address.clone(),
+        }
     }
 }
 
@@ -80,7 +89,7 @@ impl From<&Paired> for Host {
 #[derive(uniffi::Object)]
 pub struct Core {
     runtime: Runtime,
-    hosts: Mutex<Hosts>,
+    hosts: Arc<Mutex<Hosts>>,
     // By host id. A connection re-establishes itself when it breaks.
     clients: Arc<Mutex<HashMap<String, Client>>>,
 }
@@ -97,7 +106,7 @@ impl Core {
             .build()
             .map_err(|e| MuError::Failed(e.to_string()))?;
         let hosts = Hosts::load(PathBuf::from(dir).join("hosts.json"))?;
-        Ok(Arc::new(Self { runtime, hosts: Mutex::new(hosts), clients: Arc::default() }))
+        Ok(Arc::new(Self { runtime, hosts: Arc::new(Mutex::new(hosts)), clients: Arc::default() }))
     }
 
     // In the order they were paired.
@@ -111,7 +120,8 @@ impl Core {
         let invite: Invite = invite.parse().map_err(MuError::Failed)?;
         let (remote, info) =
             spawn(self.runtime.handle(), async move { mu_client::pair(&invite, &device).await }).await?;
-        let paired = Paired { name: info.name, remote };
+        // The rest of how it describes itself arrives once it is watched.
+        let paired = Paired { name: info.name, icon: None, description: String::new(), remote };
         self.hosts.lock().unwrap().add(paired.clone())?;
         // A connection made with an older token would keep presenting it.
         self.clients.lock().unwrap().remove(&paired.remote.cert);
@@ -126,49 +136,143 @@ impl Core {
         Ok(())
     }
 
-    // Latest first. To keep a list current, watch it instead.
+    // Latest first. To keep a list current, watch the host instead.
     pub async fn sessions(&self, host: String) -> Result<Vec<SessionSummary>, MuError> {
-        let connect = self.connect(&host)?;
-        let sessions = spawn(self.runtime.handle(), async move { connect.await?.sessions().await }).await?;
+        let sessions = self.on(&host, |client| async move { client.sessions().await }).await?;
         Ok(sessions.into_iter().map(Into::into).collect())
     }
 
     // Starts a session in `cwd` on the host, with the host's default model.
     pub async fn create_session(&self, host: String, cwd: String) -> Result<String, MuError> {
-        let connect = self.connect(&host)?;
-        spawn(self.runtime.handle(), async move { connect.await?.create(cwd.as_ref(), None, None, None).await }).await
+        self.on(&host, |client| async move { client.create(cwd.as_ref(), None, None, None).await }).await
     }
 
-    // Follows the host's session list until the returned handle is closed. The
-    // listener hears the whole list first, then again on every change.
-    pub async fn watch_sessions(
-        &self,
-        host: String,
-        listener: Arc<dyn SessionListListener>,
-    ) -> Result<Arc<Watch>, MuError> {
-        let connect = self.connect(&host)?;
-        let mut watch = spawn(self.runtime.handle(), async move { connect.await?.watch().await }).await?;
+    // Leaves alone sessions in use: running, or open in some client.
+    pub async fn delete_sessions(&self, host: String) -> Result<DeletedSessions, MuError> {
+        let deleted = self.on(&host, |client| async move { client.delete_sessions().await }).await?;
+        Ok(DeletedSessions { deleted: deleted.sessions as i64, in_use: deleted.in_use as i64 })
+    }
+
+    // Follows the host's profile and session list until the returned handle is
+    // closed. The listener hears everything first, then again on every change.
+    // Remembers how the host describes itself, for `hosts` while it is away.
+    pub async fn watch_host(&self, host: String, listener: Arc<dyn HostListener>) -> Result<Arc<Watch>, MuError> {
+        let mut watch = self.on(&host, |client| async move { client.watch().await }).await?;
+        let hosts = self.hosts.clone();
         let task = self.runtime.spawn(async move {
-            let mut list = SessionList::default();
+            let mut view = HostView::default();
             let mut lost = false;
             loop {
                 match watch.next().await {
                     Update::Event(event) => {
                         lost = false;
-                        list.apply(event);
-                        listener.on_update(SessionListUpdate::Sessions {
-                            sessions: list.sessions.iter().cloned().map(Into::into).collect(),
+                        view.apply(event);
+                        let profile = &view.profile;
+                        // Not worth interrupting the watch over: it is only for while the host is away.
+                        let _ = hosts.lock().unwrap().update(&host, |paired| {
+                            paired.name = profile.name.clone();
+                            paired.icon = profile.icon.clone();
+                            paired.description = profile.description.clone();
+                        });
+                        listener.on_update(HostUpdate::Host {
+                            profile: profile.into(),
+                            sessions: view.sessions.iter().cloned().map(Into::into).collect(),
                         });
                     }
                     Update::Lost if lost => (),
                     Update::Lost => {
                         lost = true;
-                        listener.on_update(SessionListUpdate::Lost);
+                        listener.on_update(HostUpdate::Lost);
                     }
                 }
             }
         });
         Ok(Arc::new(Watch { task }))
+    }
+
+    // The profile's changes reach watchers of the host. An unset or empty icon
+    // goes back to the default.
+    pub async fn set_icon(&self, host: String, icon: Option<String>) -> Result<(), MuError> {
+        self.on(&host, |client| async move { client.set_icon(icon).await }).await
+    }
+
+    pub async fn set_description(&self, host: String, description: String) -> Result<(), MuError> {
+        self.on(&host, |client| async move { client.set_description(description).await }).await
+    }
+
+    // Adds a snippet, or replaces the one with this id. Returns its id.
+    pub async fn save_snippet(
+        &self,
+        host: String,
+        id: Option<String>,
+        name: String,
+        command: String,
+        icon: Option<String>,
+    ) -> Result<String, MuError> {
+        self.on(&host, |client| async move { client.save_snippet(id, name, command, icon).await }).await
+    }
+
+    pub async fn delete_snippet(&self, host: String, id: String) -> Result<(), MuError> {
+        self.on(&host, |client| async move { client.delete_snippet(&id).await }).await
+    }
+
+    // A directory on the host, for choosing where a session works. `~` and an
+    // empty path name the host's home; `<path>/..` names a directory's parent.
+    pub async fn list_directory(&self, host: String, path: String) -> Result<Directory, MuError> {
+        let directory = self.on(&host, |client| async move { client.list_directory(path.as_ref()).await }).await?;
+        Ok(Directory {
+            path: directory.path.to_string_lossy().into_owned(),
+            entries: directory
+                .entries
+                .into_iter()
+                .map(|entry| DirectoryEntry {
+                    name: entry.name,
+                    kind: match entry.kind {
+                        mu_client::EntryKind::File => EntryKind::File,
+                        mu_client::EntryKind::Directory => EntryKind::Directory,
+                        mu_client::EntryKind::Repository => EntryKind::Repository,
+                    },
+                })
+                .collect(),
+        })
+    }
+
+    // The skills a session in `cwd` would have, for before there is one.
+    pub async fn list_skills(&self, host: String, cwd: String) -> Result<Vec<Skill>, MuError> {
+        let skills = self.on(&host, |client| async move { client.list_skills(cwd.as_ref()).await }).await?;
+        Ok(skills.into_iter().map(|skill| Skill { name: skill.name, description: skill.description }).collect())
+    }
+
+    // Runs a command the user typed, in `cwd` on the host, until it ends or the
+    // returned handle is closed, which kills it. The listener hears its output
+    // as it goes, then how it ended: a run that an open session can add to its
+    // conversation.
+    pub async fn shell(
+        &self,
+        host: String,
+        cwd: String,
+        command: String,
+        listener: Arc<dyn ShellListener>,
+    ) -> Result<Arc<Shell>, MuError> {
+        let mut run = self.on(&host, |client| async move { client.shell(cwd.as_ref(), command).await }).await?;
+        let task = self.runtime.spawn(async move {
+            loop {
+                let update = match run.next().await {
+                    Ok(Some(ShellEvent::Output(output))) => {
+                        listener.on_update(ShellUpdate::Output { tool: tool(mu_client::ToolStatus::Running, &output) });
+                        continue;
+                    }
+                    Ok(Some(ShellEvent::Done { run, status, output })) => {
+                        ShellUpdate::Done { run, tool: tool(status, &output) }
+                    }
+                    Ok(None) => ShellUpdate::Failed { message: "The host stopped sending the command's output".into() },
+                    Err(e) => ShellUpdate::Failed { message: e.to_string() },
+                };
+                listener.on_update(update);
+                return;
+            }
+        });
+        Ok(Arc::new(Shell { task }))
     }
 
     // Follows a session until the returned handle is closed. The listener
@@ -214,6 +318,16 @@ impl Core {
 }
 
 impl Core {
+    // Runs `call` with the connection to a paired host, on the core's runtime.
+    async fn on<T, F>(&self, host: &str, call: impl FnOnce(Client) -> F + Send + 'static) -> Result<T, MuError>
+    where
+        T: Send + 'static,
+        F: Future<Output = mu_client::Result<T>> + Send + 'static,
+    {
+        let connect = self.connect(host)?;
+        spawn(self.runtime.handle(), async move { call(connect.await?).await }).await
+    }
+
     // The connection to a paired host, made when first needed.
     fn connect(&self, host: &str) -> Result<impl Future<Output = mu_client::Result<Client>> + use<>, MuError> {
         let cached = self.clients.lock().unwrap().get(host).cloned();
@@ -281,9 +395,18 @@ impl Session {
     }
 
     // Starts a step, or queues the message as steering while one is running.
-    pub async fn send(&self, text: String) -> Result<(), MuError> {
+    // `skill` names one of the session's, to invoke with the message.
+    pub async fn send(&self, text: String, skill: Option<String>) -> Result<(), MuError> {
         let (client, id) = (self.client.clone(), self.id.clone());
-        spawn(&self.runtime, async move { client.send(&id, text, None).await }).await
+        spawn(&self.runtime, async move { client.send(&id, text, skill).await }).await
+    }
+
+    // Adds a command run in shell mode, and its result, to the conversation for
+    // the agent's next step. Only while the agent is not running, and after a
+    // message: a session is never just commands. A refused run can be added later.
+    pub async fn append_shell(&self, run: String) -> Result<(), MuError> {
+        let (client, id) = (self.client.clone(), self.id.clone());
+        spawn(&self.runtime, async move { client.append_shell(&id, &run).await }).await
     }
 
     pub async fn stop(&self) -> Result<(), MuError> {
@@ -305,7 +428,7 @@ impl Drop for Session {
     }
 }
 
-// A watched session list. Closing it stops watching.
+// A watched host. Closing it stops watching.
 #[derive(uniffi::Object)]
 pub struct Watch {
     task: tokio::task::JoinHandle<()>,
@@ -318,16 +441,120 @@ impl Drop for Watch {
 }
 
 #[uniffi::export(with_foreign)]
-pub trait SessionListListener: Send + Sync {
-    fn on_update(&self, update: SessionListUpdate);
+pub trait HostListener: Send + Sync {
+    fn on_update(&self, update: HostUpdate);
 }
 
 #[derive(uniffi::Enum)]
-pub enum SessionListUpdate {
-    // Every session, latest first.
-    Sessions { sessions: Vec<SessionSummary> },
-    // The connection broke; the list follows again once the host is back.
+pub enum HostUpdate {
+    // Everything there is to show of the host, whole every time; sessions
+    // latest first.
+    Host { profile: HostProfile, sessions: Vec<SessionSummary> },
+    // The connection broke; the host follows again once it is back.
     Lost,
+}
+
+// What a host says of itself.
+#[derive(uniffi::Record)]
+pub struct HostProfile {
+    // The machine's hostname.
+    pub name: String,
+    // The home directory of the user the host runs as, for showing paths under it as `~`.
+    pub home: String,
+    // The rest is up to its owner. An icon's name in the app's icon set; unset
+    // for the default.
+    pub icon: Option<String>,
+    // One line; empty when none was set.
+    pub description: String,
+    // Commands to offer in shell mode, in order.
+    pub snippets: Vec<Snippet>,
+}
+
+impl From<&mu_client::Profile> for HostProfile {
+    fn from(profile: &mu_client::Profile) -> Self {
+        Self {
+            name: profile.name.clone(),
+            home: profile.home.to_string_lossy().into_owned(),
+            icon: profile.icon.clone(),
+            description: profile.description.clone(),
+            snippets: profile
+                .snippets
+                .iter()
+                .map(|snippet| Snippet {
+                    id: snippet.id.clone(),
+                    name: snippet.name.clone(),
+                    command: snippet.command.clone(),
+                    icon: snippet.icon.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(uniffi::Record)]
+pub struct Snippet {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+    pub icon: Option<String>,
+}
+
+#[derive(uniffi::Record)]
+pub struct DeletedSessions {
+    pub deleted: i64,
+    // Left alone for being in use: running, or open in some client.
+    pub in_use: i64,
+}
+
+#[derive(uniffi::Record)]
+pub struct Directory {
+    // Absolute and canonical.
+    pub path: String,
+    // Directories first, then by name. Hidden ones included.
+    pub entries: Vec<DirectoryEntry>,
+}
+
+#[derive(uniffi::Record)]
+pub struct DirectoryEntry {
+    pub name: String,
+    pub kind: EntryKind,
+}
+
+#[derive(uniffi::Enum)]
+pub enum EntryKind {
+    File,
+    Directory,
+    // A directory at the top of a git repository.
+    Repository,
+}
+
+// A command running in shell mode. Closing it kills the command.
+#[derive(uniffi::Object)]
+pub struct Shell {
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for Shell {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+#[uniffi::export(with_foreign)]
+pub trait ShellListener: Send + Sync {
+    fn on_update(&self, update: ShellUpdate);
+}
+
+// Each update replaces the last; the final one is `Done` or `Failed`.
+#[derive(uniffi::Enum)]
+pub enum ShellUpdate {
+    // The output so far, while it runs.
+    Output { tool: Tool },
+    // The command ended. An open session can add `run` to its conversation for
+    // a while: see `Session::append_shell`.
+    Done { run: String, tool: Tool },
+    // The connection broke before the command ended; the host killed it.
+    Failed { message: String },
 }
 
 #[uniffi::export(with_foreign)]
@@ -446,22 +673,12 @@ impl From<&mu_client::Block> for Block {
                 mu_client::Kind::Agent => BlockKind::Agent,
                 mu_client::Kind::Thought => BlockKind::Thought,
                 mu_client::Kind::Call => BlockKind::Call,
+                mu_client::Kind::Shell => BlockKind::Shell,
                 mu_client::Kind::Notice => BlockKind::Notice,
                 mu_client::Kind::Warning => BlockKind::Warning,
             },
             text: block.text.clone(),
-            tool: block.tool.as_ref().map(|tool| Tool {
-                status: match tool.status {
-                    mu_client::ToolStatus::Pending => ToolStatus::Pending,
-                    mu_client::ToolStatus::Running => ToolStatus::Running,
-                    mu_client::ToolStatus::Exited(code) => ToolStatus::Exited { code },
-                    mu_client::ToolStatus::TimedOut(millis) => ToolStatus::TimedOut { millis: millis as i64 },
-                    mu_client::ToolStatus::Cancelled => ToolStatus::Cancelled,
-                    mu_client::ToolStatus::Error => ToolStatus::Failed,
-                },
-                output: tool.output.text.clone(),
-                truncated: tool.output.truncated,
-            }),
+            tool: block.tool.as_ref().map(|t| tool(t.status, &t.output)),
             span: block.span.map(|span| Span { started: span.started as i64, finished: span.finished as i64 }),
         }
     }
@@ -473,6 +690,8 @@ pub enum BlockKind {
     Agent,
     Thought,
     Call,
+    // A command the user ran themselves; the text is the command.
+    Shell,
     Notice,
     Warning,
 }
@@ -483,6 +702,21 @@ pub struct Tool {
     // A preview when `truncated`; the full log stays on the host.
     pub output: String,
     pub truncated: bool,
+}
+
+fn tool(status: mu_client::ToolStatus, output: &mu_client::ToolOutput) -> Tool {
+    Tool {
+        status: match status {
+            mu_client::ToolStatus::Pending => ToolStatus::Pending,
+            mu_client::ToolStatus::Running => ToolStatus::Running,
+            mu_client::ToolStatus::Exited(code) => ToolStatus::Exited { code },
+            mu_client::ToolStatus::TimedOut(millis) => ToolStatus::TimedOut { millis: millis as i64 },
+            mu_client::ToolStatus::Cancelled => ToolStatus::Cancelled,
+            mu_client::ToolStatus::Error => ToolStatus::Failed,
+        },
+        output: output.text.clone(),
+        truncated: output.truncated,
+    }
 }
 
 #[derive(uniffi::Enum)]

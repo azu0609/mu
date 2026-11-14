@@ -9,10 +9,12 @@ use std::{
     path::PathBuf,
 };
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Paired {
-    // The host's name when it was paired.
+    // How the host last described itself, for showing it while it is away.
     pub name: String,
+    pub icon: Option<String>,
+    pub description: String,
     #[serde(flatten)]
     pub remote: Remote,
 }
@@ -46,6 +48,19 @@ impl Hosts {
         match list.iter_mut().find(|known| known.remote.cert == host.remote.cert) {
             Some(known) => *known = host,
             None => list.push(host),
+        }
+        self.save(list)
+    }
+
+    // Changes a known host, saving only if that changed anything.
+    pub fn update(&mut self, cert: &str, change: impl FnOnce(&mut Paired)) -> Result<()> {
+        let mut list = self.list.clone();
+        let Some(host) = list.iter_mut().find(|host| host.remote.cert == cert) else {
+            return Ok(());
+        };
+        change(host);
+        if list == self.list {
+            return Ok(());
         }
         self.save(list)
     }

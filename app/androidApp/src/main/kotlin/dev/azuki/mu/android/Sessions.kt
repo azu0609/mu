@@ -1,10 +1,12 @@
 package dev.azuki.mu.android
 
 import dev.azuki.mu.core.Core
-import dev.azuki.mu.core.SessionListListener
-import dev.azuki.mu.core.SessionListUpdate
+import dev.azuki.mu.core.HostListener
+import dev.azuki.mu.core.HostUpdate
 import dev.azuki.mu.core.SessionListener
 import dev.azuki.mu.core.SessionUpdate
+import dev.azuki.mu.core.ShellListener
+import dev.azuki.mu.core.ShellUpdate
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -31,15 +33,36 @@ fun Core.updates(host: String, session: String): Flow<SessionUpdate> =
         }
         .buffer(Channel.UNLIMITED)
 
-// A host's session list. Each update is the whole list, so only the latest matters.
-fun Core.sessionList(host: String): Flow<SessionListUpdate> =
+// A host's profile and session list. Each update is all of it, so only the latest matters.
+fun Core.hostUpdates(host: String): Flow<HostUpdate> =
     callbackFlow {
             val handle =
-                watchSessions(
+                watchHost(
                     host,
-                    object : SessionListListener {
-                        override fun onUpdate(update: SessionListUpdate) {
+                    object : HostListener {
+                        override fun onUpdate(update: HostUpdate) {
                             trySend(update)
+                        }
+                    },
+                )
+            awaitClose { handle.close() }
+        }
+        .buffer(Channel.CONFLATED)
+
+// A command run in shell mode. The flow completes after its final update, Done or
+// Failed; cancelling it before then kills the command. Each update replaces the last,
+// so only the latest matters.
+fun Core.shellUpdates(host: String, cwd: String, command: String): Flow<ShellUpdate> =
+    callbackFlow {
+            val handle =
+                shell(
+                    host,
+                    cwd,
+                    command,
+                    object : ShellListener {
+                        override fun onUpdate(update: ShellUpdate) {
+                            trySend(update)
+                            if (update !is ShellUpdate.Output) close()
                         }
                     },
                 )

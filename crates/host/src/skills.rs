@@ -1,4 +1,5 @@
 use crate::home;
+use mu_wire as wire;
 use std::{
     collections::HashSet,
     fs,
@@ -53,6 +54,12 @@ pub struct Skill {
     pub path: PathBuf,
     pub description: String,
     pub disable_model_invocation: bool,
+}
+
+impl From<&Skill> for wire::Skill {
+    fn from(skill: &Skill) -> Self {
+        Self { name: skill.name.clone(), description: skill.description.clone() }
+    }
 }
 
 pub fn skills(cwd: &Path) -> Vec<Skill> {

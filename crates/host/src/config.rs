@@ -1,5 +1,9 @@
-use crate::Result;
-use std::{env, fs};
+use crate::{Result, home};
+use std::{env, fs, path::PathBuf};
+
+pub fn dir() -> PathBuf {
+    env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config")).join("mu")
+}
 
 pub(crate) fn var(name: &str) -> Result<Option<String>> {
     match env::var(name) {

@@ -1,5 +1,5 @@
-// What this client last heard from a host: a session, and the session list.
-use mu_wire::{Block, Event, Kind, Model, SessionSummary, Skill, State, Stats, Status, WatchEvent};
+// What this client last heard from a host: a session, and the host itself.
+use mu_wire::{Block, Event, Kind, Model, Profile, SessionSummary, Skill, State, Stats, Status, WatchEvent};
 use std::{mem, path::PathBuf};
 
 #[derive(Default)]
@@ -101,16 +101,18 @@ impl View {
     }
 }
 
-// A host's sessions, latest first.
+// A host's profile and its sessions, latest first.
 #[derive(Default)]
-pub struct SessionList {
+pub struct HostView {
+    pub profile: Profile,
     pub sessions: Vec<SessionSummary>,
 }
 
-impl SessionList {
+impl HostView {
     pub fn apply(&mut self, event: WatchEvent) {
         match event {
-            WatchEvent::Sessions { sessions } => self.sessions = sessions,
+            WatchEvent::Host { profile, sessions } => *self = Self { profile, sessions },
+            WatchEvent::Profile(profile) => self.profile = profile,
             WatchEvent::Session(summary) => {
                 self.sessions.retain(|session| session.id != summary.id);
                 let at = self.sessions.partition_point(|session| session.updated >= summary.updated);

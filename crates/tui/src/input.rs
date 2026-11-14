@@ -1,5 +1,5 @@
 use crate::{Result, commands};
-use mu_client::Skill;
+use mu_client::{Skill, Snippet};
 use std::{
     env, fs,
     io::Write,
@@ -100,6 +100,48 @@ pub fn command_menu(text: &str, cursor: usize, skills: &[Skill]) -> Option<Menu>
     Some(Menu {
         range: start..end,
         query: trimmed.into(),
+        file: false,
+        exact_file: false,
+        entries,
+        selected: 0,
+        explicit: false,
+    })
+}
+
+// Shell mode: `!command` runs it and adds it to the conversation, `!!command`
+// only runs it. Returns which, and the command.
+pub fn shell_command(text: &str) -> Option<(bool, &str)> {
+    let rest = text.trim_start().strip_prefix('!')?;
+    Some(match rest.strip_prefix('!') {
+        Some(command) => (false, command.trim()),
+        None => (true, rest.trim()),
+    })
+}
+
+// While the first line of a shell command is typed, the host's snippets
+// matching what is typed so far.
+pub fn shell_menu(text: &str, cursor: usize, snippets: &[Snippet]) -> Option<Menu> {
+    let prefix: String = text.chars().take(cursor).collect();
+    if prefix.contains('\n') {
+        return None;
+    }
+    let (append, query) = shell_command(&prefix)?;
+    let bang = if append { "!" } else { "!!" };
+    let query = query.to_lowercase();
+    let matches = |text: &str| text.to_lowercase().contains(&query);
+    let line = |command: &str| command.lines().map(str::trim).collect::<Vec<_>>().join(" ↵ ");
+    let entries = snippets
+        .iter()
+        .filter(|snippet| matches(&snippet.name) || matches(&snippet.command))
+        .map(|snippet| Entry {
+            text: format!("{bang}{}", snippet.command),
+            label: format!("{}  {}", snippet.name, line(&snippet.command)),
+        })
+        .collect();
+    let start = prefix.chars().count() - prefix.trim_start().chars().count();
+    Some(Menu {
+        range: start..text.chars().count(),
+        query: prefix.trim_start().into(),
         file: false,
         exact_file: false,
         entries,

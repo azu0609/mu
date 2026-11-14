@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{fmt, net::IpAddr, ops::Range, path::PathBuf, str::FromStr};
 
 // Bump on any change an older peer cannot read; peers refuse a mismatch.
-pub const PROTOCOL: u32 = 2;
+pub const PROTOCOL: u32 = 3;
 
 pub trait Call: Serialize + DeserializeOwned {
     const PATH: &'static str;
@@ -48,6 +48,8 @@ pub enum Kind {
     Agent,
     Thought,
     Call,
+    // A command the user ran themselves, added to the conversation with its result.
+    Shell,
     Notice,
     Warning,
 }
@@ -56,7 +58,7 @@ pub enum Kind {
 pub struct Block {
     pub kind: Kind,
     pub text: String,
-    // Set for calls.
+    // Set for calls and shell commands.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool: Option<Tool>,
     // When the step this block belongs to ran. Set once it is in the transcript,
@@ -196,14 +198,81 @@ pub struct SessionSummary {
     pub updated: u64,
 }
 
-// The session list, as `Watch` streams it.
+// What a host says of itself to paired clients, for wherever they show it.
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct Profile {
+    // The machine's hostname.
+    pub name: String,
+    // The home directory of the user the host runs as, for showing paths under it as `~`.
+    pub home: PathBuf,
+    // The rest is up to its owner. An icon's name in the clients' icon set;
+    // unset for their default.
+    pub icon: Option<String>,
+    // One line; empty when none was set.
+    pub description: String,
+    // Commands to offer in shell mode, in order.
+    pub snippets: Vec<Snippet>,
+}
+
+// A command kept for running in shell mode. Also persisted in the host's profile.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Snippet {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+    pub icon: Option<String>,
+}
+
+// A host's profile and session list, as `Watch` streams them.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum WatchEvent {
-    // Every session, replacing what came before.
-    Sessions { sessions: Vec<SessionSummary> },
+    // The profile and every session, replacing what came before.
+    Host { profile: Profile, sessions: Vec<SessionSummary> },
+    Profile(Profile),
     // One session, new or changed.
     Session(SessionSummary),
+}
+
+// How a command run in shell mode is going, as `Shell` streams it.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ShellEvent {
+    // The output so far: a bounded preview, like a tool's, replaced each time.
+    Output(ToolOutput),
+    // The command ended. For a while, `run` names it to `AppendShell`.
+    Done { run: String, status: ToolStatus, output: ToolOutput },
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct Deleted {
+    pub sessions: u64,
+    // Sessions left alone because they were running or open somewhere.
+    pub in_use: u64,
+}
+
+// A directory on the host, for choosing where a session works.
+#[derive(Serialize, Deserialize)]
+pub struct Directory {
+    // Absolute and canonical: listing `<path>/..` lists its parent.
+    pub path: PathBuf,
+    // Directories first, then by name. Hidden ones included.
+    pub entries: Vec<DirectoryEntry>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct DirectoryEntry {
+    pub name: String,
+    pub kind: EntryKind,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EntryKind {
+    File,
+    Directory,
+    // A directory at the top of a git repository.
+    Repository,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -333,6 +402,23 @@ calls! {
     // `refresh` rebuilds the host's file index; set it when a mention is first opened.
     CompleteMention { session_id: String, text: String, cursor: usize, refresh: bool }
         => "/complete_mention" -> Option<Mention>;
+    // Adds a command run in shell mode, and its result, to the conversation, for
+    // the agent's next step. Only while the agent is not running, and after a message.
+    AppendShell { session_id: String, run: String } => "/append_shell" -> ();
+    // Deletes every saved session that is not in use: running, or open in a client.
+    DeleteSessions {} => "/delete_sessions" -> Deleted;
+    // The host's profile. Changes reach clients through `Watch`.
+    // An unset or empty icon goes back to the clients' default.
+    SetIcon { icon: Option<String> } => "/set_icon" -> ();
+    SetDescription { description: String } => "/set_description" -> ();
+    // Adds a snippet, or replaces the one with this id. Returns its id.
+    SaveSnippet { id: Option<String>, name: String, command: String, icon: Option<String> }
+        => "/save_snippet" -> String;
+    DeleteSnippet { id: String } => "/delete_snippet" -> ();
+    // `~` and an empty path name the host's home.
+    ListDirectory { path: PathBuf } => "/list_directory" -> Directory;
+    // The skills a session in `cwd` would have, for before there is one.
+    ListSkills { cwd: PathBuf } => "/list_skills" -> Vec<Skill>;
     // Trades an invite's one-time code for this device's token.
     Pair { code: String, device: String } => "/pair" -> String;
     // Local clients only: device management.
@@ -355,11 +441,23 @@ impl Subscribe {
     pub const PATH: &'static str = "/subscribe";
 }
 
-// Streams `WatchEvent`s: every session, then each one again whenever it
-// changes, until the client leaves.
+// Streams `WatchEvent`s: the profile and every session, then each again
+// whenever it changes, until the client leaves.
 #[derive(Serialize, Deserialize)]
 pub struct Watch {}
 
 impl Watch {
     pub const PATH: &'static str = "/watch";
+}
+
+// Runs a command the user typed, in `cwd`, with MU_USER_TRIGGERED=1 in its
+// environment. Streams `ShellEvent`s until it ends; leaving early kills it.
+#[derive(Serialize, Deserialize)]
+pub struct Shell {
+    pub cwd: PathBuf,
+    pub command: String,
+}
+
+impl Shell {
+    pub const PATH: &'static str = "/shell";
 }

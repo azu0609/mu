@@ -2,10 +2,9 @@ use crate::{
     Result, api, config, input,
     session::{self, End, Record, Session},
     skills::{self, Skill},
+    tools,
 };
-use mu_wire::{
-    self as wire, Block, Event, Kind, Mention, Model, Resume, Snapshot, Span, State, Stats, Status, TreeEntry,
-};
+use mu_wire::{Block, Event, Kind, Mention, Model, Resume, Snapshot, Span, State, Stats, Status, TreeEntry};
 use std::{
     mem,
     path::PathBuf,
@@ -101,11 +100,7 @@ impl Inner {
             id: self.session.header().id.clone(),
             cwd: self.session.header().cwd.clone(),
             state: self.state(),
-            skills: self
-                .skills
-                .iter()
-                .map(|skill| wire::Skill { name: skill.name.clone(), description: skill.description.clone() })
-                .collect(),
+            skills: self.skills.iter().map(Into::into).collect(),
             epoch,
             keep,
         }))];
@@ -372,6 +367,30 @@ impl Agent {
             inner.session.save()?;
             (inner.changed)(&inner.session.header().id);
         }
+        Ok(())
+    }
+
+    // Adds a command the user ran, and its result, to the conversation for the
+    // agent's next step. Never the first thing in it: a session is not saved
+    // until it has a message, and never just for commands. `take` hands the run
+    // over only once it can be added, so a refused one can be added later.
+    pub fn append(&self, take: impl FnOnce() -> Result<tools::Run>) -> Result<()> {
+        let mut inner = self.inner();
+        if inner.cancel.is_some() {
+            return Err("The agent is running; add the command once it stops".into());
+        }
+        if inner.session.cursor().is_none() {
+            return Err("The conversation is empty; send a message before adding a command to it".into());
+        }
+        let run = take()?;
+        let cwd = Some(run.cwd).filter(|cwd| cwd != &inner.session.header().cwd);
+        let mut entries = vec![Record::Shell { command: run.command, cwd, status: run.status, output: run.output }];
+        entries.extend(run.images.into_iter().map(|item| Record::Item { item }));
+        inner.session.push(entries, None, run.span, None);
+        inner.commit();
+        inner.save();
+        inner.status = inner.session.status();
+        inner.emit_state();
         Ok(())
     }
 

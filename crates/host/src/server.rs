@@ -6,7 +6,9 @@ use crate::{
     agent::{self, Agent},
     config,
     devices::Devices,
-    net, session,
+    directory, net,
+    profile::Profile,
+    session, skills, tools,
 };
 use http_body_util::{BodyExt, Either, Full, Limited};
 use hyper::{
@@ -16,10 +18,10 @@ use hyper::{
     service::service_fn,
 };
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
-use mu_wire::{self as wire, Block, Call, Event, Status, WatchEvent};
+use mu_wire::{self as wire, Block, Call, Event, ShellEvent, Status, WatchEvent};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     convert::Infallible,
     env, fs, mem,
     net::SocketAddr,
@@ -29,8 +31,12 @@ use std::{
     },
     path::{Path, PathBuf},
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     task::{Context, Poll},
+    thread,
     time::Duration,
 };
 use tokio::{
@@ -91,28 +97,60 @@ fn internal(error: impl ToString) -> Failure {
     Failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string())
 }
 
-// Sessions held in memory. Lock order: this map, then an agent.
+// What may have changed, for clients watching the host.
+#[derive(Clone)]
+enum Change {
+    // A session's summary.
+    Session(String),
+    // Which sessions there are.
+    Sessions,
+    Profile,
+}
+
+// How many commands run in shell mode stay around to be added to a session.
+const RUNS: usize = 16;
+
+// Sessions held in memory. Lock order: this map, then an agent, then the runs.
 struct Host {
     agents: Mutex<HashMap<String, Arc<Agent>>>,
-    // Ids of sessions whose summaries may have changed, for session lists.
-    changes: broadcast::Sender<String>,
+    changes: broadcast::Sender<Change>,
     name: String,
+    profile: Profile,
+    // The latest commands run in shell mode, oldest first, by run id.
+    runs: Mutex<VecDeque<(String, tools::Run)>>,
     // A private host has neither.
     devices: Option<Devices>,
     network: Option<Network>,
 }
 
 impl Host {
-    fn new(devices: Option<Devices>, network: Option<Network>) -> Arc<Self> {
+    fn new(devices: Option<Devices>, network: Option<Network>) -> Result<Arc<Self>> {
         let changes = broadcast::channel(256).0;
-        Arc::new(Self { agents: Mutex::default(), changes, name: net::hostname(), devices, network })
+        let name = net::hostname();
+        let profile = Profile::load(config::dir().join("host.json"), name.clone())?;
+        Ok(Arc::new(Self {
+            agents: Mutex::default(),
+            changes,
+            name,
+            profile,
+            runs: Mutex::default(),
+            devices,
+            network,
+        }))
     }
 
     fn changed(&self) -> agent::Changed {
         let changes = self.changes.clone();
         Arc::new(move |id| {
-            let _ = changes.send(id.to_owned());
+            let _ = changes.send(Change::Session(id.to_owned()));
         })
+    }
+
+    // Applies a change to the profile, and tells whoever watches.
+    fn edit<T>(&self, edit: impl FnOnce(&Profile) -> Result<T>) -> Rpc<T> {
+        let result = edit(&self.profile).map_err(failed)?;
+        let _ = self.changes.send(Change::Profile);
+        Ok(result)
     }
 
     fn devices(&self) -> Rpc<&Devices> {
@@ -180,6 +218,11 @@ impl Host {
             .collect())
     }
 
+    // Everything `Watch` starts from.
+    fn host(&self) -> Rpc<WatchEvent> {
+        Ok(WatchEvent::Host { profile: self.profile.get(), sessions: self.sessions()? })
+    }
+
     // None until the session is saved, which its first message does.
     fn summary(&self, id: &str) -> Option<wire::SessionSummary> {
         let status = self.agents.lock().unwrap().get(id).map(|agent| agent.status());
@@ -206,7 +249,45 @@ impl Host {
         let subscription = agent.subscribe(call.resume, move |event| {
             lines(event).is_some_and(|lines| lines.into_iter().all(|line| tx.try_send(line).is_ok()))
         });
-        Ok(Stream { rx, subscription: Some((self.clone(), agent, subscription)) })
+        let host = self.clone();
+        let close = move || {
+            agent.unsubscribe(subscription);
+            host.sweep();
+        };
+        Ok(Stream { rx, close: Some(Box::new(close)) })
+    }
+
+    // Adds a command's run to a session; it is kept no longer.
+    fn append(&self, call: wire::AppendShell) -> Rpc<()> {
+        let agent = self.agent(&call.session_id)?;
+        agent
+            .append(|| {
+                let mut runs = self.runs.lock().unwrap();
+                let i = runs
+                    .iter()
+                    .position(|(id, _)| *id == call.run)
+                    .ok_or("That command's result is no longer kept; run it again")?;
+                Ok(runs.remove(i).expect("found").1)
+            })
+            .map_err(failed)
+    }
+
+    // Leaves alone what is in use: sessions running or open in a client of this
+    // host, and sessions another mu has open.
+    fn delete_sessions(&self) -> Rpc<wire::Deleted> {
+        let mut agents = self.agents.lock().unwrap();
+        agents.retain(|_, agent| !agent.disposable());
+        let mut deleted = wire::Deleted { sessions: 0, in_use: 0 };
+        for summary in session::sessions().map_err(internal)? {
+            let gone = !agents.contains_key(&summary.id) && session::delete(&summary.id).map_err(internal)?;
+            match gone {
+                true => deleted.sessions += 1,
+                false => deleted.in_use += 1,
+            }
+        }
+        drop(agents);
+        let _ = self.changes.send(Change::Sessions);
+        Ok(deleted)
     }
 }
 
@@ -225,16 +306,16 @@ fn summarize(summary: session::Summary, loaded: Option<Status>) -> wire::Session
     }
 }
 
-// The session list, then each session again whenever it changes.
+// The profile and the session list, then each again whenever it changes.
 async fn watch(host: &Arc<Host>) -> Reply {
     // Listening before listing, so no change falls in between.
     let mut changes = host.changes.subscribe();
-    let sessions = match run(host, |host| host.sessions()).await {
-        Ok(sessions) => sessions,
+    let everything = match run(host, |host| host.host()).await {
+        Ok(everything) => everything,
         Err(e) => return failure(e),
     };
     let (tx, rx) = mpsc::channel(64);
-    let Some(first) = line(&WatchEvent::Sessions { sessions }) else {
+    let Some(first) = line(&everything) else {
         return failure(internal("A session path is not UTF-8"));
     };
     let _ = tx.try_send(first);
@@ -244,15 +325,18 @@ async fn watch(host: &Arc<Host>) -> Reply {
             let event = tokio::select! {
                 _ = tx.closed() => return,
                 change = changes.recv() => match change {
-                    Ok(id) => match run(&host, move |host| Ok(host.summary(&id))).await {
+                    Ok(Change::Session(id)) => match run(&host, move |host| Ok(host.summary(&id))).await {
                         Ok(Some(summary)) => WatchEvent::Session(summary),
                         _ => continue,
                     },
-                    // Some changes were missed; start over from the whole list.
-                    Err(broadcast::error::RecvError::Lagged(_)) => match run(&host, |host| host.sessions()).await {
-                        Ok(sessions) => WatchEvent::Sessions { sessions },
-                        Err(_) => return,
-                    },
+                    Ok(Change::Profile) => WatchEvent::Profile(host.profile.get()),
+                    // Sessions went away, or some changes were missed: start over from everything.
+                    Ok(Change::Sessions) | Err(broadcast::error::RecvError::Lagged(_)) => {
+                        match run(&host, |host| host.host()).await {
+                            Ok(everything) => everything,
+                            Err(_) => return,
+                        }
+                    }
                     Err(broadcast::error::RecvError::Closed) => return,
                 },
             };
@@ -262,7 +346,42 @@ async fn watch(host: &Arc<Host>) -> Reply {
             }
         }
     });
-    stream(Stream { rx, subscription: None })
+    stream(Stream { rx, close: None })
+}
+
+// Runs a command the user typed, streaming its output, and keeps its result for
+// a while so it can be added to a session. Leaving early kills it.
+fn shell(host: &Arc<Host>, call: wire::Shell) -> Rpc<Stream> {
+    if !call.cwd.is_absolute() || !call.cwd.is_dir() {
+        return Err(failed(format!("{} is not a directory", call.cwd.display())));
+    }
+    let command = call.command.trim().to_owned();
+    if command.is_empty() || command.contains('\0') {
+        return Err(failed("Not a command"));
+    }
+    let (tx, rx) = mpsc::channel(16);
+    let cancel = Arc::new(AtomicBool::new(false));
+    let (host, stop) = (host.clone(), cancel.clone());
+    thread::spawn(move || {
+        let run = tools::user(command, call.cwd, &cancel, |output| {
+            // Each preview replaces the last, so a slow client can skip some.
+            if let Some(line) = line(&ShellEvent::Output(output)) {
+                let _ = tx.try_send(line);
+            }
+        });
+        let id = session::unique_id();
+        let done = ShellEvent::Done { run: id.clone(), status: run.status, output: run.output.clone() };
+        let mut runs = host.runs.lock().unwrap();
+        runs.push_back((id, run));
+        if runs.len() > RUNS {
+            runs.pop_front();
+        }
+        drop(runs);
+        if let Some(line) = line(&done) {
+            let _ = tx.blocking_send(line);
+        }
+    });
+    Ok(Stream { rx, close: Some(Box::new(move || stop.store(true, Ordering::Relaxed))) })
 }
 
 // An event as lines on the wire, or none if it cannot be encoded (a path that
@@ -304,8 +423,8 @@ fn line(value: &impl Serialize) -> Option<Bytes> {
 // Lines for one client, until it leaves or falls too far behind.
 struct Stream {
     rx: mpsc::Receiver<Bytes>,
-    // For a session's events: what to unsubscribe from when the client leaves.
-    subscription: Option<(Arc<Host>, Arc<Agent>, u64)>,
+    // What to undo when the client leaves: unsubscribe, or kill a command.
+    close: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl Body for Stream {
@@ -322,9 +441,8 @@ impl Body for Stream {
 
 impl Drop for Stream {
     fn drop(&mut self) {
-        if let Some((host, agent, subscription)) = self.subscription.take() {
-            agent.unsubscribe(subscription);
-            host.sweep();
+        if let Some(close) = self.close.take() {
+            close();
         }
     }
 }
@@ -442,6 +560,16 @@ async fn handle(host: Arc<Host>, peer: Peer, request: Request<Incoming>) -> Repl
             }
         }
         wire::Watch::PATH => watch(host).await,
+        wire::Shell::PATH => {
+            let call: wire::Shell = match parse(&body) {
+                Ok(call) => call,
+                Err(e) => return failure(e),
+            };
+            match run(host, move |host| shell(host, call)).await {
+                Ok(lines) => stream(lines),
+                Err(e) => failure(e),
+            }
+        }
         wire::MarkRead::PATH => {
             call(host, &body, |host, call: wire::MarkRead| host.agent(&call.session_id)?.mark_read().map_err(internal))
                 .await
@@ -480,6 +608,36 @@ async fn handle(host: Arc<Host>, peer: Peer, request: Request<Incoming>) -> Repl
         wire::CompleteMention::PATH => {
             call(host, &body, |host, call: wire::CompleteMention| {
                 host.agent(&call.session_id)?.complete(&call.text, call.cursor, call.refresh).map_err(failed)
+            })
+            .await
+        }
+        wire::AppendShell::PATH => call(host, &body, |host, call| host.append(call)).await,
+        wire::DeleteSessions::PATH => call(host, &body, |host, wire::DeleteSessions {}| host.delete_sessions()).await,
+        wire::SetIcon::PATH => {
+            call(host, &body, |host, call: wire::SetIcon| host.edit(|profile| profile.set_icon(call.icon))).await
+        }
+        wire::SetDescription::PATH => {
+            call(host, &body, |host, call: wire::SetDescription| {
+                host.edit(|profile| profile.set_description(call.description))
+            })
+            .await
+        }
+        wire::SaveSnippet::PATH => {
+            call(host, &body, |host, call| host.edit(|profile| profile.save_snippet(call))).await
+        }
+        wire::DeleteSnippet::PATH => {
+            call(host, &body, |host, call: wire::DeleteSnippet| host.edit(|profile| profile.delete_snippet(&call.id)))
+                .await
+        }
+        wire::ListDirectory::PATH => {
+            call(host, &body, |_, call: wire::ListDirectory| directory::list(&call.path).map_err(failed)).await
+        }
+        wire::ListSkills::PATH => {
+            call(host, &body, |_, call: wire::ListSkills| {
+                if !call.cwd.is_absolute() {
+                    return Err(failed(format!("{} is not an absolute path", call.cwd.display())));
+                }
+                Ok(skills::skills(&call.cwd).iter().map(Into::into).collect())
             })
             .await
         }
@@ -542,7 +700,7 @@ pub fn serve_stream(stream: StdStream) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build()?;
     runtime.block_on(async {
         stream.set_nonblocking(true)?;
-        let host = Host::new(None, None);
+        let host = Host::new(None, None)?;
         connection(&host, Peer::Local, UnixStream::from_std(stream)?).await;
         shutdown(&host).await;
         Ok(())
@@ -578,7 +736,7 @@ async fn listen(socket: &Path, address: Option<SocketAddr>) -> Result<()> {
         }
         None => (None, None),
     };
-    let host = Host::new(Some(devices), network);
+    let host = Host::new(Some(devices), network)?;
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
     loop {
