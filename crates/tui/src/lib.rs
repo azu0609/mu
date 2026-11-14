@@ -1,5 +1,6 @@
 mod commands;
 mod counts;
+mod devices;
 mod input;
 mod markdown;
 mod remote;
@@ -9,8 +10,9 @@ mod ui;
 use crossterm::event::{
     self, Event as Input, KeyCode as Key, KeyEvent, KeyEventKind, KeyModifiers as Mod, MouseEventKind,
 };
+pub use devices::{devices, pair, unpair};
 pub use mu_client::Endpoint;
-use mu_client::{Block, Change, Event, Kind, Model, View};
+use mu_client::{Block, Change, Event, Kind, Model, SessionList, View};
 use remote::{Incoming, Remote};
 use std::{
     env,
@@ -31,6 +33,9 @@ struct Picker {
     selected: usize,
 }
 
+// Kept current while it is open.
+const SESSIONS: &str = "resume session";
+
 fn cycle_selection(selected: usize, len: usize, up: bool) -> usize {
     if len == 0 {
         0
@@ -45,6 +50,7 @@ struct App {
     remote: Remote,
     connected: bool,
     view: View,
+    sessions: SessionList,
     editor: ui::Editor,
     feedback: Vec<Block>,
     completion: Option<input::Menu>,
@@ -87,8 +93,13 @@ impl App {
     }
 
     fn apply(&mut self, event: Event) {
-        match self.view.apply(event) {
-            Change::Reset => {
+        let change = self.view.apply(event);
+        // On screen and not running: whatever the agent did has been seen.
+        if matches!(change, Change::Reset { .. } | Change::State { .. }) && !self.view.running() {
+            self.remote.mark_read(&self.view.id);
+        }
+        match change {
+            Change::Reset { .. } => {
                 self.connected = true;
                 self.scroll = 0;
                 self.scroll_layout = None;
@@ -103,7 +114,7 @@ impl App {
                     self.scroll_layout = None;
                 }
             }
-            Change::Committed | Change::Live => (),
+            Change::Committed { .. } | Change::Live(_) | Change::LiveNotice => (),
             Change::Feedback(block) => self.push_feedback(block),
         }
     }
@@ -114,6 +125,21 @@ impl App {
             Incoming::Lost(generation) if generation == self.remote.generation && self.connected => {
                 self.connected = false;
                 self.warn("Lost the mu host; reconnecting…");
+            }
+            Incoming::Sessions(event) => {
+                self.sessions.apply(event);
+                if let Some(picker) = self.picker.as_mut().filter(|picker| picker.title == SESSIONS) {
+                    let selected = match picker.entries.get(picker.selected) {
+                        Some((Target::Session(id), _)) => Some(id.clone()),
+                        _ => None,
+                    };
+                    picker.entries = session_entries(&self.sessions);
+                    picker.selected = picker
+                        .entries
+                        .iter()
+                        .position(|(target, _)| matches!(target, Target::Session(id) if Some(id) == selected.as_ref()))
+                        .unwrap_or(0);
+                }
             }
             Incoming::Mention(seq, result) => {
                 self.mention_done = self.mention_done.max(seq);
@@ -245,25 +271,11 @@ impl App {
                 self.picker = Some(Picker { title: "conversation tree", entries, selected });
             }
             commands::BuiltinKind::Resume => {
-                let entries: Vec<_> = self
-                    .remote
-                    .sessions()?
-                    .into_iter()
-                    .map(|session| {
-                        let label = format!(
-                            "{}{}  {}  [{}]",
-                            ui::marker(session.status),
-                            session.id,
-                            session.title,
-                            session.cwd.display()
-                        );
-                        (Target::Session(session.id), label)
-                    })
-                    .collect();
+                let entries = session_entries(&self.sessions);
                 if entries.is_empty() {
                     return Err("No saved sessions".into());
                 }
-                self.picker = Some(Picker { title: "resume session", entries, selected: 0 });
+                self.picker = Some(Picker { title: SESSIONS, entries, selected: 0 });
             }
         }
         Ok(())
@@ -576,6 +588,23 @@ fn copy(text: &str) -> Result<()> {
     Ok(())
 }
 
+fn session_entries(list: &SessionList) -> Vec<(Target, String)> {
+    list.sessions
+        .iter()
+        .map(|session| {
+            let label = format!(
+                "{}{}{}  {}  [{}]",
+                ui::marker(session.status),
+                if session.unread { "• " } else { "" },
+                session.id,
+                session.title,
+                session.cwd.display()
+            );
+            (Target::Session(session.id.clone()), label)
+        })
+        .collect()
+}
+
 fn var(name: &str) -> Option<String> {
     env::var(name).ok().filter(|value| !value.is_empty())
 }
@@ -595,6 +624,7 @@ pub fn run(endpoint: Endpoint) -> Result<()> {
         remote,
         connected: true,
         view: View::default(),
+        sessions: SessionList::default(),
         editor: ui::Editor::default(),
         feedback: vec![],
         completion: None,

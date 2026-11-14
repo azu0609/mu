@@ -1,6 +1,6 @@
-// A session as this client last heard it from the host.
-use mu_wire::{Block, Event, Kind, Model, Skill, State, Stats, Status};
-use std::path::PathBuf;
+// What this client last heard from a host: a session, and the session list.
+use mu_wire::{Block, Event, Kind, Model, SessionSummary, Skill, State, Stats, Status, WatchEvent};
+use std::{mem, path::PathBuf};
 
 #[derive(Default)]
 pub struct View {
@@ -19,13 +19,15 @@ pub struct View {
 
 // What an event did to the view, for a client to react to.
 pub enum Change {
-    // Everything was replaced.
-    Reset,
+    // Everything was replaced but the first `keep` blocks of the transcript.
+    Reset { keep: usize },
     // `started` when the agent just began running.
     State { started: bool },
-    // Blocks were appended to the transcript, and the live step ended.
-    Committed,
-    Live,
+    // Blocks from this index on were appended to the transcript, and the live step ended.
+    Committed { from: usize },
+    // The live block at this index was added or changed.
+    Live(usize),
+    LiveNotice,
     // Transient: not part of the session, so not kept in the view.
     Feedback(Block),
 }
@@ -50,9 +52,11 @@ impl View {
     pub fn apply(&mut self, event: Event) -> Change {
         match event {
             Event::Snapshot(snapshot) => {
-                *self = Self { id: snapshot.id, cwd: snapshot.cwd, skills: snapshot.skills, ..Self::default() };
+                let mut blocks = mem::take(&mut self.blocks);
+                blocks.truncate(snapshot.keep);
+                *self = Self { id: snapshot.id, cwd: snapshot.cwd, skills: snapshot.skills, blocks, ..Self::default() };
                 self.set_state(snapshot.state);
-                Change::Reset
+                Change::Reset { keep: snapshot.keep }
             }
             Event::State(state) => {
                 let was_running = self.running();
@@ -60,38 +64,58 @@ impl View {
                 Change::State { started: self.running() && !was_running }
             }
             Event::Commit { blocks } => {
+                let from = self.blocks.len();
                 self.blocks.extend(blocks);
                 self.live.clear();
                 self.live_notice = None;
-                Change::Committed
+                Change::Committed { from }
             }
             Event::LivePush(block) => {
                 self.live.push(block);
-                Change::Live
+                Change::Live(self.live.len() - 1)
             }
             Event::LiveDelta { index, text } => {
                 if let Some(block) = self.live.get_mut(index) {
                     block.text.push_str(&text);
                 }
-                Change::Live
+                Change::Live(index)
             }
             Event::LiveSet { index, block } => {
                 if let Some(slot) = self.live.get_mut(index) {
                     *slot = block;
                 }
-                Change::Live
+                Change::Live(index)
             }
             Event::LiveOutput { index, output } => {
                 if let Some(tool) = self.live.get_mut(index).and_then(|block| block.tool.as_mut()) {
                     tool.output = output;
                 }
-                Change::Live
+                Change::Live(index)
             }
             Event::LiveNotice(block) => {
                 self.live_notice = Some(block);
-                Change::Live
+                Change::LiveNotice
             }
             Event::Feedback(block) => Change::Feedback(block),
+        }
+    }
+}
+
+// A host's sessions, latest first.
+#[derive(Default)]
+pub struct SessionList {
+    pub sessions: Vec<SessionSummary>,
+}
+
+impl SessionList {
+    pub fn apply(&mut self, event: WatchEvent) {
+        match event {
+            WatchEvent::Sessions { sessions } => self.sessions = sessions,
+            WatchEvent::Session(summary) => {
+                self.sessions.retain(|session| session.id != summary.id);
+                let at = self.sessions.partition_point(|session| session.updated >= summary.updated);
+                self.sessions.insert(at, summary);
+            }
         }
     }
 }

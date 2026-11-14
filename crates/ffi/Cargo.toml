@@ -1,0 +1,23 @@
+[package]
+name = "mu-ffi"
+description = "mu's client core for the apps, through UniFFI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "mu_ffi"
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+# Generates the Kotlin bindings from the built library; the app's Gradle build runs it.
+name = "uniffi-bindgen"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+mu-client.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
+uniffi = "0.32"

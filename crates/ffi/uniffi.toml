@@ -1,0 +1,4 @@
+[bindings.kotlin]
+package_name = "dev.azuki.mu.core"
+# Android's own cleaner where it can, which needs androidx.annotation.
+android = true

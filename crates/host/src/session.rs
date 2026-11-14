@@ -1,14 +1,19 @@
 use crate::{Result, home, instructions, skills::Skill};
-use mu_wire::{Block, Kind, Model, Tool, ToolOutput, ToolStatus};
+use mu_wire::{Block, Kind, Model, Span, Status, Tool, ToolOutput, ToolStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     env, fs,
-    io::{BufRead, BufReader, BufWriter, Seek, SeekFrom, Write},
+    io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     os::unix::fs::OpenOptionsExt,
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+// Milliseconds since the Unix epoch.
+pub fn now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
+}
 
 pub fn block_from_item(item: &Value, partial: bool) -> Option<Block> {
     if item["role"] == "user"
@@ -148,6 +153,8 @@ pub enum Record {
     Node(Node),
     Cursor { node: Option<usize> },
     Model(Model),
+    // A client showed every step before this.
+    Read,
 }
 
 impl Record {
@@ -178,14 +185,40 @@ impl Record {
     }
 }
 
+// How a run ended, on its last node. Stops and failures also show in the
+// transcript, so clients that were not watching learn of them.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum End {
+    Finished,
+    Stopped,
+    Failed { error: String },
+}
+
+const STOPPED: &str = "Stopped. Tool side effects are not undone.";
+
 #[derive(Default, Serialize, Deserialize)]
 pub struct Node {
     pub parent: Option<usize>,
     pub usage: Option<Usage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span: Option<Span>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end: Option<End>,
     #[serde(skip)]
     start: usize,
     #[serde(skip)]
     pub blocks: Vec<Block>,
+}
+
+impl Node {
+    fn status(&self) -> Status {
+        match self.end {
+            Some(End::Finished) => Status::Finished,
+            Some(End::Failed { .. }) => Status::Failed,
+            Some(End::Stopped) | None => Status::Idle,
+        }
+    }
 }
 
 fn tool_item(tool: &Tool) -> Value {
@@ -345,11 +378,25 @@ impl Session {
             .fold(0u64, |total, usage| total.saturating_add(usage.input.saturating_sub(usage.cached.unwrap_or(0))))
     }
 
-    pub fn push(&mut self, entries: Vec<Record>, usage: Option<Usage>) {
+    pub fn push(&mut self, entries: Vec<Record>, usage: Option<Usage>, span: Span, end: Option<End>) {
         let parent = self.cursor();
         debug_assert!(entries.iter().all(Record::is_entry));
         self.records.extend(entries);
-        self.record(Record::Node(Node { parent, usage, ..Node::default() })).expect("valid cursor");
+        let node = Node { parent, usage, span: Some(span), end, ..Node::default() };
+        self.record(Record::Node(node)).expect("valid cursor");
+    }
+
+    // How the latest run ended, unless the path moved since.
+    pub fn status(&self) -> Status {
+        self.records
+            .iter()
+            .rev()
+            .find_map(|r| match r {
+                Record::Node(node) => Some(node.status()),
+                Record::Cursor { .. } => Some(Status::Idle),
+                _ => None,
+            })
+            .unwrap_or(Status::Idle)
     }
 
     pub fn user(&mut self, text: String, attachments: Vec<Record>) {
@@ -358,7 +405,28 @@ impl Session {
         }
         let mut entries = vec![Record::Item { item: json!({"role":"user", "content":text}) }];
         entries.extend(attachments);
-        self.push(entries, None);
+        let now = now();
+        self.push(entries, None, Span { started: now, finished: now }, None);
+    }
+
+    // Changes whenever the current path does other than by growing, which only
+    // a recorded cursor does. Records stay where they are, so it survives restarts.
+    pub fn epoch(&self) -> u64 {
+        self.records.iter().rposition(|r| matches!(r, Record::Cursor { .. })).map_or(0, |i| i as u64 + 1)
+    }
+
+    // Whether some step was not read yet, and now is.
+    pub fn mark_read(&mut self) -> Result<bool> {
+        let unread = self.records.iter().rev().find_map(|r| match r {
+            Record::Node(_) => Some(true),
+            Record::Read => Some(false),
+            _ => None,
+        });
+        if unread != Some(true) {
+            return Ok(false);
+        }
+        self.record(Record::Read)?;
+        Ok(true)
     }
 
     // Live changes and replay use the same path. Control records cannot split a
@@ -374,6 +442,7 @@ impl Session {
                     return Err("Invalid session parent".into());
                 }
                 node.start = self.records.iter().rposition(|r| !r.is_entry()).map_or(0, |i| i + 1);
+                let span = node.span;
                 for entry in &self.records[node.start..] {
                     match entry {
                         Record::Item { item } => node.blocks.extend(block_from_item(item, false)),
@@ -396,6 +465,14 @@ impl Session {
                         }
                         _ => unreachable!(),
                     }
+                }
+                match &node.end {
+                    Some(End::Stopped) => node.blocks.push(Block::new(Kind::Warning, STOPPED)),
+                    Some(End::Failed { error }) => node.blocks.push(Block::new(Kind::Warning, error)),
+                    Some(End::Finished) | None => (),
+                }
+                for block in &mut node.blocks {
+                    block.span = span;
                 }
             }
             Record::Cursor { node } if node.is_some_and(|i| !matches!(self.records.get(i), Some(Record::Node(_)))) => {
@@ -442,11 +519,7 @@ impl Session {
     }
 
     pub fn load(id: &str) -> Result<Self> {
-        // Ids arrive from clients; never let one name a path outside the state directory.
-        if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit() || c == '-') {
-            return Err("Invalid session id".into());
-        }
-        let path = &state_dir().join(format!("{id}.jsonl"));
+        let path = &path(id)?;
         let file = fs::OpenOptions::new().read(true).write(true).open(path)?;
         lock(&file)?;
         let mut reader = BufReader::new(&file);
@@ -505,10 +578,11 @@ impl Session {
         while let Some(Frame { node, line_prefix, child_prefix, depth }) = stack.pop() {
             let label = node
                 .map(|i| {
-                    self.node(i)
-                        .blocks
+                    let blocks = &self.node(i).blocks;
+                    blocks
                         .iter()
                         .find(|b| matches!(b.kind, Kind::User | Kind::Agent | Kind::Call))
+                        .or_else(|| blocks.iter().find(|b| b.kind == Kind::Warning))
                         .map(|b| {
                             format!(
                                 "{:?}: {}",
@@ -550,34 +624,122 @@ impl Session {
     }
 }
 
+// Ids arrive from clients; never let one name a path outside the state directory.
+fn path(id: &str) -> Result<PathBuf> {
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit() || c == '-') {
+        return Err("Invalid session id".into());
+    }
+    Ok(state_dir().join(format!("{id}.jsonl")))
+}
+
 pub struct Summary {
     pub id: String,
     pub title: String,
     pub cwd: PathBuf,
+    // How the latest run ended, if the path has not moved since.
+    pub status: Status,
+    // Why it failed.
+    pub error: Option<String>,
+    // Some step was never read; running or not.
+    pub unread: bool,
+    // When its latest step finished, or the log was last written for steps without times.
+    pub updated: u64,
 }
 
-// Most recently written first.
+// A saved session, as its log's first and last lines tell it.
+pub fn summary_of(id: &str) -> Option<Summary> {
+    summarize(&path(id).ok()?)
+}
+
+fn summarize(path: &Path) -> Option<Summary> {
+    let mut file = fs::File::open(path).ok()?;
+    let mut line = String::new();
+    BufReader::new(&file).read_line(&mut line).ok()?;
+    if !line.ends_with('\n') {
+        return None;
+    }
+    let header: Header = serde_json::from_str(&line).ok()?;
+    if header.version != 1 {
+        return None;
+    }
+    let tail = tail(&mut file).ok()?;
+    let (node, read) = (tail.node, tail.read);
+    let status = node.as_ref().filter(|_| !tail.moved).map_or(Status::Idle, Node::status);
+    let error = match node.as_ref().and_then(|node| node.end.as_ref()) {
+        Some(End::Failed { error }) if status == Status::Failed => Some(error.clone()),
+        _ => None,
+    };
+    let modified = || {
+        let modified = file.metadata().and_then(|m| m.modified()).ok()?;
+        Some(modified.duration_since(UNIX_EPOCH).ok()?.as_millis() as u64)
+    };
+    Some(Summary {
+        id: header.id,
+        title: header.title,
+        cwd: header.cwd,
+        status,
+        error,
+        unread: node.is_some() && !read,
+        updated: node.and_then(|node| node.span).map(|span| span.finished).or_else(modified).unwrap_or(0),
+    })
+}
+
+struct Tail {
+    node: Option<Node>,
+    // A read marker follows the node.
+    read: bool,
+    // So does a cursor: the path moved.
+    moved: bool,
+}
+
+// The log's latest node and what follows it. Control records are small and
+// come last, so this rarely reads more than a few kilobytes.
+fn tail(file: &mut fs::File) -> io::Result<Tail> {
+    let len = file.metadata()?.len();
+    let mut window = 16 * 1024;
+    loop {
+        let start = len.saturating_sub(window);
+        file.seek(SeekFrom::Start(start))?;
+        let mut bytes = vec![];
+        file.take(len - start).read_to_end(&mut bytes)?;
+        // Complete lines only: not an unfinished last one, nor one the window cuts into.
+        let end = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
+        let mut lines: Vec<_> = bytes[..end].split(|&b| b == b'\n').collect();
+        lines.pop();
+        let complete = if start == 0 { &lines[..] } else { lines.get(1..).unwrap_or_default() };
+        let (mut read, mut moved) = (false, false);
+        for line in complete.iter().rev() {
+            // serde writes the tag first.
+            if line.starts_with(br#"{"type":"read""#) {
+                read = true;
+            } else if line.starts_with(br#"{"type":"cursor""#) {
+                moved = true;
+            } else if line.starts_with(br#"{"type":"node""#) {
+                let Ok(Record::Node(node)) = serde_json::from_slice(line) else {
+                    return Err(io::ErrorKind::InvalidData.into());
+                };
+                return Ok(Tail { node: Some(node), read, moved });
+            }
+        }
+        if start == 0 {
+            return Ok(Tail { node: None, read, moved });
+        }
+        window *= 4;
+    }
+}
+
+// Latest first.
 pub fn sessions() -> Result<Vec<Summary>> {
     let dir = &state_dir();
     if !dir.exists() {
         return Ok(vec![]);
     }
-    let mut paths: Vec<_> = fs::read_dir(dir)?
+    let mut sessions: Vec<_> = fs::read_dir(dir)?
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
+        .filter_map(|path| summarize(&path))
         .collect();
-    paths.sort_by_cached_key(|p| std::cmp::Reverse(fs::metadata(p).and_then(|m| m.modified()).ok()));
-    Ok(paths
-        .into_iter()
-        .filter_map(|path| {
-            let mut line = String::new();
-            BufReader::new(fs::File::open(&path).ok()?).read_line(&mut line).ok()?;
-            if !line.ends_with('\n') {
-                return None;
-            }
-            let header: Header = serde_json::from_str(&line).ok()?;
-            (header.version == 1).then_some(Summary { id: header.id, title: header.title, cwd: header.cwd })
-        })
-        .collect())
+    sessions.sort_by_key(|summary| std::cmp::Reverse(summary.updated));
+    Ok(sessions)
 }

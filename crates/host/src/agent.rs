@@ -1,9 +1,11 @@
 use crate::{
     Result, api, config, input,
-    session::{Record, Session},
+    session::{self, End, Record, Session},
     skills::{self, Skill},
 };
-use mu_wire::{self as wire, Block, Event, Kind, Mention, Model, Snapshot, State, Stats, Status, TreeEntry};
+use mu_wire::{
+    self as wire, Block, Event, Kind, Mention, Model, Resume, Snapshot, Span, State, Stats, Status, TreeEntry,
+};
 use std::{
     mem,
     path::PathBuf,
@@ -17,6 +19,10 @@ use std::{
 // Runs under the agent's lock, so it must not block. Returning false unsubscribes.
 type Sink = Box<dyn FnMut(&Event) -> bool + Send>;
 
+// Told a session's id whenever what a session list shows of it may have
+// changed. Runs under the agent's lock, so it must not block.
+pub type Changed = Arc<dyn Fn(&str) + Send + Sync>;
+
 struct Inner {
     session: Session,
     skills: Vec<Skill>,
@@ -28,6 +34,7 @@ struct Inner {
     status: Status,
     sinks: Vec<(u64, Sink)>,
     next_sink: u64,
+    changed: Changed,
 }
 
 // One session and the loop driving it. Every client of the session shares it.
@@ -59,6 +66,9 @@ pub fn default_model(name: Option<String>, effort: Option<String>, context: Opti
 impl Inner {
     fn emit(&mut self, event: Event) {
         self.sinks.retain_mut(|(_, sink)| sink(&event));
+        if matches!(event, Event::State(_) | Event::Snapshot(_)) {
+            (self.changed)(&self.session.header().id);
+        }
     }
 
     fn state(&self) -> State {
@@ -79,8 +89,14 @@ impl Inner {
         }
     }
 
-    // A reset, then the transcript along the current path, then the step in progress.
-    fn snapshot(&self) -> Vec<Event> {
+    // A reset, then the transcript along the current path, then the step in
+    // progress. A client resuming on the same path only gets the blocks it lacks.
+    fn snapshot(&self, resume: Option<Resume>) -> Vec<Event> {
+        let epoch = self.session.epoch();
+        let blocks: Vec<_> =
+            self.session.path().iter().flat_map(|&i| self.session.node(i).blocks.iter().cloned()).collect();
+        let keep =
+            resume.filter(|resume| resume.epoch == epoch && resume.blocks <= blocks.len()).map_or(0, |r| r.blocks);
         let mut events = vec![Event::Snapshot(Box::new(Snapshot {
             id: self.session.header().id.clone(),
             cwd: self.session.header().cwd.clone(),
@@ -90,11 +106,11 @@ impl Inner {
                 .iter()
                 .map(|skill| wire::Skill { name: skill.name.clone(), description: skill.description.clone() })
                 .collect(),
+            epoch,
+            keep,
         }))];
-        let blocks: Vec<_> =
-            self.session.path().iter().flat_map(|&i| self.session.node(i).blocks.iter().cloned()).collect();
-        if !blocks.is_empty() {
-            events.push(Event::Commit { blocks });
+        if blocks.len() > keep {
+            events.push(Event::Commit { blocks: blocks[keep..].to_vec() });
         }
         events.extend(self.live.iter().cloned().map(Event::LivePush));
         events.extend(self.live_notice.clone().map(Event::LiveNotice));
@@ -137,33 +153,34 @@ impl Inner {
 }
 
 impl Agent {
-    fn wrap(session: Session, skills: Vec<Skill>) -> Arc<Self> {
+    fn wrap(session: Session, skills: Vec<Skill>, changed: Changed) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(Inner {
-                session,
                 skills,
                 live: vec![],
                 live_notice: None,
                 queued: vec![],
                 cancel: None,
-                status: Status::Idle,
+                status: session.status(),
+                session,
                 sinks: vec![],
                 next_sink: 0,
+                changed,
             }),
             files: Mutex::new(None),
         })
     }
 
-    pub fn new(cwd: PathBuf, model: Model) -> Arc<Self> {
+    pub fn new(cwd: PathBuf, model: Model, changed: Changed) -> Arc<Self> {
         let skills = skills::skills(&cwd);
         let session = Session::new(cwd, model, &skills);
-        Self::wrap(session, skills)
+        Self::wrap(session, skills, changed)
     }
 
-    pub fn load(id: &str) -> Result<Arc<Self>> {
+    pub fn load(id: &str, changed: Changed) -> Result<Arc<Self>> {
         let session = Session::load(id)?;
         let skills = skills::skills(&session.header().cwd);
-        Ok(Self::wrap(session, skills))
+        Ok(Self::wrap(session, skills, changed))
     }
 
     fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -185,11 +202,11 @@ impl Agent {
     }
 
     // The sink receives a snapshot first, with no event lost or repeated after it.
-    pub fn subscribe(&self, mut sink: impl FnMut(&Event) -> bool + Send + 'static) -> u64 {
+    pub fn subscribe(&self, resume: Option<Resume>, mut sink: impl FnMut(&Event) -> bool + Send + 'static) -> u64 {
         let mut inner = self.inner();
         let id = inner.next_sink;
         inner.next_sink += 1;
-        if inner.snapshot().iter().all(&mut sink) {
+        if inner.snapshot(resume).iter().all(&mut sink) {
             inner.sinks.push((id, Box::new(sink)));
         }
         id
@@ -250,10 +267,11 @@ impl Agent {
         inner.cancel = Some(cancel.clone());
         inner.status = Status::Running;
         let agent = self.clone();
+        let started = session::now();
         thread::spawn(move || {
             let result = api::step(request, cancel, &|event| agent.live(event));
             // All streaming events are applied before the finalized items are committed.
-            agent.finish(result);
+            agent.finish(result, started);
         });
         true
     }
@@ -291,7 +309,7 @@ impl Agent {
         }
     }
 
-    fn finish(self: &Arc<Self>, result: Result<api::Step>) {
+    fn finish(self: &Arc<Self>, result: Result<api::Step>, started: u64) {
         let mut inner = self.inner();
         let cancelled = inner.cancel.take().is_some_and(|cancel| cancel.load(Ordering::Relaxed));
         match result {
@@ -300,19 +318,20 @@ impl Agent {
                 if step.usage.cache_miss(inner.session.usage()) {
                     step.entries.insert(0, Record::Notice { text: CACHE_MISS.into() });
                 }
-                inner.session.push(step.entries, Some(step.usage));
-                inner.commit();
-                let mut again = step.again;
-                if cancelled {
-                    inner.feedback(
-                        Kind::Warning,
-                        "Stopped. Tool side effects are not undone. Send a message to continue.",
-                    );
+                let again = !cancelled && (step.again || !inner.queued.is_empty());
+                let end = if cancelled {
+                    Some(End::Stopped)
+                } else if again {
+                    None
                 } else {
-                    again |= !inner.queued.is_empty();
+                    Some(End::Finished)
+                };
+                inner.session.push(step.entries, Some(step.usage), Span { started, finished: session::now() }, end);
+                inner.commit();
+                if !cancelled {
                     inner.drain_queue();
                 }
-                if !(again && !cancelled && self.start(&mut inner)) {
+                if !(again && self.start(&mut inner)) {
                     inner.save();
                     inner.status = if cancelled {
                         Status::Idle
@@ -325,9 +344,12 @@ impl Agent {
                 }
             }
             Err(e) => {
+                // What streamed of the step is gone; the reason stays in the transcript.
+                let end = if cancelled { End::Stopped } else { End::Failed { error: e.to_string() } };
                 inner.status = if cancelled { Status::Idle } else { Status::Failed };
-                inner.live_notice = None;
-                inner.feedback(Kind::Warning, e.to_string());
+                inner.session.push(vec![], None, Span { started, finished: session::now() }, Some(end));
+                inner.commit();
+                inner.save();
                 if !inner.queued.is_empty() {
                     inner.feedback(Kind::Notice, "Steering still queued. Send a message to retry, /new to discard.");
                 }
@@ -340,6 +362,17 @@ impl Agent {
         if let Some(cancel) = &self.inner().cancel {
             cancel.store(true, Ordering::Relaxed);
         }
+    }
+
+    // Marks every step so far as seen. Saved right away, so session lists, which
+    // read the log, agree.
+    pub fn mark_read(&self) -> Result<()> {
+        let mut inner = self.inner();
+        if inner.session.mark_read()? {
+            inner.session.save()?;
+            (inner.changed)(&inner.session.header().id);
+        }
+        Ok(())
     }
 
     // Takes the newest queued message back for editing.
@@ -402,7 +435,7 @@ impl Agent {
         inner.live_notice = None;
         inner.queued.clear();
         inner.status = Status::Idle;
-        for event in inner.snapshot() {
+        for event in inner.snapshot(None) {
             inner.emit(event);
         }
         Ok(draft)

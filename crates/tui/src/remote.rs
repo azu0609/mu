@@ -1,7 +1,7 @@
 // The host, as the synchronous UI loop sees it: short calls block, while the
 // session's events and slow answers arrive on a channel.
 use crate::Result;
-use mu_client::{Client, Endpoint, Event, Mention, Model, SessionSummary, TreeEntry, Update};
+use mu_client::{Client, Device, Endpoint, Event, Invitation, Mention, Model, TreeEntry, Update, WatchEvent};
 use std::{future::Future, path::Path, sync::mpsc, time::Duration};
 use tokio::{runtime::Runtime, task::JoinHandle, time};
 
@@ -10,6 +10,8 @@ pub enum Incoming {
     Event(u64, Event),
     Lost(u64),
     Mention(u64, Result<Option<Mention>>),
+    // The host's session list changed.
+    Sessions(WatchEvent),
 }
 
 pub struct Remote {
@@ -29,10 +31,23 @@ impl Remote {
         let place = match &endpoint {
             Endpoint::Socket(path) => format!(" at {}", path.display()),
             Endpoint::Stream(_) => String::new(),
+            Endpoint::Remote(remote) => format!(" at {}", remote.address),
         };
         let client =
             runtime.block_on(Client::connect(endpoint)).map_err(|e| format!("Cannot reach the mu host{place}: {e}"))?;
         let (tx, rx) = mpsc::channel();
+        let mut watch = runtime.block_on(client.watch())?;
+        let sessions = tx.clone();
+        runtime.spawn(async move {
+            loop {
+                // A break needs no word here; the list starts over when the host is back.
+                if let Update::Event(event) = watch.next().await
+                    && sessions.send(Incoming::Sessions(event)).is_err()
+                {
+                    return;
+                }
+            }
+        });
         Ok(Self { runtime, client, tx, rx, subscription: None, subscriptions: 0, generation: 0 })
     }
 
@@ -77,8 +92,10 @@ impl Remote {
         self.call(self.client.create(cwd, model, effort, context))
     }
 
-    pub fn sessions(&self) -> Result<Vec<SessionSummary>> {
-        self.call(self.client.sessions())
+    // Fire and forget: at worst the session stays unread.
+    pub fn mark_read(&self, id: &str) {
+        let (client, id) = (self.client.clone(), id.to_owned());
+        self.runtime.spawn(async move { client.mark_read(&id).await });
     }
 
     pub fn send(&self, id: &str, text: String, skill: Option<String>) -> Result<()> {
@@ -103,6 +120,18 @@ impl Remote {
 
     pub fn checkout(&self, id: &str, node: Option<usize>) -> Result<Option<String>> {
         self.call(self.client.checkout(id, node))
+    }
+
+    pub fn invite(&self) -> Result<Invitation> {
+        self.call(self.client.invite())
+    }
+
+    pub fn devices(&self) -> Result<Vec<Device>> {
+        self.call(self.client.devices())
+    }
+
+    pub fn unpair(&self, id: &str) -> Result<()> {
+        self.call(self.client.unpair(id))
     }
 
     // Indexing a large tree takes a while, so the answer arrives as `Incoming::Mention(seq, …)`.
