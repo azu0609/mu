@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{fmt, net::IpAddr, ops::Range, path::PathBuf, str::FromStr};
 
 // Bump on any change an older peer cannot read; peers refuse a mismatch.
-pub const PROTOCOL: u32 = 5;
+pub const PROTOCOL: u32 = 6;
 
 pub trait Call: Serialize + DeserializeOwned {
     const PATH: &'static str;
@@ -250,6 +250,66 @@ pub struct MentionEntry {
     pub label: String,
 }
 
+// An @mention as written in a message, `path` unescaped. Unclosed ones are still being typed.
+pub struct Written {
+    pub range: Range<usize>,
+    pub path: String,
+    pub quoted: bool,
+    pub closed: bool,
+}
+
+pub fn mentions(text: &str) -> Vec<Written> {
+    let chars: Vec<_> = text.chars().collect();
+    let mut found = vec![];
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '@' || (i > 0 && !chars[i - 1].is_whitespace()) || chars.get(i + 1) == Some(&'@') {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        i += 1;
+        let quoted = chars.get(i) == Some(&'"');
+        if quoted {
+            i += 1;
+        }
+        let mut path = String::new();
+        let mut closed = !quoted;
+        while i < chars.len() {
+            let c = chars[i];
+            if quoted && c == '"' {
+                i += 1;
+                closed = true;
+                break;
+            }
+            if !quoted && c.is_whitespace() {
+                break;
+            }
+            if quoted && c == '\\' && chars.get(i + 1).is_some_and(|c| matches!(c, '"' | '\\')) {
+                i += 1;
+            }
+            path.push(chars[i]);
+            i += 1;
+        }
+        found.push(Written { range: start..i, path, quoted, closed });
+    }
+    found
+}
+
+// What a mention brings along when sent, keyed by its path as written.
+#[derive(Serialize, Deserialize)]
+pub struct Resolved {
+    pub path: String,
+    pub file: PathBuf,
+    pub kind: Attached,
+}
+
+#[derive(Serialize, Deserialize)]
+pub enum Attached {
+    Image,
+    Text { lines: usize, head: String },
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Device {
     pub id: String,
@@ -345,6 +405,11 @@ calls! {
     DeleteSnippet { id: String } => "/delete_snippet" -> ();
     ListDirectory { path: PathBuf } => "/list_directory" -> Directory;
     ListSkills { cwd: PathBuf } => "/list_skills" -> Vec<Skill>;
+    // Only the mentions sending `text` would attach, as they are now.
+    ResolveMentions { cwd: PathBuf, text: String, skill: Option<String> }
+        => "/resolve_mentions" -> Vec<Resolved>;
+    // `path` must be an image; the reply is its data as base64.
+    ReadImage { path: PathBuf } => "/read_image" -> String;
     // `data` is base64; the reply is where the host keeps it, to @mention.
     Upload { name: String, data: String } => "/upload" -> PathBuf;
     Pair { code: String, device: String } => "/pair" -> String;

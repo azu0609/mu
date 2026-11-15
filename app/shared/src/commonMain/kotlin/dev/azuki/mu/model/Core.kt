@@ -2,6 +2,7 @@ package dev.azuki.mu.model
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -59,6 +60,18 @@ interface Core {
         refresh: Boolean,
     ): Mention?
 
+    fun mentions(text: String): List<Written>
+
+    // Only the mentions that sending `text` would attach, as things are now.
+    suspend fun resolveMentions(
+        host: String,
+        cwd: String,
+        text: String,
+        skill: String?,
+    ): List<Resolved>
+
+    suspend fun readImage(host: String, path: String): ByteArray
+
     // Where the host keeps the file, for a message to @mention.
     suspend fun upload(host: String, name: String, data: ByteArray): String
 
@@ -100,6 +113,9 @@ interface Platform {
     suspend fun pickImages(): List<Attachment>
 
     suspend fun pickFiles(): List<Attachment>
+
+    // Scaled down to about `size` pixels on its shorter edge; null when it isn't an image.
+    suspend fun decodeImage(data: ByteArray, size: Int): ImageBitmap?
 }
 
 interface Prefs {

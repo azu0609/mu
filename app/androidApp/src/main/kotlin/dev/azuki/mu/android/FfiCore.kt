@@ -5,6 +5,7 @@ import dev.azuki.mu.core.HostListener
 import dev.azuki.mu.core.MuException as FfiException
 import dev.azuki.mu.core.SessionListener
 import dev.azuki.mu.core.ShellListener
+import dev.azuki.mu.model.Attached
 import dev.azuki.mu.model.Block
 import dev.azuki.mu.model.BlockKind
 import dev.azuki.mu.model.Core
@@ -19,6 +20,7 @@ import dev.azuki.mu.model.Mention
 import dev.azuki.mu.model.MentionEntry
 import dev.azuki.mu.model.ModelInfo
 import dev.azuki.mu.model.MuException
+import dev.azuki.mu.model.Resolved
 import dev.azuki.mu.model.Session
 import dev.azuki.mu.model.SessionState
 import dev.azuki.mu.model.SessionSummary
@@ -30,6 +32,7 @@ import dev.azuki.mu.model.Span
 import dev.azuki.mu.model.Status
 import dev.azuki.mu.model.Tool
 import dev.azuki.mu.model.ToolStatus
+import dev.azuki.mu.model.Written
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -135,6 +138,34 @@ class FfiCore(private val core: Ffi, private val device: String) : Core {
                 mention.entries.map { MentionEntry(it.text, it.label) },
             )
         }
+    }
+
+    override fun mentions(text: String): List<Written> =
+        dev.azuki.mu.core.mentions(text).map {
+            Written(it.start.toInt(), it.end.toInt(), it.path, it.closed)
+        }
+
+    override suspend fun resolveMentions(
+        host: String,
+        cwd: String,
+        text: String,
+        skill: String?,
+    ): List<Resolved> = mapped {
+        core.resolveMentions(host, cwd, text, skill).map {
+            Resolved(
+                it.path,
+                it.file,
+                when (val kind = it.kind) {
+                    dev.azuki.mu.core.Attached.Image -> Attached.Image
+                    is dev.azuki.mu.core.Attached.Text ->
+                        Attached.Text(kind.lines.toInt(), kind.head)
+                },
+            )
+        }
+    }
+
+    override suspend fun readImage(host: String, path: String): ByteArray = mapped {
+        core.readImage(host, path)
     }
 
     override suspend fun upload(host: String, name: String, data: ByteArray): String = mapped {

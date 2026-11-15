@@ -5,8 +5,8 @@ use std::{fs, io::Read, path::Path};
 
 pub const LIMIT: u64 = 20 * 1024 * 1024;
 
-pub fn content(bytes: &[u8]) -> Option<Value> {
-    let mime = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+pub fn mime(bytes: &[u8]) -> Option<&'static str> {
+    Some(if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
         "image/png"
     } else if bytes.starts_with(b"\xff\xd8\xff") {
         "image/jpeg"
@@ -16,11 +16,19 @@ pub fn content(bytes: &[u8]) -> Option<Value> {
         "image/webp"
     } else {
         return None;
-    };
+    })
+}
+
+pub fn content(bytes: &[u8]) -> Option<Value> {
+    let mime = mime(bytes)?;
     Some(json!({"type":"input_image", "image_url": format!("data:{mime};base64,{}", STANDARD.encode(bytes))}))
 }
 
 pub fn read(path: &Path) -> Result<Value> {
+    content(&load(path)?).ok_or_else(|| "Expected PNG, JPEG, GIF or WebP".into())
+}
+
+pub fn load(path: &Path) -> Result<Vec<u8>> {
     if !fs::metadata(path)?.is_file() {
         return Err(format!("{} is not a regular file", path.display()).into());
     }
@@ -29,5 +37,8 @@ pub fn read(path: &Path) -> Result<Value> {
     if bytes.len() as u64 > LIMIT {
         return Err("Image exceeds 20 MiB".into());
     }
-    content(&bytes).ok_or_else(|| "Expected PNG, JPEG, GIF or WebP".into())
+    if mime(&bytes).is_none() {
+        return Err("Expected PNG, JPEG, GIF or WebP".into());
+    }
+    Ok(bytes)
 }

@@ -1,8 +1,8 @@
-use crate::{Result, devices::short_id, session};
+use crate::{Result, home, image, input};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{
-    fs,
-    io::Write,
+    env, fs,
+    io::{ErrorKind, Write},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
@@ -13,20 +13,41 @@ const KEEP: Duration = Duration::from_secs(24 * 60 * 60);
 
 pub fn save(name: &str, data: &str) -> Result<PathBuf> {
     let bytes = STANDARD.decode(data).map_err(|_| "An upload's data must be base64")?;
+    if image::mime(&bytes).is_some() {
+        if bytes.len() as u64 > image::LIMIT {
+            return Err(format!("{name}: Image exceeds 20 MiB").into());
+        }
+    } else {
+        input::text_content(bytes.clone()).map_err(|e| format!("{name}: {e}"))?;
+    }
     let name: String =
         name.chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' }).take(64).collect();
     let name = match name.trim_start_matches('.') {
         "" => "upload",
         name => name,
     };
-    let dir = session::state_dir().join("uploads");
+    let (stem, extension) = match name.rsplit_once('.') {
+        Some((stem, extension)) if !stem.is_empty() => (stem, format!(".{extension}")),
+        _ => (name, String::new()),
+    };
+    let dir = env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".cache")).join("mu");
     fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
     prune(&dir);
-    let path = dir.join(format!("{}-{name}", short_id()?));
-    let mut file = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path)?;
-    file.write_all(&bytes)?;
-    file.sync_all()?;
-    Ok(path)
+    let mut n = 0;
+    loop {
+        n += 1;
+        let path = dir.join(if n == 1 { name.to_string() } else { format!("{stem}-{n}{extension}") });
+        let mut file = match fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path) {
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
+            file => file?,
+        };
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        return Ok(match path.strip_prefix(home()) {
+            Ok(rest) => Path::new("~").join(rest),
+            Err(_) => path,
+        });
+    }
 }
 
 fn prune(dir: &Path) {

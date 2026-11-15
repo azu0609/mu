@@ -1,7 +1,10 @@
 package dev.azuki.mu.ui
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
@@ -9,7 +12,6 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.draggable
 import androidx.compose.foundation.gestures.rememberDraggableState
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,11 +24,11 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.OutputTransformation
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.clearText
@@ -38,7 +40,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -52,6 +54,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -75,6 +78,7 @@ import dev.azuki.mu.model.Attachment
 import dev.azuki.mu.model.Mention
 import dev.azuki.mu.model.MuException
 import dev.azuki.mu.model.Prefs
+import dev.azuki.mu.model.Resolved
 import dev.azuki.mu.model.ToolStatus
 import dev.azuki.mu.state.Destination
 import dev.azuki.mu.state.Mu
@@ -109,7 +113,9 @@ class ComposerState(private val prefs: Prefs) {
 
     var focusRequested by mutableStateOf(false)
     var snippets by mutableStateOf(false)
-    val attachments = mutableStateListOf<Attachment>()
+    var uploading by mutableIntStateOf(0)
+    // Images shown for what is attached, by the file or the path it's mentioned as.
+    val previews = mutableStateMapOf<String, ImageBitmap>()
     var busy by mutableStateOf(false)
     var run by mutableStateOf<ShellRun?>(null)
     var dictating by mutableStateOf(false)
@@ -119,6 +125,18 @@ class ComposerState(private val prefs: Prefs) {
         keyboard = on
         focusRequested = on
         prefs[KEYBOARD] = if (on) "1" else null
+    }
+
+    fun insert(mention: String) {
+        field.edit {
+            val text = asCharSequence()
+            val at = selection.max
+            val lead = if (at > 0 && !text[at - 1].isWhitespace()) " " else ""
+            val trail = if (at < text.length && text[at].isWhitespace()) "" else " "
+            val inserted = lead + mention + trail
+            replace(at, at, inserted)
+            selection = TextRange(at + inserted.length)
+        }
     }
 
     fun useShell(on: Boolean) {
@@ -142,8 +160,7 @@ class ShellRun(val command: String) {
 }
 
 sealed interface Submission {
-    data class Prompt(val text: String, val skill: String?, val attachments: List<Attachment>) :
-        Submission
+    data class Prompt(val text: String, val skill: String?) : Submission
 
     data class Command(val command: String) : Submission
 }
@@ -169,6 +186,7 @@ fun Composer(
             .orEmpty()
 
     val mention = rememberMention(state, mu, destination)
+    val resolved = rememberResolved(state, mu, destination)
 
     val currentSkills by rememberUpdatedState(skills)
     val currentOnSubmit by rememberUpdatedState(onSubmit)
@@ -178,7 +196,7 @@ fun Composer(
             {
                 val trimmed = state.field.text.toString().trim()
                 when {
-                    state.busy -> Unit
+                    state.busy || state.uploading > 0 -> Unit
                     state.shell ->
                         if (trimmed.isNotEmpty()) {
                             state.field.clearText()
@@ -186,15 +204,14 @@ fun Composer(
                             currentOnSubmit(Submission.Command(trimmed))
                         }
 
-                    trimmed.isEmpty() && state.attachments.isEmpty() -> Unit
+                    trimmed.isEmpty() -> Unit
                     else -> {
                         val word =
                             trimmed.takeIf { it.startsWith("/") }?.substringBefore(' ')?.drop(1)
                         val skill = currentSkills.firstOrNull { it.name == word }?.name
-                        val attachments = state.attachments.toList()
                         state.field.clearText()
-                        state.attachments.clear()
-                        currentOnSubmit(Submission.Prompt(trimmed, skill, attachments))
+                        state.previews.clear()
+                        currentOnSubmit(Submission.Prompt(trimmed, skill))
                     }
                 }
             }
@@ -255,7 +272,9 @@ fun Composer(
         }
         Card(
             cornerRadius = 24.dp,
-            modifier = Modifier.lifted(RoundedCornerShape(24.dp)).animateContentSize(),
+            modifier =
+                Modifier.lifted(RoundedCornerShape(24.dp))
+                    .animateContentSize(alignment = Alignment.BottomCenter),
         ) {
             when {
                 state.shell ->
@@ -266,10 +285,10 @@ fun Composer(
                         onSubmit = submit,
                     )
 
-                !state.keyboard && text.isEmpty() && state.attachments.isEmpty() ->
+                !state.keyboard && text.isEmpty() && state.uploading == 0 ->
                     DictationBar(state, mu, destination, onSubmit)
 
-                else -> PromptInput(state, mu, destination, onSubmit = submit)
+                else -> PromptInput(state, mu, destination, resolved, onSubmit = submit)
             }
         }
     }
@@ -292,23 +311,21 @@ private fun PromptInput(
     state: ComposerState,
     mu: Mu,
     destination: Destination,
+    resolved: Map<String, Resolved>,
     onSubmit: () -> Unit,
 ) {
     val running = destination.running
     val focus = rememberRequestedFocus(state)
-    val empty = state.field.text.isBlank() && state.attachments.isEmpty()
-    Column {
-        if (state.attachments.isNotEmpty()) {
-            Row(
-                Modifier.horizontalScroll(rememberScrollState())
-                    .padding(start = 12.dp, end = 12.dp, top = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                state.attachments.forEach { attachment ->
-                    AttachmentChip(attachment) { state.attachments.remove(attachment) }
-                }
-            }
+    val text = state.field.text.toString()
+    val empty = text.isBlank() && state.uploading == 0
+    val selection = state.field.selection
+    val tiles =
+        remember(text, selection, resolved) {
+            tiles(text, selection, mu.core.mentions(text), resolved)
         }
+    Column {
+        val host = destination.host
+        if (host != null && tiles.isNotEmpty()) AttachmentStrip(state, mu, host, text, tiles)
         Input(
             state.field,
             placeholder =
@@ -316,12 +333,13 @@ private fun PromptInput(
                 else "Waiting for a Human Intelligence…",
             mono = false,
             modifier = Modifier.focusRequester(focus),
+            outputTransformation = remember(resolved) { coloring(mu.core, resolved) },
         )
         Row(
             Modifier.padding(horizontal = 8.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            AttachButton(state, mu)
+            AttachButton(state, mu, destination)
             ModelButton(mu, destination)
             Spacer(Modifier.weight(1f))
             ToolButton(
@@ -343,7 +361,7 @@ private fun PromptInput(
                         Glyphs.Send,
                         "Send",
                         enabled = !empty && destination.host != null,
-                        busy = state.busy,
+                        busy = state.busy || state.uploading > 0,
                         onClick = onSubmit,
                     )
             }
@@ -407,7 +425,7 @@ private fun DictationBar(
         Modifier.padding(horizontal = 8.dp).height(56.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        AttachButton(state, mu)
+        AttachButton(state, mu, destination)
         ModelButton(mu, destination)
         Box(
             Modifier.weight(1f).height(56.dp).pointerInput(Unit) {
@@ -446,7 +464,7 @@ private fun DictationBar(
                             return@launch
                         }
                         val text = dictation.finish().trim()
-                        if (text.isNotEmpty()) onSubmit(Submission.Prompt(text, null, emptyList()))
+                        if (text.isNotEmpty()) onSubmit(Submission.Prompt(text, null))
                     }
                 }
             },
@@ -468,6 +486,7 @@ private fun Input(
     placeholder: String,
     mono: Boolean,
     modifier: Modifier = Modifier,
+    outputTransformation: OutputTransformation? = null,
 ) {
     val style =
         MiuixTheme.textStyles.body1.let {
@@ -481,6 +500,7 @@ private fun Input(
         textStyle = style.copy(color = MiuixTheme.colorScheme.onSurface),
         lineLimits = TextFieldLineLimits.MultiLine(1, 6),
         cursorBrush = SolidColor(Accent),
+        outputTransformation = outputTransformation,
         decorator = { inner ->
             Box {
                 if (field.text.isEmpty()) {
@@ -550,26 +570,49 @@ private fun RoundAction(
 }
 
 @Composable
-private fun AttachButton(state: ComposerState, mu: Mu) {
+private fun AttachButton(state: ComposerState, mu: Mu, destination: Destination) {
     var open by remember { mutableStateOf(false) }
-    val scope = rememberCoroutineScope()
+    val size = with(LocalDensity.current) { TileSize.roundToPx() }
 
+    // Picking swaps the dictation bar for the keyboard's, which would cancel this button's scope.
     fun pick(source: suspend () -> List<Attachment>) {
-        scope.launch {
+        val host = destination.host ?: return mu.toast("Add a host first")
+        mu.launch {
+            val picked = source()
+            if (picked.isEmpty()) return@launch
+            state.useKeyboard(true)
+            state.uploading++
             try {
-                val picked = source()
-                state.attachments += picked
-                if (picked.isNotEmpty()) state.useKeyboard(true)
-            } catch (e: MuException) {
-                mu.toast(e.message)
+                picked.forEach { attachment ->
+                    try {
+                        val path = mu.core.upload(host, attachment.name, attachment.data)
+                        if (attachment.image) {
+                            mu.platform.decodeImage(attachment.data, size)?.let {
+                                state.previews[path] = it
+                            }
+                        }
+                        state.insert(mention(path))
+                    } catch (e: MuException) {
+                        mu.toast(e.message)
+                    }
+                }
+            } finally {
+                state.uploading--
             }
         }
     }
 
+    // A plus turned an eighth of the way round is a cross.
+    val turn by
+        animateFloatAsState(
+            if (open) -45f else 0f,
+            spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium),
+        )
     Box {
         ToolButton(
-            if (open) Solar.CloseCircleBoldDuotone else Solar.AddCircleBoldDuotone,
-            "Attach",
+            Solar.AddCircleBoldDuotone,
+            if (open) "Close" else "Attach",
+            Modifier.graphicsLayer { rotationZ = turn },
         ) {
             open = !open
         }
@@ -625,37 +668,6 @@ private fun RowScope.AttachTile(icon: ImageVector, label: String, onClick: () ->
         Box(Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.Center) {
             Icon(icon, label, Modifier.size(30.dp), tint = Accent)
         }
-    }
-}
-
-@Composable
-private fun AttachmentChip(attachment: Attachment, onRemove: () -> Unit) {
-    Row(
-        Modifier.clip(RoundedCornerShape(12.dp))
-            .background(MiuixTheme.colorScheme.surface)
-            .clickable(onClick = onRemove)
-            .padding(start = 10.dp, end = 8.dp, top = 6.dp, bottom = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            if (attachment.image) Solar.AlbumBoldDuotone else Solar.DocumentBoldDuotone,
-            null,
-            Modifier.size(18.dp),
-            tint = Accent,
-        )
-        Text(
-            attachment.name,
-            Modifier.padding(horizontal = 6.dp).widthIn(max = 120.dp),
-            style = MiuixTheme.textStyles.footnote1,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-        Icon(
-            Solar.CloseLinear,
-            "Remove",
-            Modifier.size(14.dp),
-            tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-        )
     }
 }
 
@@ -859,7 +871,7 @@ private fun rememberMention(state: ComposerState, mu: Mu, destination: Destinati
 private fun chars(text: String, utf16: Int): Int =
     (0 until utf16).count { !text[it].isLowSurrogate() }
 
-private fun utf16(text: String, chars: Int): Int {
+fun utf16(text: String, chars: Int): Int {
     var index = 0
     repeat(chars) {
         if (index >= text.length) return text.length

@@ -20,6 +20,20 @@ pub fn version() -> String {
     env!("CARGO_PKG_VERSION").into()
 }
 
+// Offsets count characters, not UTF-16 units.
+#[uniffi::export]
+pub fn mentions(text: String) -> Vec<Written> {
+    mu_client::mentions(&text)
+        .into_iter()
+        .map(|mention| Written {
+            start: mention.range.start as u32,
+            end: mention.range.end as u32,
+            path: mention.path,
+            closed: mention.closed,
+        })
+        .collect()
+}
+
 #[derive(Debug, uniffi::Error)]
 #[uniffi(flat_error)]
 pub enum MuError {
@@ -255,6 +269,32 @@ impl Core {
                 .map(|entry| MentionEntry { text: entry.text, label: entry.label })
                 .collect(),
         }))
+    }
+
+    pub async fn resolve_mentions(
+        &self,
+        host: String,
+        cwd: String,
+        text: String,
+        skill: Option<String>,
+    ) -> Result<Vec<Resolved>, MuError> {
+        let resolved =
+            self.on(&host, move |client| async move { client.resolve(cwd.as_ref(), text, skill).await }).await?;
+        Ok(resolved
+            .into_iter()
+            .map(|resolved| Resolved {
+                path: resolved.path,
+                file: resolved.file.to_string_lossy().into_owned(),
+                kind: match resolved.kind {
+                    mu_client::Attached::Image => Attached::Image,
+                    mu_client::Attached::Text { lines, head } => Attached::Text { lines: lines as u32, head },
+                },
+            })
+            .collect())
+    }
+
+    pub async fn read_image(&self, host: String, path: String) -> Result<Vec<u8>, MuError> {
+        self.on(&host, |client| async move { client.read_image(path.as_ref()).await }).await
     }
 
     pub async fn shell(
@@ -586,6 +626,27 @@ pub struct Mention {
 pub struct MentionEntry {
     pub text: String,
     pub label: String,
+}
+
+#[derive(uniffi::Record)]
+pub struct Written {
+    pub start: u32,
+    pub end: u32,
+    pub path: String,
+    pub closed: bool,
+}
+
+#[derive(uniffi::Record)]
+pub struct Resolved {
+    pub path: String,
+    pub file: String,
+    pub kind: Attached,
+}
+
+#[derive(uniffi::Enum)]
+pub enum Attached {
+    Image,
+    Text { lines: u32, head: String },
 }
 
 #[derive(uniffi::Record)]

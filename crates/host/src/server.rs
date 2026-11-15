@@ -3,10 +3,11 @@ use crate::{
     agent::{self, Agent},
     api, config,
     devices::Devices,
-    directory, input, net,
+    directory, image, input, net,
     profile::Profile,
     session, skills, tools, upload,
 };
+use base64::{Engine, engine::general_purpose::STANDARD};
 use http_body_util::{BodyExt, Either, Full, Limited};
 use hyper::{
     Method, Request, Response, StatusCode,
@@ -643,6 +644,26 @@ async fn handle(host: Arc<Host>, peer: Peer, request: Request<Incoming>) -> Repl
                     return Err(failed(format!("{} is not an absolute path", call.cwd.display())));
                 }
                 Ok(skills::skills(&call.cwd).iter().map(Into::into).collect())
+            })
+            .await
+        }
+        wire::ResolveMentions::PATH => {
+            call(host, &body, |_, call: wire::ResolveMentions| {
+                if !call.cwd.is_absolute() {
+                    return Err(failed(format!("{} is not an absolute path", call.cwd.display())));
+                }
+                let skill =
+                    call.skill.and_then(|name| skills::skills(&call.cwd).into_iter().rev().find(|s| s.name == name));
+                input::resolve(&call.text, &call.cwd, skill.as_ref()).map_err(failed)
+            })
+            .await
+        }
+        wire::ReadImage::PATH => {
+            call(host, &body, |_, call: wire::ReadImage| {
+                if !call.path.is_absolute() {
+                    return Err(failed(format!("{} is not an absolute path", call.path.display())));
+                }
+                image::load(&call.path).map(|bytes| STANDARD.encode(bytes)).map_err(failed)
             })
             .await
         }

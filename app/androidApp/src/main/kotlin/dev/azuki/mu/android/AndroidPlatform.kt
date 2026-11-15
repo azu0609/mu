@@ -14,6 +14,8 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.content.edit
@@ -113,6 +115,18 @@ class AndroidPlatform(private val activity: ComponentActivity) : Platform {
         documents.launch(arrayOf("*/*"))
         return withContext(Dispatchers.IO) { result.await().map { read(it, null) } }
     }
+
+    override suspend fun decodeImage(data: ByteArray, size: Int): ImageBitmap? =
+        withContext(Dispatchers.Default) {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
+            val edge = minOf(bounds.outWidth, bounds.outHeight)
+            if (edge <= 0) return@withContext null
+            var sample = 1
+            while (edge / (sample * 2) >= size) sample *= 2
+            val options = BitmapFactory.Options().apply { inSampleSize = sample }
+            BitmapFactory.decodeByteArray(data, 0, data.size, options)?.asImageBitmap()
+        }
 
     private fun read(uri: Uri, fallbackName: String?): Attachment {
         val resolver = context.contentResolver

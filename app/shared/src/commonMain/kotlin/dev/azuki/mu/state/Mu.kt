@@ -4,7 +4,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import dev.azuki.mu.model.Attachment
 import dev.azuki.mu.model.Core
 import dev.azuki.mu.model.Host
 import dev.azuki.mu.model.HostProfile
@@ -110,23 +109,6 @@ class Mu(val core: Core, val platform: Platform, private val scope: CoroutineSco
         select(host.id, true)
         if (draft.host == null) draft.set(host.id, null)
         return host
-    }
-
-    // Uploads what is attached, for the host to read in as it would any @mentioned file.
-    suspend fun withAttachments(host: String, text: String, attachments: List<Attachment>): String {
-        if (attachments.isEmpty()) return text
-        val mentions =
-            attachments
-                .map { attachment ->
-                    val path = core.upload(host, attachment.name, attachment.data)
-                    if (path.any { it.isWhitespace() || it == '"' }) {
-                        "@\"" + path.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
-                    } else {
-                        "@$path"
-                    }
-                }
-                .joinToString(" ")
-        return if (text.isEmpty()) mentions else "$text\n\n$mentions"
     }
 
     // The session's directory, or the host's home when none is picked.

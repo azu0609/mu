@@ -62,6 +62,18 @@ data class Mention(val start: Int, val end: Int, val query: String, val entries:
 // `text` replaces the mention; a directory's leaves it open for the next segment.
 data class MentionEntry(val text: String, val label: String)
 
+// A mention as written, `path` unescaped, in characters rather than UTF-16 units.
+data class Written(val start: Int, val end: Int, val path: String, val closed: Boolean)
+
+// What a mention, by its path as written, attaches: `file` is where the host found it.
+data class Resolved(val path: String, val file: String, val kind: Attached)
+
+sealed interface Attached {
+    data object Image : Attached
+
+    data class Text(val lines: Int, val head: String) : Attached
+}
+
 data class ModelInfo(val name: String, val context: Long?)
 
 enum class BlockKind {

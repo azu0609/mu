@@ -128,32 +128,18 @@ fun Home(
                     sent++
                     try {
                         when (destination) {
-                            is ChatState -> {
-                                val text =
-                                    mu.withAttachments(
-                                        host,
-                                        submission.text,
-                                        submission.attachments,
-                                    )
-                                destination.send(text, submission.skill)
-                            }
+                            is ChatState -> destination.send(submission.text, submission.skill)
                             is Draft -> {
                                 val model =
                                     destination.model ?: throw MuException("Pick a model first")
                                 val cwd = mu.resolveCwd(host, destination.cwd)
-                                val text =
-                                    mu.withAttachments(
-                                        host,
-                                        submission.text,
-                                        submission.attachments,
-                                    )
                                 val id =
                                     mu.core.createSession(
                                         host,
                                         cwd,
                                         model,
                                         destination.effort,
-                                        text,
+                                        submission.text,
                                         submission.skill,
                                     )
                                 mu.open(host, id)
@@ -163,7 +149,6 @@ fun Home(
                         mu.toast(e.message)
                         if (composer.field.text.isEmpty()) {
                             composer.field.edit { replace(0, length, submission.text) }
-                            composer.attachments += submission.attachments
                         }
                     } finally {
                         composer.busy = false
