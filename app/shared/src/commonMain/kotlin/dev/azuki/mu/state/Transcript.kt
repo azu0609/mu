@@ -8,10 +8,10 @@ sealed interface Entry {
 
     data class User(override val key: String, val text: String) : Entry
 
-    // Thoughts and calls of one turn, folded behind "Worked for…".
+    // All a turn did before its final response, folded behind "Worked for…".
     data class Work(
         override val key: String,
-        val blocks: List<Block>,
+        val steps: List<Step>,
         val started: Long?,
         val finished: Long?,
         val ongoing: Boolean,
@@ -24,53 +24,70 @@ sealed interface Entry {
     data class Notice(override val key: String, val block: Block) : Entry
 }
 
-// Turns the flat transcript into what the chat shows. `live` blocks belong to the last turn and
-// are keyed by the index they get once committed, so the list keeps their items across commits.
-fun entries(blocks: List<Block>, live: List<Block>, running: Boolean): List<Entry> {
-    val all = (blocks + live).mapIndexed { i, block -> "c$i" to block }
+data class Step(val key: String, val block: Block)
+
+// Turns the flat transcript into what the chat shows, in the TUI's order: what is committed, the
+// live notice, then what is live. `live` blocks are keyed by the index they get once committed,
+// so the list keeps their items across commits.
+fun entries(blocks: List<Block>, notice: Block?, live: List<Block>, running: Boolean): List<Entry> {
+    val all =
+        blocks.mapIndexed { i, block -> Step("c$i", block) } +
+            listOfNotNull(notice?.let { Step("notice", it) }) +
+            live.mapIndexed { i, block -> Step("c${blocks.size + i}", block) }
     val entries = mutableListOf<Entry>()
-    var turn = mutableListOf<Pair<String, Block>>()
+    var turn = mutableListOf<Step>()
     var turnKey = "start"
+    var sent: Long? = null
+
+    fun show(step: Step) {
+        val block = step.block
+        when (block.kind) {
+            BlockKind.Agent ->
+                if (block.text.isNotBlank()) entries += Entry.Agent(step.key, block.text)
+            BlockKind.Shell -> entries += Entry.Shell(step.key, block)
+            BlockKind.Notice,
+            BlockKind.Warning -> entries += Entry.Notice(step.key, block)
+            BlockKind.User,
+            BlockKind.Thought,
+            BlockKind.Call -> Unit
+        }
+    }
 
     fun flush(last: Boolean) {
-        if (turn.isEmpty() && !(last && running)) return
-        val work = turn.filter { (_, block) ->
-            block.kind == BlockKind.Thought || block.kind == BlockKind.Call
-        }
         val ongoing = last && running
-        if (work.isNotEmpty() || ongoing) {
-            val spans = turn.mapNotNull { it.second.span }
+        // What came with the message, like its attachments, stays out of the fold.
+        val lead = turn.takeWhile {
+            it.block.kind == BlockKind.Notice || it.block.kind == BlockKind.Warning
+        }
+        val rest = turn.drop(lead.size)
+        val folded =
+            rest.indexOfLast {
+                it.block.kind == BlockKind.Thought || it.block.kind == BlockKind.Call
+            } + 1
+        lead.forEach(::show)
+        if (folded > 0 || ongoing) {
+            val spans = turn.mapNotNull { it.block.span }
             entries +=
                 Entry.Work(
                     key = "$turnKey.work",
-                    blocks = work.map { it.second },
-                    started = spans.minOfOrNull { it.started },
+                    steps = rest.take(folded),
+                    started = spans.minOfOrNull { it.started } ?: sent,
                     finished = spans.maxOfOrNull { it.finished },
                     ongoing = ongoing,
                 )
         }
-        for ((key, block) in turn) {
-            when (block.kind) {
-                BlockKind.Agent ->
-                    if (block.text.isNotBlank()) entries += Entry.Agent(key, block.text)
-                BlockKind.Shell -> entries += Entry.Shell(key, block)
-                BlockKind.Notice,
-                BlockKind.Warning -> entries += Entry.Notice(key, block)
-                BlockKind.Thought,
-                BlockKind.Call,
-                BlockKind.User -> Unit
-            }
-        }
+        rest.drop(folded).forEach(::show)
         turn = mutableListOf()
     }
 
-    for ((key, block) in all) {
-        if (block.kind == BlockKind.User) {
+    for (step in all) {
+        if (step.block.kind == BlockKind.User) {
             flush(last = false)
-            entries += Entry.User(key, block.text)
-            turnKey = key
+            entries += Entry.User(step.key, step.block.text)
+            turnKey = step.key
+            sent = step.block.span?.started
         } else {
-            turn += key to block
+            turn += step
         }
     }
     flush(last = true)

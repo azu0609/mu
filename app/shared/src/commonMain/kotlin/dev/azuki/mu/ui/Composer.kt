@@ -1,15 +1,14 @@
 package dev.azuki.mu.ui
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.animate
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,35 +35,53 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.azuki.mu.model.Attachment
+import dev.azuki.mu.model.Mention
 import dev.azuki.mu.model.MuException
 import dev.azuki.mu.model.Prefs
 import dev.azuki.mu.model.ToolStatus
 import dev.azuki.mu.state.Destination
 import dev.azuki.mu.state.Mu
+import dev.azuki.mu.state.baseName
 import dev.azuki.mu.state.compact
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
@@ -88,6 +105,9 @@ class ComposerState(private val prefs: Prefs) {
         private set
 
     var shell by mutableStateOf(false)
+        private set
+
+    var focusRequested by mutableStateOf(false)
     var snippets by mutableStateOf(false)
     val attachments = mutableStateListOf<Attachment>()
     var busy by mutableStateOf(false)
@@ -97,7 +117,14 @@ class ComposerState(private val prefs: Prefs) {
 
     fun useKeyboard(on: Boolean) {
         keyboard = on
+        focusRequested = on
         prefs[KEYBOARD] = if (on) "1" else null
+    }
+
+    fun useShell(on: Boolean) {
+        shell = on
+        snippets = false
+        focusRequested = on || keyboard
     }
 
     private companion object {
@@ -141,6 +168,8 @@ fun Composer(
             ?.let { query -> skills.filter { it.name.startsWith(query, ignoreCase = true) } }
             .orEmpty()
 
+    val mention = rememberMention(state, mu, destination)
+
     val currentSkills by rememberUpdatedState(skills)
     val currentOnSubmit by rememberUpdatedState(onSubmit)
     // Reads everything as it is at the tap, not as it was composed.
@@ -171,33 +200,57 @@ fun Composer(
             }
         }
 
-    Column(modifier.padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        state.run?.let { run -> ShellOutput(run, onDismiss = { state.run = null }) }
-        AnimatedVisibility(
-            state.shell && state.snippets && snippets.isNotEmpty(),
-            enter = fadeIn() + expandVertically(clip = false),
-            exit = fadeOut() + shrinkVertically(clip = false),
+    Column(modifier.padding(horizontal = 12.dp)) {
+        state.run?.let { run -> key(run) { ShellOutput(run, onDismiss = { state.run = null }) } }
+        Column(
+            Modifier.fillMaxWidth().above(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Suggestions(
-                snippets.map {
-                    Suggestion(Pictograms.snippet(it.icon).vector, it.name, it.command)
+            if (state.shell && state.snippets && snippets.isNotEmpty()) {
+                Suggestions(
+                    snippets.map {
+                        Suggestion(Pictograms.snippet(it.icon).vector, it.name, it.command)
+                    }
+                ) { index ->
+                    state.field.setTextAndPlaceCursorAtEnd(snippets[index].command)
+                    state.snippets = false
                 }
-            ) { index ->
-                state.field.setTextAndPlaceCursorAtEnd(snippets[index].command)
-                state.snippets = false
             }
-        }
-        AnimatedVisibility(
-            suggestions.isNotEmpty(),
-            enter = fadeIn() + expandVertically(clip = false),
-            exit = fadeOut() + shrinkVertically(clip = false),
-        ) {
-            Suggestions(
-                suggestions.map {
-                    Suggestion(Solar.ToolboxBoldDuotone, it.name, "${it.description} (Skill)")
+            val mentioned = mention?.takeIf { suggestions.isEmpty() && !state.shell }
+            val files = mentioned?.mention?.entries.orEmpty()
+            if (files.isNotEmpty()) {
+                Suggestions(
+                    files.map { entry ->
+                        val directory = entry.label.endsWith('/')
+                        val name = baseName(entry.label) + if (directory) "/" else ""
+                        Suggestion(
+                            if (directory) Solar.Folder2BoldDuotone else Solar.FileTextBoldDuotone,
+                            name,
+                            entry.label.removeSuffix("/").substringBeforeLast('/', "").takeIf {
+                                it.isNotEmpty()
+                            },
+                        )
+                    }
+                ) { index ->
+                    val found = mentioned ?: return@Suggestions
+                    if (state.field.text.toString() != found.text) return@Suggestions
+                    val replacement = files[index].text
+                    val start = utf16(found.text, found.mention.start)
+                    val end = utf16(found.text, found.mention.end)
+                    state.field.edit {
+                        replace(start, end, replacement)
+                        selection = TextRange(start + replacement.length)
+                    }
                 }
-            ) { index ->
-                state.field.setTextAndPlaceCursorAtEnd("/${suggestions[index].name} ")
+            }
+            if (suggestions.isNotEmpty()) {
+                Suggestions(
+                    suggestions.map {
+                        Suggestion(Solar.ToolboxBoldDuotone, it.name, "${it.description} (Skill)")
+                    }
+                ) { index ->
+                    state.field.setTextAndPlaceCursorAtEnd("/${suggestions[index].name} ")
+                }
             }
         }
         Card(
@@ -223,6 +276,18 @@ fun Composer(
 }
 
 @Composable
+private fun rememberRequestedFocus(state: ComposerState): FocusRequester {
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(state.focusRequested) {
+        if (state.focusRequested) {
+            runCatching { focus.requestFocus() }
+            state.focusRequested = false
+        }
+    }
+    return focus
+}
+
+@Composable
 private fun PromptInput(
     state: ComposerState,
     mu: Mu,
@@ -230,8 +295,7 @@ private fun PromptInput(
     onSubmit: () -> Unit,
 ) {
     val running = destination.running
-    val focus = remember { FocusRequester() }
-    LaunchedEffect(state.keyboard) { if (state.keyboard) runCatching { focus.requestFocus() } }
+    val focus = rememberRequestedFocus(state)
     val empty = state.field.text.isBlank() && state.attachments.isEmpty()
     Column {
         if (state.attachments.isNotEmpty()) {
@@ -294,8 +358,7 @@ private fun ShellInput(
     hasSnippets: Boolean,
     onSubmit: () -> Unit,
 ) {
-    val focus = remember { FocusRequester() }
-    LaunchedEffect(Unit) { runCatching { focus.requestFocus() } }
+    val focus = rememberRequestedFocus(state)
     Column {
         Input(
             state.field,
@@ -308,8 +371,7 @@ private fun ShellInput(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             ToolButton(Solar.RoundAltArrowLeftBoldDuotone, "Leave shell mode") {
-                state.shell = false
-                state.snippets = false
+                state.useShell(false)
             }
             val showingSnippets = state.snippets && hasSnippets
             ToolButton(
@@ -539,13 +601,13 @@ private fun AttachButton(state: ComposerState, mu: Mu) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     AttachTile(Solar.ToolboxBoldDuotone, "Skills") {
                         choose {
-                            state.shell = false
+                            state.useShell(false)
                             state.field.setTextAndPlaceCursorAtEnd("/")
                             state.useKeyboard(true)
                         }
                     }
                     AttachTile(Solar.FileTerminalBoldDuotone, "Shell") {
-                        choose { state.shell = true }
+                        choose { state.useShell(true) }
                     }
                 }
             }
@@ -707,7 +769,7 @@ private fun ModelDialog(show: Boolean, onDismiss: () -> Unit, onPick: (String) -
     }
 }
 
-private class Suggestion(val icon: ImageVector, val title: String, val detail: String)
+private class Suggestion(val icon: ImageVector, val title: String, val detail: String?)
 
 @Composable
 private fun Suggestions(items: List<Suggestion>, onPick: (Int) -> Unit) {
@@ -727,71 +789,240 @@ private fun Suggestions(items: List<Suggestion>, onPick: (Int) -> Unit) {
                     Icon(item.icon, null, Modifier.size(22.dp), tint = Accent)
                     Text(
                         item.title,
-                        Modifier.padding(start = 10.dp),
+                        Modifier.padding(start = 10.dp).weight(1f, fill = false),
                         style = MiuixTheme.textStyles.body1,
-                        maxLines = 1,
-                    )
-                    Text(
-                        item.detail,
-                        Modifier.padding(start = 8.dp),
-                        fontFamily = Mono,
-                        fontSize = 12.sp,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
+                    item.detail?.let { detail ->
+                        Text(
+                            detail,
+                            Modifier.padding(start = 8.dp),
+                            fontFamily = Mono,
+                            fontSize = 12.sp,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                 }
             }
         }
     }
 }
 
-// The output of a command run from the composer, peeking out from behind it.
+private class Mentioned(val text: String, val mention: Mention)
+
+// The host completes mentions, so each edit asks it again; a newer edit drops the older ask.
+@Composable
+private fun rememberMention(state: ComposerState, mu: Mu, destination: Destination): Mentioned? {
+    val host = destination.host
+    val directory = destination.directory
+    var found by remember(host, directory) { mutableStateOf<Mentioned?>(null) }
+    LaunchedEffect(state, host, directory) {
+        var open = false
+        snapshotFlow { Triple(state.shell, state.field.text.toString(), state.field.selection) }
+            .collectLatest { (shell, text, selection) ->
+                if (
+                    host == null ||
+                        directory == null ||
+                        shell ||
+                        !selection.collapsed ||
+                        '@' !in text
+                ) {
+                    found = null
+                    open = false
+                    return@collectLatest
+                }
+                val refresh = !open
+                open = true
+                val mention =
+                    try {
+                        mu.core.completeMention(
+                            host,
+                            directory,
+                            text,
+                            chars(text, selection.start),
+                            refresh,
+                        )
+                    } catch (e: MuException) {
+                        if (refresh) mu.toast("File search: ${e.message}")
+                        null
+                    }
+                if (mention == null) open = false
+                found = mention?.let { Mentioned(text, it) }
+            }
+    }
+    return found
+}
+
+private fun chars(text: String, utf16: Int): Int =
+    (0 until utf16).count { !text[it].isLowSurrogate() }
+
+private fun utf16(text: String, chars: Int): Int {
+    var index = 0
+    repeat(chars) {
+        if (index >= text.length) return text.length
+        index += if (text[index].isHighSurrogate() && index + 1 < text.length) 2 else 1
+    }
+    return index
+}
+
+// Floats what it holds above where it sits, taking up no room, so the conversation stays put.
+private fun Modifier.above(gap: Dp) = layout { measurable, constraints ->
+    val placeable =
+        measurable.measure(constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity))
+    layout(placeable.width, 0) { placeable.place(0, -placeable.height - gap.roundToPx()) }
+}
+
+// The output of a command run from the composer, peeking out from behind it. Swiping it down
+// tucks it away to just its handle; swiping once more from there stops the command and drops it.
 @Composable
 private fun ShellOutput(run: ShellRun, onDismiss: () -> Unit) {
-    val overlap = 24.dp
+    val overlap = 16.dp
     val scroll = rememberScrollState()
     LaunchedEffect(run.output) { scroll.scrollTo(scroll.maxValue) }
-    Card(
-        modifier =
-            Modifier.padding(horizontal = 16.dp).layout { measurable, constraints ->
-                val placeable = measurable.measure(constraints)
-                val hidden = overlap.roundToPx()
-                layout(placeable.width, (placeable.height - hidden).coerceAtLeast(0)) {
-                    placeable.place(0, 0)
+    val scope = rememberCoroutineScope()
+    val currentOnDismiss by rememberUpdatedState(onDismiss)
+    var collapsed by remember { mutableStateOf(false) }
+    var delta by remember { mutableFloatStateOf(0f) }
+    var height by remember { mutableIntStateOf(0) }
+    var settling by remember { mutableStateOf<Job?>(null) }
+    val density = LocalDensity.current
+    val hidden = with(density) { overlap.toPx() }
+    val peek = with(density) { 20.dp.toPx() }
+    val threshold = with(density) { 48.dp.toPx() }
+
+    fun gone() = (height - hidden).coerceAtLeast(0f)
+
+    fun rest() = (gone() - peek).coerceAtLeast(0f)
+
+    fun base() = if (collapsed) rest() else 0f
+
+    fun drag(by: Float): Float {
+        settling?.cancel()
+        val before = base() + delta
+        val after = (before + by).coerceIn(0f, if (collapsed) gone() else rest())
+        delta = after - base()
+        return after - before
+    }
+
+    fun settle(velocity: Float) {
+        val at = base() + delta
+        val away = collapsed && (at > rest() + peek / 2 || velocity > 1_200f && at >= rest())
+        val down =
+            when {
+                away -> true
+                velocity > 800f -> true
+                velocity < -800f -> false
+                collapsed -> at > rest() - threshold
+                else -> at > threshold
+            }
+        collapsed = down
+        delta = at - base()
+        val target = if (away) gone() - base() else 0f
+        settling = scope.launch {
+            animate(delta, target, velocity) { value, _ -> delta = value }
+            if (away) {
+                run.job?.cancel()
+                currentOnDismiss()
+            }
+        }
+    }
+
+    fun expand() {
+        settling?.cancel()
+        delta += base()
+        collapsed = false
+        settling = scope.launch { animate(delta, 0f) { value, _ -> delta = value } }
+    }
+
+    val nested = remember {
+        object : NestedScrollConnection {
+            override fun onPreScroll(available: Offset, source: NestedScrollSource) =
+                if (available.y < 0 && base() + delta > 0f) Offset(0f, drag(available.y))
+                else Offset.Zero
+
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource,
+            ) =
+                if (available.y > 0 && source == NestedScrollSource.UserInput)
+                    Offset(0f, drag(available.y))
+                else Offset.Zero
+
+            override suspend fun onPreFling(available: Velocity): Velocity {
+                if (base() + delta <= 0f) return Velocity.Zero
+                settle(available.y)
+                return available
+            }
+        }
+    }
+    Box(Modifier.fillMaxWidth().above(-overlap).clipToBounds()) {
+        Card(
+            modifier =
+                Modifier.padding(horizontal = 16.dp)
+                    .fillMaxWidth()
+                    .onSizeChanged { height = it.height }
+                    .graphicsLayer {
+                        val at = base() + delta
+                        translationY = at
+                        val fading = gone() - rest()
+                        alpha = if (at > rest() && fading > 0f) 1f - (at - rest()) / fading else 1f
+                    }
+                    .nestedScroll(nested)
+                    .draggable(
+                        rememberDraggableState { drag(it) },
+                        Orientation.Vertical,
+                        onDragStopped = { settle(it) },
+                    ),
+            cornerRadius = 20.dp,
+            onClick = {
+                when {
+                    collapsed -> expand()
+                    run.done -> onDismiss()
                 }
             },
-        cornerRadius = 20.dp,
-        onClick = { if (run.done) onDismiss() },
-    ) {
-        Column(Modifier.padding(start = 18.dp, end = 18.dp, top = 8.dp, bottom = overlap + 8.dp)) {
-            Box(
-                Modifier.align(Alignment.CenterHorizontally)
-                    .size(36.dp, 4.dp)
-                    .clip(RoundedCornerShape(2.dp))
-                    .background(MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.3f))
-            )
-            val status =
-                when (val status = run.status) {
-                    is ToolStatus.Exited -> if (status.code == 0) null else "exit ${status.code}"
-                    is ToolStatus.TimedOut -> "timed out"
-                    ToolStatus.Cancelled -> "cancelled"
-                    ToolStatus.Failed -> "failed"
-                    else -> null
-                }
-            Text(
-                buildString {
-                    append("$ ").append(run.command)
-                    if (run.output.isNotEmpty()) append('\n').append(run.output.trimEnd())
-                    run.failure?.let { append('\n').append(it) }
-                    status?.let { append("\n[").append(it).append(']') }
-                },
-                Modifier.padding(top = 10.dp).heightIn(max = 180.dp).verticalScroll(scroll),
-                fontFamily = Mono,
-                fontSize = 12.sp,
-                lineHeight = 17.sp,
-                color = MiuixTheme.colorScheme.onSurface,
-            )
+        ) {
+            Column(
+                Modifier.fillMaxWidth()
+                    .padding(start = 18.dp, end = 18.dp, top = 8.dp, bottom = overlap + 12.dp)
+            ) {
+                Box(
+                    Modifier.align(Alignment.CenterHorizontally)
+                        .size(36.dp, 4.dp)
+                        .clip(RoundedCornerShape(2.dp))
+                        .background(
+                            MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.3f)
+                        )
+                )
+                val status =
+                    when (val status = run.status) {
+                        is ToolStatus.Exited ->
+                            if (status.code == 0) null else "exit ${status.code}"
+                        is ToolStatus.TimedOut -> "timed out"
+                        ToolStatus.Cancelled -> "cancelled"
+                        ToolStatus.Failed -> "failed"
+                        else -> null
+                    }
+                Text(
+                    buildString {
+                        append("$ ").append(run.command)
+                        if (run.output.isNotEmpty()) append('\n').append(run.output.trimEnd())
+                        run.failure?.let { append('\n').append(it) }
+                        status?.let { append("\n[").append(it).append(']') }
+                    },
+                    Modifier.fillMaxWidth()
+                        .padding(top = 10.dp)
+                        .heightIn(max = 180.dp)
+                        .verticalScroll(scroll),
+                    fontFamily = Mono,
+                    fontSize = 12.sp,
+                    lineHeight = 17.sp,
+                    color = MiuixTheme.colorScheme.onSurface,
+                )
+            }
         }
     }
 }

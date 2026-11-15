@@ -16,6 +16,10 @@ sealed interface Destination {
     val skills: List<Skill>
     val running: Boolean
 
+    // Where @mentions resolve, once known.
+    val directory: String?
+        get() = cwd
+
     fun use(model: String?, effort: String?)
 
     suspend fun stop()
@@ -46,7 +50,7 @@ class Draft(private val mu: Mu) : Destination {
 
     override val running = false
 
-    val directory
+    override val directory
         get() = cwd ?: host?.let(mu::home)
 
     override fun use(model: String?, effort: String?) {

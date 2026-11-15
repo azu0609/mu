@@ -56,6 +56,12 @@ enum class EntryKind {
 
 data class Skill(val name: String, val description: String)
 
+// `start` and `end` bound the mention being typed, in characters rather than UTF-16 units.
+data class Mention(val start: Int, val end: Int, val query: String, val entries: List<MentionEntry>)
+
+// `text` replaces the mention; a directory's leaves it open for the next segment.
+data class MentionEntry(val text: String, val label: String)
+
 data class ModelInfo(val name: String, val context: Long?)
 
 enum class BlockKind {

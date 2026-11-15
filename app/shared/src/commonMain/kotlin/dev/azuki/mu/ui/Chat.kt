@@ -32,11 +32,13 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -74,7 +76,9 @@ fun Chat(
     val expanded = remember(chat) { mutableStateMapOf<String, Boolean>() }
     val entries by
         remember(chat) {
-            derivedStateOf { entries(chat.blocks.toList(), chat.live.toList(), chat.running) }
+            derivedStateOf {
+                entries(chat.blocks.toList(), chat.liveNotice, chat.live.toList(), chat.running)
+            }
         }
     val state = chat.state
     val list = rememberLazyListState()
@@ -152,22 +156,6 @@ fun Chat(
                     UserBubble(text, Modifier.alpha(0.5f))
                 }
             }
-            chat.liveNotice?.let { block -> item(key = "notice") { NoticeView(block) } }
-            chat.feedback.asReversed().forEachIndexed { index, block ->
-                item(key = "feedback.${chat.feedback.size - 1 - index}") { NoticeView(block) }
-            }
-            items(entries.asReversed(), key = { it.key }) { entry ->
-                when (entry) {
-                    is Entry.User -> UserBubble(entry.text)
-                    is Entry.Agent -> Markdown(entry.text)
-                    is Entry.Work ->
-                        WorkView(entry, expanded[entry.key] == true) {
-                            expanded[entry.key] = expanded[entry.key] != true
-                        }
-                    is Entry.Shell -> ShellCard(entry.block)
-                    is Entry.Notice -> NoticeView(entry.block)
-                }
-            }
             chat.error
                 ?.takeIf { !chat.connected }
                 ?.let { error ->
@@ -175,6 +163,18 @@ fun Chat(
                         NoticeView(Block(BlockKind.Warning, error, null, null))
                     }
                 }
+            chat.feedback.asReversed().forEachIndexed { index, block ->
+                item(key = "feedback.${chat.feedback.size - 1 - index}") { NoticeView(block) }
+            }
+            items(entries.asReversed(), key = { it.key }) { entry ->
+                when (entry) {
+                    is Entry.User -> UserBubble(entry.text)
+                    is Entry.Agent -> Markdown(entry.text)
+                    is Entry.Work -> WorkView(entry, expanded)
+                    is Entry.Shell -> ShellCard(entry.block)
+                    is Entry.Notice -> NoticeView(entry.block)
+                }
+            }
         }
     }
 }
@@ -195,7 +195,7 @@ private fun UserBubble(text: String, modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun WorkView(work: Entry.Work, expanded: Boolean, onToggle: () -> Unit) {
+private fun WorkView(work: Entry.Work, expanded: SnapshotStateMap<String, Boolean>) {
     val now by
         produceState(Clock.System.now().toEpochMilliseconds(), work.ongoing) {
             while (work.ongoing) {
@@ -212,44 +212,41 @@ private fun WorkView(work: Entry.Work, expanded: Boolean, onToggle: () -> Unit) 
             else -> "Worked"
         }
     val gray = MiuixTheme.colorScheme.onSurfaceVariantSummary
+    val steps = work.steps.filter { it.block.kind == BlockKind.Call || it.block.text.isNotBlank() }
+    val open = expanded[work.key] == true
     Column {
         Row(
             Modifier.clip(RoundedCornerShape(8.dp))
-                .clickable(enabled = work.blocks.isNotEmpty(), onClick = onToggle)
+                .clickable(enabled = steps.isNotEmpty()) { expanded[work.key] = !open }
                 .padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (work.ongoing) Spinning(Solar.LoaderBold, Modifier.padding(end = 8.dp).size(16.dp))
             Text(label, color = gray, style = MiuixTheme.textStyles.body2)
-            if (work.blocks.isNotEmpty()) {
+            if (steps.isNotEmpty()) {
                 Icon(
-                    if (expanded) Solar.AltArrowUpLinear else Solar.AltArrowDownLinear,
+                    if (open) Solar.AltArrowUpLinear else Solar.AltArrowDownLinear,
                     null,
                     Modifier.padding(start = 6.dp).size(16.dp),
                     tint = gray,
                 )
             }
         }
-        if (work.ongoing && !expanded) {
-            work.blocks.lastOrNull()?.let { last ->
+        if (work.ongoing && !open) {
+            steps.lastOrNull()?.let { last ->
                 Text(
-                    last.text
-                        .lineSequence()
-                        .firstOrNull { it.isNotBlank() }
-                        .orEmpty()
-                        .trim()
-                        .trim('*'),
+                    headline(last.block.text),
                     Modifier.padding(top = 2.dp),
                     color = gray,
                     style = MiuixTheme.textStyles.footnote1,
-                    fontFamily = if (last.kind == BlockKind.Call) Mono else null,
+                    fontFamily = if (last.block.kind == BlockKind.Call) Mono else null,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
         }
         AnimatedVisibility(
-            expanded,
+            open,
             enter = fadeIn() + expandVertically(),
             exit = fadeOut() + shrinkVertically(),
         ) {
@@ -257,10 +254,17 @@ private fun WorkView(work: Entry.Work, expanded: Boolean, onToggle: () -> Unit) 
                 Modifier.padding(top = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                work.blocks.forEach { block ->
+                steps.forEach { step ->
+                    val block = step.block
+                    val toggle = { expanded[step.key] = expanded[step.key] != true }
                     when (block.kind) {
-                        BlockKind.Call -> CallView(block)
-                        else -> Markdown(block.text, color = gray, small = true)
+                        BlockKind.Thought -> ThoughtView(block, expanded[step.key] == true, toggle)
+                        BlockKind.Call -> CallView(block, expanded[step.key] == true, toggle)
+                        BlockKind.Agent -> Markdown(block.text, small = true)
+                        BlockKind.Shell -> ShellCard(block)
+                        BlockKind.Notice,
+                        BlockKind.Warning -> NoticeView(block)
+                        BlockKind.User -> Unit
                     }
                 }
             }
@@ -268,16 +272,53 @@ private fun WorkView(work: Entry.Work, expanded: Boolean, onToggle: () -> Unit) 
     }
 }
 
+private fun headline(text: String): String =
+    text.lineSequence().firstOrNull { it.isNotBlank() }.orEmpty().trim().trim('*', '#', ' ')
+
 @Composable
-private fun CallView(block: Block) {
-    var open by remember { mutableStateOf(false) }
+private fun ThoughtView(block: Block, open: Boolean, onToggle: () -> Unit) {
+    val gray = MiuixTheme.colorScheme.onSurfaceVariantSummary
+    val title = headline(block.text)
+    val more = block.text.trim().trim('*', '#', ' ') != title
+    Column(
+        Modifier.fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(enabled = more, onClick = onToggle)
+    ) {
+        if (open) {
+            Markdown(block.text, color = gray, small = true)
+        } else {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    title,
+                    Modifier.weight(1f, fill = false),
+                    color = gray,
+                    style = MiuixTheme.textStyles.body2.copy(fontStyle = FontStyle.Italic),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (more) {
+                    Icon(
+                        Solar.AltArrowDownLinear,
+                        null,
+                        Modifier.padding(start = 6.dp).size(14.dp),
+                        tint = gray,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CallView(block: Block, open: Boolean, onToggle: () -> Unit) {
     val tool = block.tool
     val gray = MiuixTheme.colorScheme.onSurfaceVariantSummary
     Column(
         Modifier.fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
             .background(MiuixTheme.colorScheme.surfaceContainer)
-            .clickable(enabled = !tool?.output.isNullOrEmpty()) { open = !open }
+            .clickable(enabled = !tool?.output.isNullOrEmpty(), onClick = onToggle)
             .padding(horizontal = 14.dp, vertical = 10.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {

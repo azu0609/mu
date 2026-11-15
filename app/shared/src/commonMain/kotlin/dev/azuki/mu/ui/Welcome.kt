@@ -90,14 +90,6 @@ fun Welcome(
                                         listOf(
                                             DropdownItem(
                                                 "Add New Host…",
-                                                icon = {
-                                                    Icon(
-                                                        Solar.AddLinear,
-                                                        null,
-                                                        it.size(20.dp),
-                                                        tint = Accent,
-                                                    )
-                                                },
                                                 onClick = onAddHost,
                                             )
                                         )

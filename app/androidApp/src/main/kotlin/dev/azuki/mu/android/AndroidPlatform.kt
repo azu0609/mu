@@ -12,12 +12,11 @@ import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.content.edit
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
-import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import dev.azuki.mu.model.Attachment
 import dev.azuki.mu.model.Dictation
 import dev.azuki.mu.model.MuException
@@ -25,11 +24,8 @@ import dev.azuki.mu.model.Platform
 import dev.azuki.mu.model.Prefs
 import java.io.ByteArrayOutputStream
 import java.io.File
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 
 // The host takes calls up to 4 MiB, which base64 leaves 3 of.
@@ -86,23 +82,18 @@ class AndroidPlatform(private val activity: ComponentActivity) : Platform {
         return result.await()
     }
 
-    override suspend fun scanQr(): String? = suspendCancellableCoroutine { continuation ->
-        val options =
-            GmsBarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()
-        GmsBarcodeScanning.getClient(activity, options)
-            .startScan()
-            .addOnSuccessListener { continuation.resume(it.rawValue) }
-            .addOnCanceledListener { continuation.resume(null) }
-            .addOnFailureListener {
-                continuation.resumeWithException(
-                    MuException(
-                        "Cannot scan here: ${it.message}. Scan with the camera app, or paste the link"
-                    )
-                )
-            }
-    }
+    override suspend fun allowCamera(): Boolean = ask(Manifest.permission.CAMERA)
 
+    @Composable
+    override fun QrScanner(
+        onScan: (String) -> Unit,
+        onError: (String) -> Unit,
+        modifier: Modifier,
+    ) = QrViewfinder(activity, onScan, onError, modifier)
+
+    // Declaring the camera permission for scanning makes the camera app need it too.
     override suspend fun takePhoto(): Attachment? {
+        if (!allowCamera()) throw MuException("Taking a photo needs the camera")
         val file = File(File(context.cacheDir, "photos").apply { mkdirs() }, "photo.jpg")
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
         val result = CompletableDeferred<Boolean>().also { shot = it }

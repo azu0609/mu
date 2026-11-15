@@ -15,6 +15,8 @@ import dev.azuki.mu.model.EntryKind
 import dev.azuki.mu.model.Host
 import dev.azuki.mu.model.HostProfile
 import dev.azuki.mu.model.HostUpdate
+import dev.azuki.mu.model.Mention
+import dev.azuki.mu.model.MentionEntry
 import dev.azuki.mu.model.ModelInfo
 import dev.azuki.mu.model.MuException
 import dev.azuki.mu.model.Session
@@ -116,6 +118,23 @@ class FfiCore(private val core: Ffi, private val device: String) : Core {
 
     override suspend fun listSkills(host: String, cwd: String): List<Skill> = mapped {
         core.listSkills(host, cwd).map { it.toModel() }
+    }
+
+    override suspend fun completeMention(
+        host: String,
+        cwd: String,
+        text: String,
+        cursor: Int,
+        refresh: Boolean,
+    ): Mention? = mapped {
+        core.completeMention(host, cwd, text, cursor.toUInt(), refresh)?.let { mention ->
+            Mention(
+                mention.start.toInt(),
+                mention.end.toInt(),
+                mention.query,
+                mention.entries.map { MentionEntry(it.text, it.label) },
+            )
+        }
     }
 
     override suspend fun upload(host: String, name: String, data: ByteArray): String = mapped {

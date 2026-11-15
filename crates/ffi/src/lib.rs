@@ -233,6 +233,30 @@ impl Core {
         Ok(skills.into_iter().map(|skill| Skill { name: skill.name, description: skill.description }).collect())
     }
 
+    // Offsets count characters, not UTF-16 units.
+    pub async fn complete_mention(
+        &self,
+        host: String,
+        cwd: String,
+        text: String,
+        cursor: u32,
+        refresh: bool,
+    ) -> Result<Option<Mention>, MuError> {
+        let mention = self
+            .on(&host, move |client| async move { client.complete(cwd.as_ref(), text, cursor as usize, refresh).await })
+            .await?;
+        Ok(mention.map(|mention| Mention {
+            start: mention.range.start as u32,
+            end: mention.range.end as u32,
+            query: mention.query,
+            entries: mention
+                .entries
+                .into_iter()
+                .map(|entry| MentionEntry { text: entry.text, label: entry.label })
+                .collect(),
+        }))
+    }
+
     pub async fn shell(
         &self,
         host: String,
@@ -548,6 +572,20 @@ pub struct SessionState {
     pub uncached_input: i64,
     pub output: i64,
     pub queued: Vec<String>,
+}
+
+#[derive(uniffi::Record)]
+pub struct Mention {
+    pub start: u32,
+    pub end: u32,
+    pub query: String,
+    pub entries: Vec<MentionEntry>,
+}
+
+#[derive(uniffi::Record)]
+pub struct MentionEntry {
+    pub text: String,
+    pub label: String,
 }
 
 #[derive(uniffi::Record)]

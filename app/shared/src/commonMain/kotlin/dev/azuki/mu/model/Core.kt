@@ -1,5 +1,7 @@
 package dev.azuki.mu.model
 
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Modifier
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.StateFlow
 
@@ -48,6 +50,15 @@ interface Core {
 
     suspend fun listSkills(host: String, cwd: String): List<Skill>
 
+    // Null when the cursor is not in a mention. `refresh` rebuilds the host's file index.
+    suspend fun completeMention(
+        host: String,
+        cwd: String,
+        text: String,
+        cursor: Int,
+        refresh: Boolean,
+    ): Mention?
+
     // Where the host keeps the file, for a message to @mention.
     suspend fun upload(host: String, name: String, data: ByteArray): String
 
@@ -77,8 +88,12 @@ interface Platform {
 
     val dictation: Dictation
 
-    // Null when the user backs out.
-    suspend fun scanQr(): String?
+    // False when the user refuses.
+    suspend fun allowCamera(): Boolean
+
+    // Reports the first QR code it sees, once.
+    @Composable
+    fun QrScanner(onScan: (String) -> Unit, onError: (String) -> Unit, modifier: Modifier)
 
     suspend fun takePhoto(): Attachment?
 

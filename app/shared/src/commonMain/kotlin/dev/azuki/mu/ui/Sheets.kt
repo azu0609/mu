@@ -1,5 +1,8 @@
 package dev.azuki.mu.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -12,8 +15,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -49,6 +53,7 @@ import top.yukonga.miuix.kmp.basic.TextField
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.theme.LocalDismissState
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import top.yukonga.miuix.kmp.utils.overScrollVertical
 import top.yukonga.miuix.kmp.window.WindowBottomSheet
 
 // A sheet or dialog showing `value`, which stays put until its exit animation ends.
@@ -111,6 +116,7 @@ fun AddHostSheet(show: Boolean, mu: Mu, onDismiss: () -> Unit, invite: String? =
     var help by remember { mutableStateOf(false) }
     var link by remember(show, invite) { mutableStateOf(invite.orEmpty()) }
     var pairing by remember { mutableStateOf(false) }
+    var scanning by remember(show) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     WindowBottomSheet(
         backgroundColor = MiuixTheme.colorScheme.surface,
@@ -129,6 +135,7 @@ fun AddHostSheet(show: Boolean, mu: Mu, onDismiss: () -> Unit, invite: String? =
     ) {
         val dismiss = LocalDismissState.current
         fun pair(invite: String) {
+            scanning = false
             pairing = true
             scope.launch {
                 try {
@@ -146,6 +153,17 @@ fun AddHostSheet(show: Boolean, mu: Mu, onDismiss: () -> Unit, invite: String? =
             Modifier.padding(bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            AnimatedVisibility(scanning, enter = expandVertically(), exit = shrinkVertically()) {
+                mu.platform.QrScanner(
+                    onScan = ::pair,
+                    onError = {
+                        scanning = false
+                        mu.toast("$it. Scan with the camera app, or paste the link")
+                    },
+                    modifier =
+                        Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(20.dp)),
+                )
+            }
             TextField(
                 value = link,
                 onValueChange = { link = it },
@@ -161,22 +179,26 @@ fun AddHostSheet(show: Boolean, mu: Mu, onDismiss: () -> Unit, invite: String? =
                 text =
                     when {
                         pairing -> "Pairing…"
-                        link.isBlank() -> "Scan QR"
-                        else -> "Pair"
+                        link.isNotBlank() -> "Pair"
+                        scanning -> "Cancel"
+                        else -> "Scan QR"
                     },
                 enabled = !pairing,
                 modifier = Modifier.padding(top = 4.dp),
             ) {
-                if (link.isNotBlank()) {
-                    pair(link)
-                } else {
-                    scope.launch {
-                        try {
-                            mu.platform.scanQr()?.let(::pair)
-                        } catch (e: MuException) {
-                            mu.toast(e.message)
+                when {
+                    link.isNotBlank() -> pair(link)
+                    scanning -> scanning = false
+                    else ->
+                        scope.launch {
+                            if (mu.platform.allowCamera()) {
+                                scanning = true
+                            } else {
+                                mu.toast(
+                                    "Scanning needs the camera. Scan with the camera app, or paste the link"
+                                )
+                            }
                         }
-                    }
                 }
             }
         }
@@ -268,52 +290,63 @@ fun ProjectPicker(
             Modifier.padding(bottom = 16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            if (shown != "/" && shown != "~") {
-                Card {
-                    ArrowPreference(
-                        title = "..",
-                        startAction = { EntryIcon(Solar.MultipleForwardLeftBoldDuotone) },
-                        onClick = { history.add(parentOf(shown)) },
-                    )
+            LazyColumn(
+                Modifier.weight(1f, fill = false).overScrollVertical(),
+                state = remember(path) { LazyListState() },
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (shown != "/" && shown != "~") {
+                    item {
+                        Card {
+                            ArrowPreference(
+                                title = "..",
+                                startAction = { EntryIcon(Solar.MultipleForwardLeftBoldDuotone) },
+                                onClick = { history.add(parentOf(shown)) },
+                            )
+                        }
+                    }
                 }
-            }
-            Card(Modifier.fillMaxWidth().weight(1f, fill = false)) {
-                val listed = directory
-                when {
-                    error != null -> Note(error.orEmpty(), Modifier.padding(16.dp))
-                    listed == null ->
-                        Box(Modifier.fillMaxWidth().padding(24.dp), Alignment.Center) {
-                            InfiniteProgressIndicator()
-                        }
-                    listed.entries.isEmpty() -> Note("Nothing in here", Modifier.padding(16.dp))
-                    else ->
-                        LazyColumn {
-                            items(listed.entries, key = { it.name }) { entry ->
-                                when (entry.kind) {
-                                    EntryKind.File ->
-                                        BasicComponent(
-                                            title = entry.name,
-                                            startAction = { EntryIcon(Solar.FileTextBoldDuotone) },
-                                        )
-                                    else ->
-                                        ArrowPreference(
-                                            title = entry.name,
-                                            startAction = {
-                                                EntryIcon(
-                                                    if (entry.kind == EntryKind.Repository)
-                                                        Solar.FolderGitBoldDuotone
-                                                    else Solar.Folder2BoldDuotone
-                                                )
-                                            },
-                                            onClick = {
-                                                history.add(
-                                                    "${listed.path.trimEnd('/')}/${entry.name}"
-                                                )
-                                            },
-                                        )
+                item {
+                    Card(Modifier.fillMaxWidth()) {
+                        val listed = directory
+                        when {
+                            error != null -> Note(error.orEmpty(), Modifier.padding(16.dp))
+                            listed == null ->
+                                Box(Modifier.fillMaxWidth().padding(24.dp), Alignment.Center) {
+                                    InfiniteProgressIndicator()
                                 }
-                            }
+                            listed.entries.isEmpty() ->
+                                Note("Nothing in here", Modifier.padding(16.dp))
+                            else ->
+                                listed.entries.forEach { entry ->
+                                    when (entry.kind) {
+                                        EntryKind.File ->
+                                            BasicComponent(
+                                                title = entry.name,
+                                                startAction = {
+                                                    EntryIcon(Solar.FileTextBoldDuotone)
+                                                },
+                                            )
+                                        else ->
+                                            ArrowPreference(
+                                                title = entry.name,
+                                                startAction = {
+                                                    EntryIcon(
+                                                        if (entry.kind == EntryKind.Repository)
+                                                            Solar.FolderGitBoldDuotone
+                                                        else Solar.Folder2BoldDuotone
+                                                    )
+                                                },
+                                                onClick = {
+                                                    history.add(
+                                                        "${listed.path.trimEnd('/')}/${entry.name}"
+                                                    )
+                                                },
+                                            )
+                                    }
+                                }
                         }
+                    }
                 }
             }
             PrimaryButton("Use Current Directory", enabled = directory != null) {

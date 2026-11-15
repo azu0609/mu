@@ -422,21 +422,10 @@ private fun HostsButton(mu: Mu, onAddHost: () -> Unit, onSettings: () -> Unit) {
                         listOf(
                             DropdownItem(
                                 "Add New Host…",
-                                icon = {
-                                    Icon(Solar.AddLinear, null, it.size(20.dp), tint = Accent)
-                                },
                                 onClick = onAddHost,
                             ),
                             DropdownItem(
                                 "Settings",
-                                icon = {
-                                    Icon(
-                                        Solar.SettingsBoldDuotone,
-                                        null,
-                                        it.size(20.dp),
-                                        tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                                    )
-                                },
                                 onClick = onSettings,
                             ),
                         )

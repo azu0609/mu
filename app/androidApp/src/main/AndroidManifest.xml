@@ -3,6 +3,8 @@
 
     <!-- Hosts are reached over the network: LAN, Tailscale, WireGuard or similar. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Scanning invites. -->
+    <uses-permission android:name="android.permission.CAMERA" />
     <!-- Dictation. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
