@@ -1,23 +1,24 @@
 package dev.azuki.mu.ui
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -30,7 +31,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.SubcomposeLayout
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.azuki.mu.model.Directory
@@ -84,18 +89,118 @@ private fun SheetClose() {
     CloseButton(onClick = { dismiss?.invoke() })
 }
 
+private enum class SheetSlot {
+    Header,
+    Body,
+    Footer,
+}
+
 @Composable
-private fun PrimaryButton(
-    text: String,
-    enabled: Boolean = true,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
+private fun Sheet(
+    show: Boolean,
+    title: String,
+    onDismissRequest: () -> Unit,
+    onDismissFinished: (() -> Unit)? = null,
+    startAction: @Composable () -> Unit = { SheetClose() },
+    endAction: @Composable () -> Unit = {},
+    bottomAction: (@Composable () -> Unit)? = null,
+    content: @Composable (PaddingValues) -> Unit,
 ) {
+    WindowBottomSheet(
+        backgroundColor = MiuixTheme.colorScheme.surface,
+        show = show,
+        onDismissRequest = onDismissRequest,
+        onDismissFinished = onDismissFinished,
+    ) {
+        SubcomposeLayout(
+            // miuix keeps an empty title row's padding even without a title, which this takes
+            // over so the body can scroll right up to the drag handle.
+            Modifier.layout { measurable, constraints ->
+                val row = 18.dp.roundToPx()
+                val placeable =
+                    measurable.measure(
+                        if (constraints.hasBoundedHeight)
+                            constraints.copy(maxHeight = constraints.maxHeight + row)
+                        else constraints
+                    )
+                layout(placeable.width, (placeable.height - row).coerceAtLeast(0)) {
+                    placeable.place(0, -row)
+                }
+            }
+        ) { constraints ->
+            val loose = constraints.copy(minWidth = 0, minHeight = 0)
+            val header =
+                subcompose(SheetSlot.Header) {
+                    Box(
+                        Modifier.fillMaxWidth()
+                            .scrim(edgeToEdge = true)
+                            .padding(top = 6.dp, bottom = 12.dp)
+                    ) {
+                        Box(Modifier.align(Alignment.CenterStart)) { startAction() }
+                        Text(
+                            title,
+                            Modifier.align(Alignment.Center).padding(horizontal = 52.dp),
+                            fontSize = MiuixTheme.textStyles.title4.fontSize,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Box(Modifier.align(Alignment.CenterEnd)) { endAction() }
+                    }
+                }
+                    .map { it.measure(loose) }
+            val footer =
+                subcompose(SheetSlot.Footer) {
+                    Box(
+                        Modifier.fillMaxWidth()
+                            .then(
+                                if (bottomAction != null)
+                                    Modifier.scrim(top = false).padding(top = 16.dp)
+                                else Modifier
+                            )
+                            .navigationBarsPadding()
+                            .padding(bottom = 16.dp)
+                    ) {
+                        bottomAction?.invoke()
+                    }
+                }
+                    .map { it.measure(loose) }
+            val top = header.maxOfOrNull { it.height } ?: 0
+            val bottom = footer.maxOfOrNull { it.height } ?: 0
+            val padding = PaddingValues(top = top.toDp(), bottom = bottom.toDp())
+            val body = subcompose(SheetSlot.Body) { content(padding) }.map { it.measure(loose) }
+            val height =
+                maxOf(body.maxOfOrNull { it.height } ?: 0, top + bottom)
+                    .coerceIn(constraints.minHeight, constraints.maxHeight)
+            layout(constraints.maxWidth, height) {
+                body.forEach { it.place(0, 0) }
+                header.forEach { it.place(0, 0) }
+                footer.forEach { it.place(0, height - it.height) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SheetColumn(
+    padding: PaddingValues,
+    verticalArrangement: Arrangement.Vertical = Arrangement.spacedBy(12.dp),
+    content: @Composable ColumnScope.() -> Unit,
+) {
+    Column(
+        Modifier.overScrollVertical().verticalScroll(rememberScrollState()).padding(padding),
+        verticalArrangement = verticalArrangement,
+        content = content,
+    )
+}
+
+@Composable
+private fun PrimaryButton(text: String, enabled: Boolean = true, onClick: () -> Unit) {
     TextButton(
         text,
         onClick = onClick,
         enabled = enabled,
-        modifier = modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth(),
         cornerRadius = 24.dp,
         colors = ButtonDefaults.textButtonColorsPrimary(),
     )
@@ -118,11 +223,30 @@ fun AddHostSheet(show: Boolean, mu: Mu, onDismiss: () -> Unit, invite: String? =
     var pairing by remember { mutableStateOf(false) }
     var scanning by remember(show) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    WindowBottomSheet(
-        backgroundColor = MiuixTheme.colorScheme.surface,
+    fun pair(invite: String) {
+        if (pairing) return
+        link = invite
+        scanning = false
+        pairing = true
+        scope.launch {
+            try {
+                val host = mu.pair(invite.trim())
+                mu.toast("Paired with ${host.name}")
+                onDismiss()
+            } catch (e: MuException) {
+                mu.toast(e.message)
+            } finally {
+                pairing = false
+            }
+        }
+    }
+    Sheet(
         show = show,
-        title = "Add New Host",
-        startAction = { SheetClose() },
+        title = if (scanning) "Scan QR Code" else "Add New Host",
+        onDismissRequest = onDismiss,
+        startAction = {
+            if (scanning) BackButton(onClick = { scanning = false }) else SheetClose()
+        },
         endAction = {
             CircleButton(
                 Solar.ChatRoundQuestionMarkBoldDuotone,
@@ -131,29 +255,36 @@ fun AddHostSheet(show: Boolean, mu: Mu, onDismiss: () -> Unit, invite: String? =
                 tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             )
         },
-        onDismissRequest = onDismiss,
-    ) {
-        val dismiss = LocalDismissState.current
-        fun pair(invite: String) {
-            scanning = false
-            pairing = true
-            scope.launch {
-                try {
-                    val host = mu.pair(invite.trim())
-                    mu.toast("Paired with ${host.name}")
-                    dismiss?.invoke()
-                } catch (e: MuException) {
-                    mu.toast(e.message)
-                } finally {
-                    pairing = false
+        bottomAction =
+            if (scanning) null
+            else {
+                {
+                    PrimaryButton(
+                        text =
+                            when {
+                                pairing -> "Pairing…"
+                                link.isNotBlank() -> "Pair"
+                                else -> "Scan QR"
+                            },
+                        enabled = !pairing,
+                    ) {
+                        if (link.isNotBlank()) pair(link)
+                        else
+                            scope.launch {
+                                if (mu.platform.allowCamera()) {
+                                    scanning = true
+                                } else {
+                                    mu.toast(
+                                        "Scanning needs the camera. Scan with the camera app, or paste the link"
+                                    )
+                                }
+                            }
+                    }
                 }
-            }
-        }
-        Column(
-            Modifier.padding(bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            AnimatedVisibility(scanning, enter = expandVertically(), exit = shrinkVertically()) {
+            },
+    ) { padding ->
+        SheetColumn(padding) {
+            if (scanning) {
                 mu.platform.QrScanner(
                     onScan = ::pair,
                     onError = {
@@ -163,43 +294,20 @@ fun AddHostSheet(show: Boolean, mu: Mu, onDismiss: () -> Unit, invite: String? =
                     modifier =
                         Modifier.fillMaxWidth().aspectRatio(1f).clip(RoundedCornerShape(20.dp)),
                 )
-            }
-            TextField(
-                value = link,
-                onValueChange = { link = it },
-                label = "mu://…",
-                useLabelAsPlaceholder = true,
-                singleLine = true,
-                textStyle = MiuixTheme.textStyles.main.copy(fontFamily = Mono, fontSize = 15.sp),
-            )
-            Note(
-                "Run mu pair on the host, then scan the QR code it shows, or paste its link above."
-            )
-            PrimaryButton(
-                text =
-                    when {
-                        pairing -> "Pairing…"
-                        link.isNotBlank() -> "Pair"
-                        scanning -> "Cancel"
-                        else -> "Scan QR"
-                    },
-                enabled = !pairing,
-                modifier = Modifier.padding(top = 4.dp),
-            ) {
-                when {
-                    link.isNotBlank() -> pair(link)
-                    scanning -> scanning = false
-                    else ->
-                        scope.launch {
-                            if (mu.platform.allowCamera()) {
-                                scanning = true
-                            } else {
-                                mu.toast(
-                                    "Scanning needs the camera. Scan with the camera app, or paste the link"
-                                )
-                            }
-                        }
-                }
+                Note("Point the camera at the QR code mu pair shows on the host.")
+            } else {
+                TextField(
+                    value = link,
+                    onValueChange = { link = it },
+                    label = "mu://…",
+                    useLabelAsPlaceholder = true,
+                    singleLine = true,
+                    textStyle =
+                        MiuixTheme.textStyles.main.copy(fontFamily = Mono, fontSize = 15.sp),
+                )
+                Note(
+                    "Run mu pair on the host, then scan the QR code it shows, or paste its link above."
+                )
             }
         }
     }
@@ -208,14 +316,8 @@ fun AddHostSheet(show: Boolean, mu: Mu, onDismiss: () -> Unit, invite: String? =
 
 @Composable
 private fun HelpSheet(show: Boolean, onDismiss: () -> Unit) {
-    WindowBottomSheet(
-        backgroundColor = MiuixTheme.colorScheme.surface,
-        show = show,
-        title = "Help",
-        startAction = { SheetClose() },
-        onDismissRequest = onDismiss,
-    ) {
-        Column(Modifier.padding(bottom = 16.dp)) {
+    Sheet(show = show, title = "Help", onDismissRequest = onDismiss) { padding ->
+        SheetColumn(padding, verticalArrangement = Arrangement.Top) {
             SmallTitle(
                 "Requirements",
                 insideMargin = PaddingValues(start = 12.dp, top = 8.dp, bottom = 8.dp),
@@ -274,84 +376,80 @@ fun ProjectPicker(
         }
     }
     val shown = directory?.path ?: path
-    WindowBottomSheet(
-        backgroundColor = MiuixTheme.colorScheme.surface,
+    Sheet(
         show = show,
         title = tilde(shown, mu.home(host)),
+        onDismissRequest = onDismiss,
+        onDismissFinished = onDismissFinished,
         startAction = {
             if (history.size > 1) BackButton(onClick = { history.removeAt(history.lastIndex) })
             else SheetClose()
         },
-        onDismissRequest = onDismiss,
-        onDismissFinished = onDismissFinished,
-    ) {
-        val dismiss = LocalDismissState.current
-        Column(
-            Modifier.padding(bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            LazyColumn(
-                Modifier.weight(1f, fill = false).overScrollVertical(),
-                state = remember(path) { LazyListState() },
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                if (shown != "/" && shown != "~") {
-                    item {
-                        Card {
-                            ArrowPreference(
-                                title = "..",
-                                startAction = { EntryIcon(Solar.MultipleForwardLeftBoldDuotone) },
-                                onClick = { history.add(parentOf(shown)) },
-                            )
-                        }
-                    }
-                }
-                item {
-                    Card(Modifier.fillMaxWidth()) {
-                        val listed = directory
-                        when {
-                            error != null -> Note(error.orEmpty(), Modifier.padding(16.dp))
-                            listed == null ->
-                                Box(Modifier.fillMaxWidth().padding(24.dp), Alignment.Center) {
-                                    InfiniteProgressIndicator()
-                                }
-                            listed.entries.isEmpty() ->
-                                Note("Nothing in here", Modifier.padding(16.dp))
-                            else ->
-                                listed.entries.forEach { entry ->
-                                    when (entry.kind) {
-                                        EntryKind.File ->
-                                            BasicComponent(
-                                                title = entry.name,
-                                                startAction = {
-                                                    EntryIcon(Solar.FileTextBoldDuotone)
-                                                },
-                                            )
-                                        else ->
-                                            ArrowPreference(
-                                                title = entry.name,
-                                                startAction = {
-                                                    EntryIcon(
-                                                        if (entry.kind == EntryKind.Repository)
-                                                            Solar.FolderGitBoldDuotone
-                                                        else Solar.Folder2BoldDuotone
-                                                    )
-                                                },
-                                                onClick = {
-                                                    history.add(
-                                                        "${listed.path.trimEnd('/')}/${entry.name}"
-                                                    )
-                                                },
-                                            )
-                                    }
-                                }
-                        }
-                    }
-                }
-            }
+        bottomAction = {
+            val dismiss = LocalDismissState.current
             PrimaryButton("Use Current Directory", enabled = directory != null) {
                 directory?.let { onPick(it.path) }
                 dismiss?.invoke()
+            }
+        },
+    ) { padding ->
+        LazyColumn(
+            Modifier.overScrollVertical(),
+            state = remember(path) { LazyListState() },
+            contentPadding = padding,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            if (shown != "/" && shown != "~") {
+                item {
+                    Card {
+                        ArrowPreference(
+                            title = "..",
+                            startAction = { EntryIcon(Solar.MultipleForwardLeftBoldDuotone) },
+                            onClick = { history.add(parentOf(shown)) },
+                        )
+                    }
+                }
+            }
+            item {
+                Card(Modifier.fillMaxWidth()) {
+                    val listed = directory
+                    when {
+                        error != null -> Note(error.orEmpty(), Modifier.padding(16.dp))
+                        listed == null ->
+                            Box(Modifier.fillMaxWidth().padding(24.dp), Alignment.Center) {
+                                InfiniteProgressIndicator()
+                            }
+
+                        listed.entries.isEmpty() -> Note("Nothing in here", Modifier.padding(16.dp))
+                        else ->
+                            listed.entries.forEach { entry ->
+                                when (entry.kind) {
+                                    EntryKind.File ->
+                                        BasicComponent(
+                                            title = entry.name,
+                                            startAction = { EntryIcon(Solar.FileTextBoldDuotone) },
+                                        )
+
+                                    else ->
+                                        ArrowPreference(
+                                            title = entry.name,
+                                            startAction = {
+                                                EntryIcon(
+                                                    if (entry.kind == EntryKind.Repository)
+                                                        Solar.FolderGitBoldDuotone
+                                                    else Solar.Folder2BoldDuotone
+                                                )
+                                            },
+                                            onClick = {
+                                                history.add(
+                                                    "${listed.path.trimEnd('/')}/${entry.name}"
+                                                )
+                                            },
+                                        )
+                                }
+                            }
+                    }
+                }
             }
         }
     }
@@ -370,18 +468,9 @@ fun IconPicker(
     onPick: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    WindowBottomSheet(
-        backgroundColor = MiuixTheme.colorScheme.surface,
-        show = show,
-        title = "Set Icon",
-        startAction = { SheetClose() },
-        onDismissRequest = onDismiss,
-    ) {
+    Sheet(show = show, title = "Set Icon", onDismissRequest = onDismiss) { padding ->
         val dismiss = LocalDismissState.current
-        Column(
-            Modifier.padding(bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
+        SheetColumn(padding) {
             Text(
                 "Solar Icons by 480 Design",
                 Modifier.fillMaxWidth().padding(bottom = 4.dp),
@@ -433,46 +522,58 @@ fun SnippetSheet(
     var name by remember(snippet, show) { mutableStateOf(snippet?.name.orEmpty()) }
     var command by remember(snippet, show) { mutableStateOf(snippet?.command.orEmpty()) }
     var icon by
-        remember(snippet, show) {
-            mutableStateOf(snippet?.icon ?: "solar:box-minimalistic-bold-duotone")
-        }
+    remember(snippet, show) {
+        mutableStateOf(snippet?.icon ?: "solar:box-minimalistic-bold-duotone")
+    }
     var picking by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
-    WindowBottomSheet(
-        backgroundColor = MiuixTheme.colorScheme.surface,
+    Sheet(
         show = show,
         title = if (snippet == null) "New Bash Snippet" else "Edit Bash Snippet",
-        startAction = { SheetClose() },
-        endAction =
-            snippet?.let {
-                {
-                    val dismiss = LocalDismissState.current
-                    CircleButton(
-                        Solar.TrashBinTrashBoldDuotone,
-                        "Delete",
-                        tint = Danger,
-                        onClick = {
-                            scope.launch {
-                                try {
-                                    mu.core.deleteSnippet(host, it.id)
-                                    dismiss?.invoke()
-                                } catch (e: MuException) {
-                                    mu.toast(e.message)
-                                }
-                            }
-                        },
-                    )
-                }
-            },
         onDismissRequest = onDismiss,
         onDismissFinished = onDismissFinished,
-    ) {
-        val dismiss = LocalDismissState.current
-        Column(
-            Modifier.padding(bottom = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
+        endAction = {
+            if (snippet != null) {
+                val dismiss = LocalDismissState.current
+                CircleButton(
+                    Solar.TrashBinTrashBoldDuotone,
+                    "Delete",
+                    tint = Danger,
+                    onClick = {
+                        scope.launch {
+                            try {
+                                mu.core.deleteSnippet(host, snippet.id)
+                                dismiss?.invoke()
+                            } catch (e: MuException) {
+                                mu.toast(e.message)
+                            }
+                        }
+                    },
+                )
+            }
+        },
+        bottomAction = {
+            val dismiss = LocalDismissState.current
+            PrimaryButton(
+                if (snippet == null) "Add" else "Save",
+                enabled = name.isNotBlank() && command.isNotBlank() && !saving,
+            ) {
+                saving = true
+                scope.launch {
+                    try {
+                        mu.core.saveSnippet(host, snippet?.id, name.trim(), command.trim(), icon)
+                        dismiss?.invoke()
+                    } catch (e: MuException) {
+                        mu.toast(e.message)
+                    } finally {
+                        saving = false
+                    }
+                }
+            }
+        },
+    ) { padding ->
+        SheetColumn(padding) {
             PictogramBadge(
                 Pictograms.snippet(icon),
                 Modifier.align(Alignment.CenterHorizontally).padding(vertical = 8.dp),
@@ -497,23 +598,6 @@ fun SnippetSheet(
             Note(
                 "Commands invoked this way will inherit a “MU_USER_TRIGGERED” environment set to 1, which may change some of the built-in command behavior compared to when an agent invokes it."
             )
-            PrimaryButton(
-                if (snippet == null) "Add" else "Save",
-                enabled = name.isNotBlank() && command.isNotBlank() && !saving,
-                Modifier.padding(top = 4.dp),
-            ) {
-                saving = true
-                scope.launch {
-                    try {
-                        mu.core.saveSnippet(host, snippet?.id, name.trim(), command.trim(), icon)
-                        dismiss?.invoke()
-                    } catch (e: MuException) {
-                        mu.toast(e.message)
-                    } finally {
-                        saving = false
-                    }
-                }
-            }
         }
     }
     IconPicker(
