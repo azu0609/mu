@@ -29,6 +29,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -39,6 +40,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -57,7 +60,6 @@ import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.DropdownEntry
 import top.yukonga.miuix.kmp.basic.DropdownItem
-import top.yukonga.miuix.kmp.basic.FloatingToolbar
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.menu.WindowIconDropdownMenu
@@ -102,70 +104,83 @@ fun Sidebar(
     val filter = Filter.entries[pager.currentPage]
     val hosts = mu.hosts.filter { it.id in mu.selected }
 
+    var bar by remember { mutableIntStateOf(0) }
+
     Column(modifier.fillMaxSize().statusBarsPadding()) {
         Carousel(pager)
-        LazyColumn(
-            Modifier.weight(1f).fillMaxWidth(),
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 16.dp),
-        ) {
-            if (hosts.isEmpty()) {
-                item {
-                    Empty(
-                        if (mu.hosts.isEmpty()) "No hosts yet. Add one below."
-                        else "No hosts selected."
-                    )
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            LazyColumn(
+                Modifier.fillMaxSize(),
+                contentPadding =
+                    PaddingValues(
+                        start = 16.dp,
+                        end = 16.dp,
+                        bottom = with(LocalDensity.current) { bar.toDp() },
+                    ),
+            ) {
+                if (hosts.isEmpty()) {
+                    item {
+                        Empty(
+                            if (mu.hosts.isEmpty()) "No hosts yet. Add one below."
+                            else "No hosts selected."
+                        )
+                    }
+                }
+                hosts.forEach { host ->
+                    val live = mu.live[host.id]
+                    val sessions = live?.sessions.orEmpty().filter(filter.keep)
+                    item(key = "header.${host.id}") {
+                        HostHeader(
+                            mu = mu,
+                            host = host.id,
+                            onNew = { onNewIn(host.id) },
+                            onInfo = { onHostInfo(host.id) },
+                            onDelete = { onDeleteSessions(host.id) },
+                        )
+                    }
+                    when {
+                        live?.connection == Connection.Offline ||
+                            live?.connection == Connection.Unpaired ->
+                            item(key = "empty.${host.id}") {
+                                Empty(live.error ?: "${live.connection.label()}.", rounded = true)
+                            }
+                        sessions.isEmpty() && live?.connection == Connection.Online ->
+                            item(key = "empty.${host.id}") {
+                                Empty(
+                                    if (filter == Filter.All) "No sessions yet."
+                                    else "Nothing ${filter.label.lowercase()}.",
+                                    rounded = true,
+                                )
+                            }
+                        else ->
+                            itemsIndexed(
+                                sessions,
+                                key = { _, session -> "${host.id}/${session.id}" },
+                            ) { index, session ->
+                                SessionRow(
+                                    session = session,
+                                    home = live?.profile?.home,
+                                    first = index == 0,
+                                    last = index == sessions.lastIndex,
+                                    current =
+                                        current?.host == host.id && current.session == session.id,
+                                    onClick = { onOpen(host.id, session.id) },
+                                )
+                            }
+                    }
                 }
             }
-            hosts.forEach { host ->
-                val live = mu.live[host.id]
-                val sessions = live?.sessions.orEmpty().filter(filter.keep)
-                item(key = "header.${host.id}") {
-                    HostHeader(
-                        mu = mu,
-                        host = host.id,
-                        onNew = { onNewIn(host.id) },
-                        onInfo = { onHostInfo(host.id) },
-                        onDelete = { onDeleteSessions(host.id) },
-                    )
-                }
-                when {
-                    live?.connection == Connection.Offline ||
-                        live?.connection == Connection.Unpaired ->
-                        item(key = "empty.${host.id}") {
-                            Empty(live.error ?: "${live.connection.label()}.", rounded = true)
-                        }
-                    sessions.isEmpty() && live?.connection == Connection.Online ->
-                        item(key = "empty.${host.id}") {
-                            Empty(
-                                if (filter == Filter.All) "No sessions yet."
-                                else "Nothing ${filter.label.lowercase()}.",
-                                rounded = true,
-                            )
-                        }
-                    else ->
-                        itemsIndexed(
-                            sessions,
-                            key = { _, session -> "${host.id}/${session.id}" },
-                        ) { index, session ->
-                            SessionRow(
-                                session = session,
-                                home = live?.profile?.home,
-                                first = index == 0,
-                                last = index == sessions.lastIndex,
-                                current = current?.host == host.id && current.session == session.id,
-                                onClick = { onOpen(host.id, session.id) },
-                            )
-                        }
-                }
+            Row(
+                Modifier.align(Alignment.BottomCenter)
+                    .onSizeChanged { bar = it.height }
+                    .navigationBarsPadding()
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                HostsButton(mu, onAddHost, onSettings)
+                Spacer(Modifier.weight(1f))
+                CircleButton(Solar.AddLinear, "New session", onNewChat, size = 48.dp)
             }
-        }
-        Row(
-            Modifier.navigationBarsPadding().padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            HostsButton(mu, onAddHost, onSettings)
-            Spacer(Modifier.weight(1f))
-            CircleButton(Solar.AddLinear, "New session", onNewChat, size = 48.dp)
         }
     }
 }
@@ -249,7 +264,7 @@ private fun HostHeader(
             mu.name(host),
             Modifier.weight(1f),
             style = MiuixTheme.textStyles.subtitle,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            color = MiuixTheme.colorScheme.onBackgroundVariant,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
@@ -292,7 +307,7 @@ private fun HostHeader(
                 Solar.MenuDotsLinear,
                 "More",
                 Modifier.size(18.dp),
-                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                tint = MiuixTheme.colorScheme.onBackgroundVariant,
             )
         }
     }
@@ -377,7 +392,7 @@ private fun HostsButton(mu: Mu, onAddHost: () -> Unit, onSettings: () -> Unit) {
             else -> "${selected.size} Hosts Selected"
         }
     Box {
-        FloatingToolbar(outSidePadding = PaddingValues(0.dp)) {
+        Floating {
             Button(
                 onClick = { if (mu.hosts.isEmpty()) onAddHost() else open = true },
                 cornerRadius = 24.dp,

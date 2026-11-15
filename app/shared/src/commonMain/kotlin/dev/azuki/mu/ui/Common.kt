@@ -6,6 +6,7 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
@@ -14,6 +15,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -23,6 +25,7 @@ import androidx.compose.ui.draw.dropShadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.shadow.Shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
@@ -48,6 +51,22 @@ import top.yukonga.miuix.kmp.window.WindowListPopup
 fun Modifier.lifted(shape: Shape) =
     dropShadow(shape, Shadow(radius = 10.dp, color = Color.Black, alpha = 0.1f))
 
+// A FloatingToolbar with a rim, which keeps it from melting into a dark surface under it. Light
+// surfaces have the shadow for that, so the rim only just shows there. It's a plain circle: the
+// toolbar's squircle turns into one at this radius, while a squircle stroke doesn't.
+@Composable
+fun Floating(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
+    val colors = MiuixTheme.colorScheme
+    val rim =
+        if (colors.surface.luminance() < 0.5f) colors.dividerLine
+        else colors.onSurface.copy(alpha = 0.05f)
+    FloatingToolbar(modifier, outSidePadding = PaddingValues(0.dp)) {
+        Box(Modifier.border(0.75.dp, rim, CircleShape)) {
+            content()
+        }
+    }
+}
+
 // The round floating buttons the pages are framed with.
 @Composable
 fun CircleButton(
@@ -59,7 +78,7 @@ fun CircleButton(
     tint: Color = MiuixTheme.colorScheme.onSurface,
     enabled: Boolean = true,
 ) {
-    FloatingToolbar(modifier, outSidePadding = PaddingValues(0.dp)) {
+    Floating(modifier) {
         IconButton(onClick = onClick, enabled = enabled, minWidth = size, minHeight = size) {
             Icon(icon, contentDescription, Modifier.size(size * 0.5f), tint = tint)
         }
@@ -103,7 +122,7 @@ fun SmallIconButton(
             icon,
             contentDescription,
             Modifier.size(18.dp),
-            tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            tint = MiuixTheme.colorScheme.onBackgroundVariant,
         )
     }
 }

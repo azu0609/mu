@@ -59,7 +59,6 @@ import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Scaffold
-import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -112,7 +111,7 @@ fun Chat(
 
     Scaffold(
         topBar = {
-            SmallTopAppBar(
+            TopBar(
                 title = state?.title?.ifBlank { null } ?: "New Session",
                 subtitle =
                     when {
@@ -131,9 +130,7 @@ fun Chat(
                                 else append(" / ${compact(state.contextUsed)} ctx")
                             }
                     },
-                navigationIcon = {
-                    CircleButton(Solar.HamburgerMenuLineDuotone, "Sessions", onMenu)
-                },
+                navigation = { CircleButton(Solar.HamburgerMenuLineDuotone, "Sessions", onMenu) },
             )
         }
     ) { padding ->

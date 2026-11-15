@@ -40,10 +40,8 @@ import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTitle
-import top.yukonga.miuix.kmp.basic.SmallTopAppBar
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.icon.MiuixIcons
 import top.yukonga.miuix.kmp.icon.basic.ArrowRight
 import top.yukonga.miuix.kmp.preference.ArrowPreference
@@ -61,10 +59,10 @@ fun SettingsPage(mu: Mu, onBack: () -> Unit, onHost: (String) -> Unit) {
     var addingHost by remember { mutableStateOf(false) }
     Scaffold(
         topBar = {
-            TopAppBar(
+            TopBar(
                 title = "Settings",
-                navigationIcon = { BackButton(onBack) },
-                scrollBehavior = behavior,
+                collapsing = behavior,
+                navigation = { BackButton(onBack) },
             )
         }
     ) { padding ->
@@ -146,7 +144,6 @@ fun HostPage(mu: Mu, id: String, onBack: () -> Unit) {
     val live = mu.live[id]
     val profile = live?.profile
     val online = live?.connection == Connection.Online
-    val behavior = MiuixScrollBehavior()
     var forgetting by remember { mutableStateOf(false) }
     var describing by remember { mutableStateOf(false) }
     var choosingIcon by remember { mutableStateOf(false) }
@@ -158,9 +155,9 @@ fun HostPage(mu: Mu, id: String, onBack: () -> Unit) {
 
     Scaffold(
         topBar = {
-            SmallTopAppBar(
+            TopBar(
                 title = "",
-                navigationIcon = { BackButton(onBack) },
+                navigation = { BackButton(onBack) },
                 actions = {
                     CircleButton(
                         Solar.UnlinkBoldDuotone,
@@ -169,14 +166,11 @@ fun HostPage(mu: Mu, id: String, onBack: () -> Unit) {
                         enabled = host != null,
                     )
                 },
-                scrollBehavior = behavior,
             )
         }
     ) { padding ->
         LazyColumn(
-            Modifier.fillMaxHeight()
-                .overScrollVertical()
-                .nestedScroll(behavior.nestedScrollConnection),
+            Modifier.fillMaxHeight().overScrollVertical(),
             contentPadding =
                 PaddingValues(
                     top = padding.calculateTopPadding(),

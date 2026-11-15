@@ -28,7 +28,6 @@ import top.yukonga.miuix.kmp.basic.Button
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.DropdownEntry
 import top.yukonga.miuix.kmp.basic.DropdownItem
-import top.yukonga.miuix.kmp.basic.FloatingToolbar
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -111,7 +110,7 @@ fun Welcome(
 
 @Composable
 private fun Chip(text: String, icon: ImageVector, onClick: () -> Unit) {
-    FloatingToolbar(outSidePadding = PaddingValues(0.dp)) {
+    Floating {
         Button(
             onClick = onClick,
             cornerRadius = 20.dp,
