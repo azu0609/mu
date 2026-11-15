@@ -6,17 +6,21 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
@@ -106,81 +110,96 @@ fun Sidebar(
 
     var bar by remember { mutableIntStateOf(0) }
 
-    Column(modifier.fillMaxSize().statusBarsPadding()) {
-        Carousel(pager)
-        Box(Modifier.weight(1f).fillMaxWidth()) {
-            LazyColumn(
-                Modifier.fillMaxSize(),
-                contentPadding =
-                    PaddingValues(
-                        start = 16.dp,
-                        end = 16.dp,
-                        bottom = with(LocalDensity.current) { bar.toDp() },
-                    ),
-            ) {
-                if (hosts.isEmpty()) {
-                    item {
-                        Empty(
-                            if (mu.hosts.isEmpty()) "No hosts yet. Add one below."
-                            else "No hosts selected."
-                        )
-                    }
-                }
-                hosts.forEach { host ->
-                    val live = mu.live[host.id]
-                    val sessions = live?.sessions.orEmpty().filter(filter.keep)
-                    item(key = "header.${host.id}") {
-                        HostHeader(
-                            mu = mu,
-                            host = host.id,
-                            onNew = { onNewIn(host.id) },
-                            onInfo = { onHostInfo(host.id) },
-                            onDelete = { onDeleteSessions(host.id) },
-                        )
-                    }
-                    when {
-                        live?.connection == Connection.Offline ||
-                            live?.connection == Connection.Unpaired ->
-                            item(key = "empty.${host.id}") {
-                                Empty(live.error ?: "${live.connection.label()}.", rounded = true)
-                            }
-                        sessions.isEmpty() && live?.connection == Connection.Online ->
-                            item(key = "empty.${host.id}") {
-                                Empty(
-                                    if (filter == Filter.All) "No sessions yet."
-                                    else "Nothing ${filter.label.lowercase()}.",
-                                    rounded = true,
-                                )
-                            }
-                        else ->
-                            itemsIndexed(
-                                sessions,
-                                key = { _, session -> "${host.id}/${session.id}" },
-                            ) { index, session ->
-                                SessionRow(
-                                    session = session,
-                                    home = live?.profile?.home,
-                                    first = index == 0,
-                                    last = index == sessions.lastIndex,
-                                    current =
-                                        current?.host == host.id && current.session == session.id,
-                                    onClick = { onOpen(host.id, session.id) },
-                                )
-                            }
-                    }
+    Box(modifier.fillMaxSize()) {
+        // The list keeps to its sides per item, so the carousel's flanking pages can run to the
+        // edges.
+        val sides = Modifier.padding(horizontal = 16.dp)
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding =
+                PaddingValues(
+                    top = WindowInsets.systemBars.asPaddingValues().calculateTopPadding(),
+                    bottom = with(LocalDensity.current) { bar.toDp() },
+                ),
+        ) {
+            item(key = "carousel") { Carousel(pager) }
+            if (hosts.isEmpty()) {
+                item {
+                    Empty(
+                        if (mu.hosts.isEmpty()) "No hosts yet. Add one below."
+                        else "No hosts selected.",
+                        sides,
+                    )
                 }
             }
-            Row(
-                Modifier.align(Alignment.BottomCenter)
-                    .onSizeChanged { bar = it.height }
-                    .navigationBarsPadding()
-                    .padding(16.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                HostsButton(mu, onAddHost, onSettings)
-                Spacer(Modifier.weight(1f))
-                CircleButton(Solar.AddLinear, "New session", onNewChat, size = 48.dp)
+            hosts.forEach { host ->
+                val live = mu.live[host.id]
+                val sessions = live?.sessions.orEmpty().filter(filter.keep)
+                item(key = "header.${host.id}") {
+                    HostHeader(
+                        mu = mu,
+                        host = host.id,
+                        onNew = { onNewIn(host.id) },
+                        onInfo = { onHostInfo(host.id) },
+                        onDelete = { onDeleteSessions(host.id) },
+                        modifier = sides,
+                    )
+                }
+                when {
+                    live?.connection == Connection.Offline ||
+                        live?.connection == Connection.Unpaired ->
+                        item(key = "empty.${host.id}") {
+                            Empty(
+                                live.error ?: "${live.connection.label()}.",
+                                sides,
+                                rounded = true,
+                            )
+                        }
+                    sessions.isEmpty() && live?.connection == Connection.Online ->
+                        item(key = "empty.${host.id}") {
+                            Empty(
+                                if (filter == Filter.All) "No sessions yet."
+                                else "Nothing ${filter.label.lowercase()}.",
+                                sides,
+                                rounded = true,
+                            )
+                        }
+                    else ->
+                        itemsIndexed(
+                            sessions,
+                            key = { _, session -> "${host.id}/${session.id}" },
+                        ) { index, session ->
+                            SessionRow(
+                                session = session,
+                                home = live?.profile?.home,
+                                first = index == 0,
+                                last = index == sessions.lastIndex,
+                                current = current?.host == host.id && current.session == session.id,
+                                onClick = { onOpen(host.id, session.id) },
+                                modifier = sides,
+                            )
+                        }
+                }
             }
+        }
+        Box(
+            Modifier.align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .scrim(edgeToEdge = true)
+                .windowInsetsPadding(WindowInsets.systemBars.only(WindowInsetsSides.Top))
+                .height(16.dp)
+        )
+        Row(
+            Modifier.align(Alignment.BottomCenter)
+                .onSizeChanged { bar = it.height }
+                .scrim(top = false)
+                .navigationBarsPadding()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            HostsButton(mu, onAddHost, onSettings)
+            Spacer(Modifier.weight(1f))
+            CircleButton(Solar.AddLinear, "New session", onNewChat, size = 48.dp)
         }
     }
 }
@@ -254,10 +273,11 @@ private fun HostHeader(
     onNew: () -> Unit,
     onInfo: () -> Unit,
     onDelete: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val description = mu.live[host]?.profile?.description ?: mu.host(host)?.description
     Row(
-        Modifier.fillMaxWidth().padding(start = 12.dp, top = 12.dp, bottom = 4.dp),
+        modifier.fillMaxWidth().padding(start = 12.dp, top = 12.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -321,6 +341,7 @@ private fun SessionRow(
     last: Boolean,
     current: Boolean,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val corner = 20.dp
     val shape =
@@ -331,7 +352,7 @@ private fun SessionRow(
             bottomEnd = if (last) corner else 0.dp,
         )
     BasicComponent(
-        modifier = Modifier.clip(shape).background(MiuixTheme.colorScheme.surfaceContainer),
+        modifier = modifier.clip(shape).background(MiuixTheme.colorScheme.surfaceContainer),
         onClick = onClick,
         holdDownState = current,
         endActions = { StatusIcon(session.status, session.unread, Modifier.size(22.dp)) },
@@ -363,10 +384,11 @@ private fun SessionRow(
 }
 
 @Composable
-private fun Empty(text: String, rounded: Boolean = false) {
+private fun Empty(text: String, modifier: Modifier = Modifier, rounded: Boolean = false) {
     Text(
         text,
-        Modifier.fillMaxWidth()
+        modifier
+            .fillMaxWidth()
             .then(
                 if (rounded)
                     Modifier.clip(RoundedCornerShape(20.dp))

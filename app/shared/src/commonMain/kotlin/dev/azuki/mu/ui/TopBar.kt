@@ -69,24 +69,35 @@ fun TopBar(
     else SmallBar(title, subtitle, scrim, navigation, actions)
 }
 
-// Solid behind the status bar, then fading out down the rest of the bar and no further, so nothing
-// resting below it is ever covered. Most of the bar is spent at middling opacities, where the
-// subtitle sits, and the fade lands softly at the bottom rather than ending on an edge.
+// Solid behind the system bar at the [top] or bottom edge unless [edgeToEdge], then fading out
+// across the rest of the layout and no further, so nothing resting beyond it is ever covered. Most
+// of the fade is spent at
+// middling opacities, where the bar's lesser content sits, and it lands softly rather than ending
+// on an edge.
 @Composable
-private fun Modifier.scrim(): Modifier {
+fun Modifier.scrim(top: Boolean = true, edgeToEdge: Boolean = false): Modifier {
     val color = MiuixTheme.colorScheme.surface
-    val status = WindowInsets.systemBars.only(WindowInsetsSides.Top).getTop(LocalDensity.current)
+    val density = LocalDensity.current
+    val inset =
+        if (edgeToEdge) 0
+        else if (top) WindowInsets.systemBars.getTop(density)
+        else WindowInsets.navigationBars.getBottom(density)
     return drawBehind {
-        val solid = status.toFloat().coerceAtMost(size.height)
-        drawRect(color, size = Size(size.width, solid))
+        val solid = inset.toFloat().coerceAtMost(size.height)
+        val edge = if (top) solid else size.height - solid
+        drawRect(
+            color,
+            topLeft = Offset(0f, if (top) 0f else edge),
+            size = Size(size.width, solid),
+        )
         val stops =
             Array(17) { i ->
                 val t = i / 16f
                 t to color.copy(alpha = color.alpha * (1f - t * t).pow(1.5f))
             }
         drawRect(
-            Brush.verticalGradient(*stops, startY = solid, endY = size.height),
-            topLeft = Offset(0f, solid),
+            Brush.verticalGradient(*stops, startY = edge, endY = if (top) size.height else 0f),
+            topLeft = Offset(0f, if (top) edge else 0f),
             size = Size(size.width, size.height - solid),
         )
     }
