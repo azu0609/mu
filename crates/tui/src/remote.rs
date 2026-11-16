@@ -108,8 +108,8 @@ impl Remote {
         self.call(self.client.stop(id))
     }
 
-    pub fn recall(&self, id: &str) -> Result<Option<String>> {
-        self.call(self.client.recall(id))
+    pub fn recall(&self, id: &str, index: usize, text: &str) -> Result<bool> {
+        self.call(self.client.recall(id, index, text.to_owned()))
     }
 
     pub fn set_model(&self, id: &str, model: Model) -> Result<()> {

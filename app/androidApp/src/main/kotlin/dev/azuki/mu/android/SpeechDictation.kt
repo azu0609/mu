@@ -6,8 +6,8 @@ import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
-import dev.azuki.mu.model.Dictation
-import dev.azuki.mu.model.MuException
+import dev.azuki.mu.api.MuException
+import dev.azuki.mu.platform.Dictation
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withTimeoutOrNull

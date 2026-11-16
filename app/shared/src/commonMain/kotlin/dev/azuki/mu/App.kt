@@ -15,13 +15,12 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
-import dev.azuki.mu.model.Core
-import dev.azuki.mu.model.Platform
-import dev.azuki.mu.state.Mu
-import dev.azuki.mu.ui.Home
-import dev.azuki.mu.ui.HostPage
-import dev.azuki.mu.ui.MuTheme
-import dev.azuki.mu.ui.SettingsPage
+import dev.azuki.mu.api.Core
+import dev.azuki.mu.design.MuTheme
+import dev.azuki.mu.home.Home
+import dev.azuki.mu.platform.Platform
+import dev.azuki.mu.settings.HostPage
+import dev.azuki.mu.settings.SettingsPage
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
@@ -64,7 +63,6 @@ fun App(core: Core, platform: Platform, invite: String?, onInviteHandled: () -> 
                     Home(
                         mu = mu,
                         onSettings = { push(Route.Settings) },
-                        onHost = { push(Route.Host(it)) },
                         invite = invite,
                         onInviteHandled = onInviteHandled,
                     )

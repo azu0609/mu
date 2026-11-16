@@ -466,6 +466,11 @@ impl Session {
         let (client, id) = (self.client.clone(), self.id.clone());
         spawn(&self.runtime, async move { client.mark_read(&id).await }).await
     }
+
+    pub async fn recall_queued(&self, index: u32, text: String) -> Result<bool, MuError> {
+        let (client, id) = (self.client.clone(), self.id.clone());
+        spawn(&self.runtime, async move { client.recall(&id, index as usize, text).await }).await
+    }
 }
 
 impl Drop for Session {

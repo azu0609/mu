@@ -598,7 +598,10 @@ async fn handle(host: Arc<Host>, peer: Peer, request: Request<Incoming>) -> Repl
             .await
         }
         wire::RecallQueued::PATH => {
-            call(host, &body, |host, call: wire::RecallQueued| Ok(host.agent(&call.session_id)?.recall())).await
+            call(host, &body, |host, call: wire::RecallQueued| {
+                Ok(host.agent(&call.session_id)?.recall(call.index, &call.text))
+            })
+            .await
         }
         wire::SetModel::PATH => {
             call(host, &body, |host, call: wire::SetModel| {

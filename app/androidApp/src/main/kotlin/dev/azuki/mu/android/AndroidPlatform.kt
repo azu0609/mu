@@ -19,11 +19,11 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.content.edit
-import dev.azuki.mu.model.Attachment
-import dev.azuki.mu.model.Dictation
-import dev.azuki.mu.model.MuException
-import dev.azuki.mu.model.Platform
-import dev.azuki.mu.model.Prefs
+import dev.azuki.mu.api.MuException
+import dev.azuki.mu.platform.Attachment
+import dev.azuki.mu.platform.Dictation
+import dev.azuki.mu.platform.Platform
+import dev.azuki.mu.platform.Prefs
 import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlinx.coroutines.CompletableDeferred

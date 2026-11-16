@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{fmt, net::IpAddr, ops::Range, path::PathBuf, str::FromStr};
 
 // Bump on any change an older peer cannot read; peers refuse a mismatch.
-pub const PROTOCOL: u32 = 6;
+pub const PROTOCOL: u32 = 7;
 
 pub trait Call: Serialize + DeserializeOwned {
     const PATH: &'static str;
@@ -389,7 +389,8 @@ calls! {
     SendMessage { session_id: String, text: String, skill: Option<String> } => "/send_message" -> ();
     Stop { session_id: String } => "/stop" -> ();
     MarkRead { session_id: String } => "/mark_read" -> ();
-    RecallQueued { session_id: String } => "/recall_queued" -> Option<String>;
+    // False when the message at `index` is no longer `text`, having been sent.
+    RecallQueued { session_id: String, index: usize, text: String } => "/recall_queued" -> bool;
     SetModel { session_id: String, model: Model } => "/set_model" -> ();
     ListModels {} => "/list_models" -> Vec<ModelInfo>;
     GetTree { session_id: String } => "/get_tree" -> Vec<TreeEntry>;

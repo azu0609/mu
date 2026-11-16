@@ -359,11 +359,15 @@ impl Agent {
         Ok(())
     }
 
-    pub fn recall(&self) -> Option<String> {
+    // Only while the message at `index` is still `text`: the queue may have been sent, and refilled,since the client saw it.
+    pub fn recall(&self, index: usize, text: &str) -> bool {
         let mut inner = self.inner();
-        let message = inner.queued.pop()?;
+        if inner.queued.get(index).is_none_or(|message| message.text != text) {
+            return false;
+        }
+        inner.queued.remove(index);
         inner.emit_state();
-        Some(message.text)
+        true
     }
 
     pub fn set_model(&self, model: Model) -> Result<()> {

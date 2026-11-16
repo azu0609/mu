@@ -1,38 +1,38 @@
 package dev.azuki.mu.android
 
+import dev.azuki.mu.api.Attached
+import dev.azuki.mu.api.Block
+import dev.azuki.mu.api.BlockKind
+import dev.azuki.mu.api.Core
+import dev.azuki.mu.api.Deleted
+import dev.azuki.mu.api.Directory
+import dev.azuki.mu.api.DirectoryEntry
+import dev.azuki.mu.api.EntryKind
+import dev.azuki.mu.api.Host
+import dev.azuki.mu.api.HostProfile
+import dev.azuki.mu.api.HostUpdate
+import dev.azuki.mu.api.Mention
+import dev.azuki.mu.api.MentionEntry
+import dev.azuki.mu.api.ModelInfo
+import dev.azuki.mu.api.MuException
+import dev.azuki.mu.api.Resolved
+import dev.azuki.mu.api.Session
+import dev.azuki.mu.api.SessionState
+import dev.azuki.mu.api.SessionSummary
+import dev.azuki.mu.api.SessionUpdate
+import dev.azuki.mu.api.ShellUpdate
+import dev.azuki.mu.api.Skill
+import dev.azuki.mu.api.Snippet
+import dev.azuki.mu.api.Span
+import dev.azuki.mu.api.Status
+import dev.azuki.mu.api.Tool
+import dev.azuki.mu.api.ToolStatus
+import dev.azuki.mu.api.Written
 import dev.azuki.mu.core.Core as Ffi
 import dev.azuki.mu.core.HostListener
 import dev.azuki.mu.core.MuException as FfiException
 import dev.azuki.mu.core.SessionListener
 import dev.azuki.mu.core.ShellListener
-import dev.azuki.mu.model.Attached
-import dev.azuki.mu.model.Block
-import dev.azuki.mu.model.BlockKind
-import dev.azuki.mu.model.Core
-import dev.azuki.mu.model.Deleted
-import dev.azuki.mu.model.Directory
-import dev.azuki.mu.model.DirectoryEntry
-import dev.azuki.mu.model.EntryKind
-import dev.azuki.mu.model.Host
-import dev.azuki.mu.model.HostProfile
-import dev.azuki.mu.model.HostUpdate
-import dev.azuki.mu.model.Mention
-import dev.azuki.mu.model.MentionEntry
-import dev.azuki.mu.model.ModelInfo
-import dev.azuki.mu.model.MuException
-import dev.azuki.mu.model.Resolved
-import dev.azuki.mu.model.Session
-import dev.azuki.mu.model.SessionState
-import dev.azuki.mu.model.SessionSummary
-import dev.azuki.mu.model.SessionUpdate
-import dev.azuki.mu.model.ShellUpdate
-import dev.azuki.mu.model.Skill
-import dev.azuki.mu.model.Snippet
-import dev.azuki.mu.model.Span
-import dev.azuki.mu.model.Status
-import dev.azuki.mu.model.Tool
-import dev.azuki.mu.model.ToolStatus
-import dev.azuki.mu.model.Written
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -223,6 +223,10 @@ class FfiCore(private val core: Ffi, private val device: String) : Core {
             override suspend fun stop() = mapped { handle.stop() }
 
             override suspend fun markRead() = mapped { handle.markRead() }
+
+            override suspend fun recallQueued(index: Int, text: String) = mapped {
+                handle.recallQueued(index.toUInt(), text)
+            }
 
             override fun close() {
                 handle.close()

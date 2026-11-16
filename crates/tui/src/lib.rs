@@ -310,16 +310,20 @@ impl App {
             self.notice("Clear the input before restoring a queued message.");
             return;
         }
-        let recalled = match self.draft {
-            Some(_) => Ok(None),
-            None => self.remote.recall(&self.view.id),
+        let newest = match self.draft {
+            Some(_) => None,
+            None => self.view.queued.last().cloned(),
         };
-        match recalled {
-            Ok(Some(text)) => {
+        let Some(text) = newest else {
+            self.notice("No queued messages.");
+            return;
+        };
+        match self.remote.recall(&self.view.id, self.view.queued.len() - 1, &text) {
+            Ok(true) => {
                 self.editor.insert(&text);
                 self.notice("Restored newest queued message to input.");
             }
-            Ok(None) => self.notice("No queued messages."),
+            Ok(false) => self.notice("The newest queued message was already sent."),
             Err(e) => self.warn(e.to_string()),
         }
     }

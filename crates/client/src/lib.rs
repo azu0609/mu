@@ -244,8 +244,8 @@ impl Client {
         self.call(MarkRead { session_id: id.into() }).await
     }
 
-    pub async fn recall(&self, id: &str) -> Result<Option<String>> {
-        self.call(RecallQueued { session_id: id.into() }).await
+    pub async fn recall(&self, id: &str, index: usize, text: String) -> Result<bool> {
+        self.call(RecallQueued { session_id: id.into(), index, text }).await
     }
 
     pub async fn set_model(&self, id: &str, model: Model) -> Result<()> {
