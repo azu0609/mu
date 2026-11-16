@@ -175,7 +175,10 @@ fun Home(
                         mu.newChat()
                         drawer.close()
                     },
-                    onNewIn = { host -> picking.present(host) },
+                    onNewIn = { host ->
+                        mu.newChat(host, mu.draft.cwdFor(host))
+                        drawer.close()
+                    },
                     onHostInfo = onHost,
                     onDeleteSessions = { host -> deleting.present(host) },
                     onAddHost = { addingHost = true },
