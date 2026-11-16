@@ -384,7 +384,6 @@ macro_rules! calls {
 calls! {
     Hello {} => "/hello" -> HostInfo;
     ListSessions {} => "/list_sessions" -> Vec<SessionSummary>;
-    // A session starts with its first message, so none is ever left empty.
     CreateSession { cwd: PathBuf, model: Model, text: String, skill: Option<String> } => "/create_session" -> String;
     SendMessage { session_id: String, text: String, skill: Option<String> } => "/send_message" -> ();
     Stop { session_id: String } => "/stop" -> ();
@@ -406,7 +405,6 @@ calls! {
     DeleteSnippet { id: String } => "/delete_snippet" -> ();
     ListDirectory { path: PathBuf } => "/list_directory" -> Directory;
     ListSkills { cwd: PathBuf } => "/list_skills" -> Vec<Skill>;
-    // Only the mentions sending `text` would attach, as they are now.
     ResolveMentions { cwd: PathBuf, text: String, skill: Option<String> }
         => "/resolve_mentions" -> Vec<Resolved>;
     // `path` must be an image; the reply is its data as base64.
