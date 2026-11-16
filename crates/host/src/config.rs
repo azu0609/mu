@@ -1,11 +1,23 @@
 use crate::{Result, home};
 use std::{env, fs, path::PathBuf};
 
-pub fn dir() -> PathBuf {
-    env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".config")).join("mu")
+fn xdg(var: &str, fallback: &str) -> PathBuf {
+    env::var_os(var).map(PathBuf::from).unwrap_or_else(|| home().join(fallback)).join("mu")
 }
 
-pub(crate) fn var(name: &str) -> Result<Option<String>> {
+pub fn dir() -> PathBuf {
+    xdg("XDG_CONFIG_HOME", ".config")
+}
+
+pub fn state_dir() -> PathBuf {
+    xdg("XDG_STATE_HOME", ".local/state")
+}
+
+pub fn cache_dir() -> PathBuf {
+    xdg("XDG_CACHE_HOME", ".cache")
+}
+
+pub fn var(name: &str) -> Result<Option<String>> {
     match env::var(name) {
         Ok(value) if !value.is_empty() => return Ok(Some(value)),
         Ok(_) | Err(env::VarError::NotPresent) => {}

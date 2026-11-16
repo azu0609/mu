@@ -1,7 +1,4 @@
-use crate::{
-    Result, image, process,
-    session::{now, unique_id},
-};
+use crate::{Result, image, now, process, unique_id};
 use mu_wire::{Span, ToolOutput, ToolStatus};
 use serde::Deserialize;
 use serde_json::{Value, json};

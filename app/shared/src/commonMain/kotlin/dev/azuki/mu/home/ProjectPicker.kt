@@ -59,7 +59,7 @@ fun ProjectPicker(
         directory = null
         error = null
         try {
-            directory = mu.core.listDirectory(host, path)
+            directory = mu.remote(host).listDirectory(path)
         } catch (e: MuException) {
             error = e.message
         }

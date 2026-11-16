@@ -76,7 +76,7 @@ pub fn title(app: &App) -> String {
     let name = app.view.cwd.file_name().unwrap_or_else(|| app.view.cwd.as_os_str());
     // OSC title strings must not contain terminal control characters (including ESC and BEL).
     let name: String = name.to_string_lossy().chars().filter(|c| !c.is_control()).collect();
-    format!("{}mu · {name}", marker(app.view.status))
+    format!("{}mu · {name}", marker(app.view.state.status))
 }
 
 pub fn marker(status: Status) -> &'static str {
@@ -292,17 +292,6 @@ fn tail_ellipsis(text: &str, width: usize) -> String {
     format!("…{}", &text[start..])
 }
 
-fn ending(status: ToolStatus) -> Option<String> {
-    Some(match status {
-        ToolStatus::Exited(0) | ToolStatus::Error => return None,
-        ToolStatus::Pending => "pending".into(),
-        ToolStatus::Running => "running".into(),
-        ToolStatus::Exited(code) => format!("exit {code}"),
-        ToolStatus::TimedOut(ms) => format!("timed out after {ms} ms; process group killed"),
-        ToolStatus::Cancelled => "cancelled; process group killed".into(),
-    })
-}
-
 fn tool_lines(marker: &str, command: &str, tool: &Tool, width: usize, expanded: bool) -> Vec<Line> {
     let color = match tool.status {
         ToolStatus::Running | ToolStatus::TimedOut(_) | ToolStatus::Cancelled => Color::Yellow,
@@ -347,7 +336,7 @@ fn tool_lines(marker: &str, command: &str, tool: &Tool, width: usize, expanded: 
     for line in &lines[start..] {
         result.push(Line::new(format!("  │ {line}"), GRAY));
     }
-    let mut footer: Vec<_> = ending(tool.status).into_iter().collect();
+    let mut footer: Vec<_> = tool.status.summary().into_iter().collect();
     if tool.output.truncated {
         footer.push("preview only; overflow in temp file".into());
     }
@@ -451,11 +440,12 @@ impl Transcript {
             ),
             pending: app
                 .view
+                .state
                 .queued
                 .iter()
                 .enumerate()
                 .map(|(i, text)| {
-                    let hint = if i + 1 == app.view.queued.len() { "  [Ctrl+↑ restore]" } else { "" };
+                    let hint = if i + 1 == app.view.state.queued.len() { "  [Ctrl+↑ restore]" } else { "" };
                     Block::new(Kind::Notice, format!("queued: {text}{hint}"))
                 })
                 .collect(),
@@ -468,9 +458,10 @@ impl Transcript {
 
     fn dynamic_blocks<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = &'a Block> + 'a {
         app.view
-            .live_notice
+            .live
+            .notice
             .iter()
-            .chain(app.view.live.iter())
+            .chain(app.view.live.blocks.iter())
             .chain(app.feedback.iter())
             .chain(app.shell.iter().map(|shell| &shell.block))
             .chain(self.pending.iter())
@@ -616,7 +607,7 @@ pub fn draw(app: &mut App) -> Result<()> {
         Print("─".repeat(width))
     )?;
     let model = app.model();
-    let usage = &app.view.stats;
+    let usage = &app.view.state.stats;
     let cache = usage.cached.map(counts::compact).unwrap_or_else(|| "?".into());
     let read = usage
         .cached

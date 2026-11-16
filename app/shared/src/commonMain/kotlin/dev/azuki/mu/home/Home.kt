@@ -18,7 +18,6 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -29,17 +28,10 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
 import dev.azuki.mu.Mu
-import dev.azuki.mu.api.MuException
-import dev.azuki.mu.api.ShellUpdate
 import dev.azuki.mu.chat.Chat
-import dev.azuki.mu.chat.ChatState
-import dev.azuki.mu.chat.Destination
-import dev.azuki.mu.chat.Draft
 import dev.azuki.mu.composer.Composer
 import dev.azuki.mu.composer.ComposerState
 import dev.azuki.mu.composer.DictationOverlay
-import dev.azuki.mu.composer.ShellRun
-import dev.azuki.mu.composer.Submission
 import dev.azuki.mu.design.Drawer
 import dev.azuki.mu.design.Presented
 import dev.azuki.mu.design.rememberDrawerState
@@ -63,8 +55,8 @@ fun Home(
     invite: String?,
     onInviteHandled: () -> Unit,
 ) {
-    val composer = remember { ComposerState(mu.platform.prefs) }
     val scope = rememberCoroutineScope()
+    val composer = remember { ComposerState(mu, scope) }
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     val density = LocalDensity.current
     var addingHost by remember { mutableStateOf(false) }
@@ -73,95 +65,14 @@ fun Home(
 
     LaunchedEffect(invite) { if (invite != null) addingHost = true }
 
-    val target = mu.chat
-    val chat = target?.let { remember(it) { ChatState(mu, it) } }
+    val chat = mu.chat
     if (chat != null) {
         LaunchedEffect(chat) { lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { chat.run() } }
-    }
-    val currentChat by rememberUpdatedState(chat)
-    val destination: Destination = chat ?: mu.draft
-    if (chat == null) {
+    } else {
         LaunchedEffect(mu.draft.host, mu.draft.directory) { mu.draft.loadSkills() }
     }
-    LaunchedEffect(destination.host) { destination.host?.let { mu.loadModels(it) } }
-    var sent by remember { mutableIntStateOf(0) }
+    LaunchedEffect(mu.destination.host) { mu.destination.host?.let { mu.loadModels(it) } }
     var composerHeight by remember { mutableIntStateOf(0) }
-
-    fun runShell(host: String, command: String) {
-        val chat = currentChat
-        composer.run?.job?.cancel()
-        val run = ShellRun(command)
-        composer.run = run
-        run.job = scope.launch {
-            try {
-                val cwd = mu.resolveCwd(host, (chat ?: mu.draft).cwd)
-                mu.core.shell(host, cwd, command).collect { update ->
-                    when (update) {
-                        is ShellUpdate.Output -> run.output = update.tool.output
-                        is ShellUpdate.Failed -> run.failure = update.message
-                        is ShellUpdate.Done -> {
-                            run.output = update.tool.output
-                            run.status = update.tool.status
-                            if (chat != null && chat.blocks.isNotEmpty() && !chat.running) {
-                                try {
-                                    chat.appendShell(update.run)
-                                    if (composer.run === run) composer.run = null
-                                } catch (e: MuException) {
-                                    mu.toast("Not added to the conversation: ${e.message}")
-                                }
-                            }
-                        }
-                    }
-                }
-            } catch (e: MuException) {
-                run.failure = e.message
-            }
-        }
-    }
-
-    fun submit(submission: Submission) {
-        val destination = currentChat ?: mu.draft
-        val host = destination.host
-        if (host == null) {
-            addingHost = true
-            return
-        }
-        when (submission) {
-            is Submission.Command -> runShell(host, submission.command)
-            is Submission.Prompt ->
-                scope.launch {
-                    composer.busy = true
-                    sent++
-                    try {
-                        when (destination) {
-                            is ChatState -> destination.send(submission.text, submission.skill)
-                            is Draft -> {
-                                val model =
-                                    destination.model ?: throw MuException("Pick a model first")
-                                val cwd = mu.resolveCwd(host, destination.cwd)
-                                val id =
-                                    mu.core.createSession(
-                                        host,
-                                        cwd,
-                                        model,
-                                        destination.effort,
-                                        submission.text,
-                                        submission.skill,
-                                    )
-                                mu.open(host, id)
-                            }
-                        }
-                    } catch (e: MuException) {
-                        mu.toast(e.message)
-                        if (composer.field.text.isEmpty()) {
-                            composer.field.edit { replace(0, length, submission.text) }
-                        }
-                    } finally {
-                        composer.busy = false
-                    }
-                }
-        }
-    }
 
     val dictationBlur by animateDpAsState(if (composer.dictating) 24.dp else 0.dp)
     Box(Modifier.fillMaxSize()) {
@@ -171,10 +82,9 @@ fun Home(
             sidebar = { modifier ->
                 Sidebar(
                     mu = mu,
-                    current = target,
+                    current = chat?.target,
                     onOpen = { host, session ->
-                        if (target?.host != host || target.session != session)
-                            mu.open(host, session)
+                        mu.open(host, session)
                         drawer.close()
                     },
                     onNewChat = {
@@ -196,7 +106,7 @@ fun Home(
                     mu,
                     chat,
                     bottom = with(density) { composerHeight.toDp() },
-                    sent = sent,
+                    sent = composer.sent,
                     onMenu = drawer::open,
                     onRecall = { index, text ->
                         mu.launch {
@@ -216,8 +126,8 @@ fun Home(
             Composer(
                 state = composer,
                 mu = mu,
-                destination = destination,
-                onSubmit = { submit(it) },
+                destination = mu.destination,
+                onSubmit = { if (!composer.submit(it)) addingHost = true },
                 modifier =
                     Modifier.align(Alignment.BottomCenter)
                         .onSizeChanged { composerHeight = it.height }

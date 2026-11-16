@@ -8,74 +8,55 @@ interface Core {
 
     fun compact(n: Long): String
 
+    fun mentions(text: String): List<Written>
+
     fun hosts(): List<Host>
 
     suspend fun pair(invite: String): Host
 
     fun forget(host: String)
 
+    // The paired host with this id, to call; it connects when first called.
+    fun remote(host: String): Remote
+}
+
+interface Remote {
     // Each update is all of it; the flow keeps going through losses.
-    fun watch(host: String): Flow<HostUpdate>
+    fun watch(): Flow<HostUpdate>
 
     // Starts the session with its first message.
-    suspend fun createSession(
-        host: String,
-        cwd: String,
-        model: String,
-        effort: String?,
-        text: String,
-        skill: String?,
-    ): String
+    suspend fun createSession(cwd: String, model: Model, text: String, skill: String?): String
 
-    suspend fun listModels(host: String): List<ModelInfo>
+    suspend fun openSession(session: String): Session
 
-    suspend fun deleteSessions(host: String): Deleted
+    suspend fun deleteSessions(): Deleted
 
-    suspend fun setIcon(host: String, icon: String?)
+    suspend fun listModels(): List<ModelInfo>
 
-    suspend fun setDescription(host: String, description: String)
+    suspend fun setIcon(icon: String?)
 
-    suspend fun saveSnippet(
-        host: String,
-        id: String?,
-        name: String,
-        command: String,
-        icon: String?,
-    ): String
+    suspend fun setDescription(description: String)
 
-    suspend fun deleteSnippet(host: String, id: String)
+    suspend fun saveSnippet(id: String?, name: String, command: String, icon: String?): String
 
-    suspend fun listDirectory(host: String, path: String): Directory
+    suspend fun deleteSnippet(id: String)
 
-    suspend fun listSkills(host: String, cwd: String): List<Skill>
+    suspend fun listDirectory(path: String): Directory
+
+    suspend fun listSkills(cwd: String): List<Skill>
 
     // Null when the cursor is not in a mention. `refresh` rebuilds the host's file index.
-    suspend fun completeMention(
-        host: String,
-        cwd: String,
-        text: String,
-        cursor: Int,
-        refresh: Boolean,
-    ): Mention?
-
-    fun mentions(text: String): List<Written>
+    suspend fun completeMention(cwd: String, text: String, cursor: Int, refresh: Boolean): Mention?
 
     // Only the mentions that sending `text` would attach, as things are now.
-    suspend fun resolveMentions(
-        host: String,
-        cwd: String,
-        text: String,
-        skill: String?,
-    ): List<Resolved>
+    suspend fun resolveMentions(cwd: String, text: String, skill: String?): List<Resolved>
 
-    suspend fun readImage(host: String, path: String): ByteArray
+    suspend fun readImage(path: String): ByteArray
 
     // Where the host keeps the file, for a message to @mention.
-    suspend fun upload(host: String, name: String, data: ByteArray): String
+    suspend fun upload(name: String, data: ByteArray): String
 
-    fun shell(host: String, cwd: String, command: String): Flow<ShellUpdate>
-
-    suspend fun openSession(host: String, session: String): Session
+    fun shell(cwd: String, command: String): Flow<ShellUpdate>
 }
 
 interface Session : AutoCloseable {
@@ -86,7 +67,7 @@ interface Session : AutoCloseable {
 
     suspend fun appendShell(run: String)
 
-    suspend fun setModel(name: String, effort: String?)
+    suspend fun setModel(model: Model)
 
     suspend fun stop()
 

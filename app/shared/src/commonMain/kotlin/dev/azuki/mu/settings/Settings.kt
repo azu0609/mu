@@ -78,12 +78,10 @@ fun SettingsPage(mu: Mu, onBack: () -> Unit, onHost: (String) -> Unit) {
                         )
                     }
                     mu.hosts.forEach { host ->
-                        val live = mu.live[host.id]
-                        val description = live?.profile?.description ?: host.description
-                        val pictogram = Pictograms.host(live?.profile?.icon ?: host.icon)
+                        val pictogram = Pictograms.host(host.icon)
                         ArrowPreference(
                             title = mu.name(host.id),
-                            summary = description.takeIf(String::isNotBlank)?.let { "“$it”" },
+                            summary = host.description.takeIf(String::isNotBlank)?.let { "“$it”" },
                             startAction = {
                                 Icon(
                                     pictogram.vector,
@@ -94,7 +92,7 @@ fun SettingsPage(mu: Mu, onBack: () -> Unit, onHost: (String) -> Unit) {
                             },
                             endActions = {
                                 Text(
-                                    (live?.connection ?: Connection.Connecting).label(),
+                                    (mu.live[host.id]?.connection ?: Connection.Connecting).label(),
                                     style = MiuixTheme.textStyles.body2,
                                     color = MiuixTheme.colorScheme.onSurfaceVariantActions,
                                 )

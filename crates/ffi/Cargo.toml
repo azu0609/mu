@@ -18,5 +18,6 @@ bindgen = ["uniffi/cli"]
 
 [dependencies]
 mu-client.workspace = true
+mu-wire = { workspace = true, features = ["uniffi"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "time"] }
-uniffi = "0.32"
+uniffi.workspace = true

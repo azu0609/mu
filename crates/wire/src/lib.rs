@@ -1,8 +1,19 @@
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{fmt, net::IpAddr, ops::Range, path::PathBuf, str::FromStr};
+use std::{fmt, net::IpAddr, path::PathBuf, str::FromStr};
+
+#[cfg(feature = "uniffi")]
+uniffi::setup_scaffolding!();
+
+// Paths cross to the apps as strings.
+#[cfg(feature = "uniffi")]
+uniffi::custom_type!(PathBuf, String, {
+    remote,
+    lower: |path| path.to_string_lossy().into_owned(),
+    try_lift: |path| Ok(path.into()),
+});
 
 // Bump on any change an older peer cannot read; peers refuse a mismatch.
-pub const PROTOCOL: u32 = 7;
+pub const PROTOCOL: u32 = 8;
 
 pub trait Call: Serialize + DeserializeOwned {
     const PATH: &'static str;
@@ -23,6 +34,7 @@ pub struct HostInfo {
 
 #[derive(Clone, Copy, Default, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum Status {
     #[default]
     Idle,
@@ -33,6 +45,7 @@ pub enum Status {
 
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum Kind {
     User,
     Agent,
@@ -44,6 +57,7 @@ pub enum Kind {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Block {
     pub kind: Kind,
     pub text: String,
@@ -61,12 +75,14 @@ impl Block {
 
 // Milliseconds since the Unix epoch.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Span {
     pub started: u64,
     pub finished: u64,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Tool {
     pub call_id: String,
     pub status: ToolStatus,
@@ -74,13 +90,15 @@ pub struct Tool {
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ToolOutput {
     pub text: String,
     pub log: Option<PathBuf>,
     pub truncated: bool,
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum ToolStatus {
     Pending,
     Running,
@@ -90,7 +108,22 @@ pub enum ToolStatus {
     Error,
 }
 
+impl ToolStatus {
+    // How a tool ended, unless it just succeeded; an error says so in its output.
+    pub fn summary(self) -> Option<String> {
+        Some(match self {
+            Self::Exited(0) | Self::Error => return None,
+            Self::Pending => "pending".into(),
+            Self::Running => "running".into(),
+            Self::Exited(code) => format!("exit {code}"),
+            Self::TimedOut(ms) => format!("timed out after {ms} ms; process group killed"),
+            Self::Cancelled => "cancelled; process group killed".into(),
+        })
+    }
+}
+
 #[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Model {
     #[serde(rename = "model")]
     pub name: String,
@@ -99,12 +132,14 @@ pub struct Model {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct ModelInfo {
     pub name: String,
     pub context: Option<u64>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Stats {
     pub input: u64,
     pub output: u64,
@@ -114,6 +149,7 @@ pub struct Stats {
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct State {
     pub status: Status,
     pub title: String,
@@ -123,6 +159,7 @@ pub struct State {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Skill {
     pub name: String,
     pub description: String,
@@ -150,15 +187,72 @@ pub enum Event {
     Snapshot(Box<Snapshot>),
     State(State),
     Commit { blocks: Vec<Block> },
-    LivePush(Block),
-    LiveDelta { index: usize, text: String },
-    LiveSet { index: usize, block: Block },
-    LiveOutput { index: usize, output: ToolOutput },
-    LiveNotice(Block),
+    Live(LiveEvent),
     Feedback(Block),
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum LiveEvent {
+    Push(Block),
+    Delta { index: usize, text: String },
+    Set { index: usize, block: Block },
+    Output { index: usize, output: ToolOutput },
+    Notice(Block),
+}
+
+// What a turn has shown so far and not yet committed. The host and its clients
+// each keep one, and stay in step by applying the same events.
+#[derive(Default)]
+pub struct Live {
+    pub blocks: Vec<Block>,
+    pub notice: Option<Block>,
+}
+
+pub enum Touched {
+    Block(usize),
+    Notice,
+}
+
+impl Live {
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+
+    pub fn apply(&mut self, event: &LiveEvent) -> Touched {
+        match event {
+            LiveEvent::Push(block) => {
+                self.blocks.push(block.clone());
+                Touched::Block(self.blocks.len() - 1)
+            }
+            LiveEvent::Delta { index, text } => {
+                if let Some(block) = self.blocks.get_mut(*index) {
+                    block.text.push_str(text);
+                }
+                Touched::Block(*index)
+            }
+            LiveEvent::Set { index, block } => {
+                if let Some(slot) = self.blocks.get_mut(*index) {
+                    *slot = block.clone();
+                }
+                Touched::Block(*index)
+            }
+            LiveEvent::Output { index, output } => {
+                if let Some(tool) = self.blocks.get_mut(*index).and_then(|block| block.tool.as_mut()) {
+                    tool.output = output.clone();
+                }
+                Touched::Block(*index)
+            }
+            LiveEvent::Notice(block) => {
+                self.notice = Some(block.clone());
+                Touched::Notice
+            }
+        }
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct SessionSummary {
     pub id: String,
     pub title: String,
@@ -171,6 +265,7 @@ pub struct SessionSummary {
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Profile {
     pub name: String,
     pub home: PathBuf,
@@ -180,6 +275,7 @@ pub struct Profile {
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Snippet {
     pub id: String,
     pub name: String,
@@ -203,18 +299,21 @@ pub enum ShellEvent {
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Deleted {
     pub sessions: u64,
     pub in_use: u64,
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Directory {
     pub path: PathBuf,
     pub entries: Vec<DirectoryEntry>,
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct DirectoryEntry {
     pub name: String,
     pub kind: EntryKind,
@@ -222,6 +321,7 @@ pub struct DirectoryEntry {
 
 #[derive(Clone, Copy, PartialEq, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum EntryKind {
     File,
     Directory,
@@ -235,24 +335,29 @@ pub struct TreeEntry {
     pub current: bool,
 }
 
-// Ranges and cursors count characters, not bytes.
+// Offsets and cursors count characters, not bytes.
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Mention {
-    pub range: Range<usize>,
+    pub start: u32,
+    pub end: u32,
     pub query: String,
     pub exact_file: bool,
     pub entries: Vec<MentionEntry>,
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct MentionEntry {
     pub text: String,
     pub label: String,
 }
 
 // An @mention as written in a message, `path` unescaped. Unclosed ones are still being typed.
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Written {
-    pub range: Range<usize>,
+    pub start: u32,
+    pub end: u32,
     pub path: String,
     pub quoted: bool,
     pub closed: bool,
@@ -291,13 +396,14 @@ pub fn mentions(text: &str) -> Vec<Written> {
             path.push(chars[i]);
             i += 1;
         }
-        found.push(Written { range: start..i, path, quoted, closed });
+        found.push(Written { start: start as u32, end: i as u32, path, quoted, closed });
     }
     found
 }
 
 // What a mention brings along when sent, keyed by its path as written.
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Resolved {
     pub path: String,
     pub file: PathBuf,
@@ -305,9 +411,10 @@ pub struct Resolved {
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum Attached {
     Image,
-    Text { lines: usize, head: String },
+    Text { lines: u32, head: String },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -383,7 +490,6 @@ macro_rules! calls {
 
 calls! {
     Hello {} => "/hello" -> HostInfo;
-    ListSessions {} => "/list_sessions" -> Vec<SessionSummary>;
     CreateSession { cwd: PathBuf, model: Model, text: String, skill: Option<String> } => "/create_session" -> String;
     SendMessage { session_id: String, text: String, skill: Option<String> } => "/send_message" -> ();
     Stop { session_id: String } => "/stop" -> ();
@@ -394,7 +500,7 @@ calls! {
     ListModels {} => "/list_models" -> Vec<ModelInfo>;
     GetTree { session_id: String } => "/get_tree" -> Vec<TreeEntry>;
     Checkout { session_id: String, node: Option<usize> } => "/checkout" -> Option<String>;
-    CompleteMention { cwd: PathBuf, text: String, cursor: usize, refresh: bool }
+    CompleteMention { cwd: PathBuf, text: String, cursor: u32, refresh: bool }
         => "/complete_mention" -> Option<Mention>;
     AppendShell { session_id: String, run: String } => "/append_shell" -> ();
     DeleteSessions {} => "/delete_sessions" -> Deleted;

@@ -84,7 +84,7 @@ class Draft(private val mu: Mu) : Destination {
         val directory = directory ?: return
         skills =
             try {
-                mu.core.listSkills(host, directory)
+                mu.remote(host).listSkills(directory)
             } catch (_: MuException) {
                 emptyList()
             }

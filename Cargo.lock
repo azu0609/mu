@@ -621,6 +621,7 @@ name = "mu-ffi"
 version = "0.1.0"
 dependencies = [
  "mu-client",
+ "mu-wire",
  "tokio",
  "uniffi",
 ]
@@ -662,6 +663,7 @@ name = "mu-wire"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "uniffi",
 ]
 
 [[package]]

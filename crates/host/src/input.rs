@@ -1,9 +1,9 @@
-use crate::{Result, image, process, session::Record, skills::Skill};
+use crate::{Result, image, process, read_limited, session::Entry, skills::Skill};
 use mu_wire::{self as wire, Attached, MentionEntry, Resolved, mentions};
+use serde_json::Value;
 use std::{
     collections::HashMap,
     env, fs,
-    io::Read,
     ops::Range,
     path::{Path, PathBuf},
     process::Command,
@@ -13,7 +13,22 @@ use std::{
 
 pub struct Message {
     pub text: String,
-    pub attachments: Vec<Record>,
+    pub attachments: Vec<Attachment>,
+}
+
+// A file as it was when the message mentioning it was sent.
+pub enum Attachment {
+    Text { label: String, path: PathBuf, text: String },
+    Image { path: PathBuf, image: Value },
+}
+
+impl From<Attachment> for Entry {
+    fn from(attachment: Attachment) -> Self {
+        match attachment {
+            Attachment::Text { label, path, text } => Self::Attachment { label, path, text },
+            Attachment::Image { path, image } => Self::ImageAttachment { path, image },
+        }
+    }
 }
 
 fn path(cwd: &Path, name: &str) -> PathBuf {
@@ -27,18 +42,6 @@ const TEXT_LIMIT: u64 = 1024 * 1024;
 const CONTEXT_LIMIT: usize = 4 * 1024 * 1024;
 const IMAGE_COUNT_LIMIT: usize = 8;
 
-fn read_file(path: &Path, limit: u64) -> Result<Vec<u8>> {
-    if !fs::metadata(path)?.is_file() {
-        return Err(format!("{} is not a regular file", path.display()).into());
-    }
-    let mut bytes = vec![];
-    fs::File::open(path)?.take(limit + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > limit {
-        return Err(format!("{} exceeds {} MiB", path.display(), limit / (1024 * 1024)).into());
-    }
-    Ok(bytes)
-}
-
 pub fn text_content(bytes: Vec<u8>) -> Result<String> {
     if bytes.len() as u64 > TEXT_LIMIT {
         return Err("Text file exceeds 1 MiB".into());
@@ -50,12 +53,12 @@ pub fn text_content(bytes: Vec<u8>) -> Result<String> {
     String::from_utf8(bytes).map_err(|_| unreadable())
 }
 
-fn read_attachment(path: PathBuf) -> Result<Record> {
-    let bytes = read_file(&path, image::LIMIT)?;
+fn read_attachment(path: PathBuf) -> Result<Attachment> {
+    let bytes = read_limited(&path, image::LIMIT)?;
     if let Some(image) = image::content(&bytes) {
-        return Ok(Record::ImageAttachment { path, image });
+        return Ok(Attachment::Image { path, image });
     }
-    Ok(Record::Attachment { label: "File".into(), path, text: text_content(bytes)? })
+    Ok(Attachment::Text { label: "File".into(), path, text: text_content(bytes)? })
 }
 
 pub fn prepare(text: String, cwd: &Path, skill: Option<&Skill>) -> Result<Message> {
@@ -68,22 +71,21 @@ pub fn resolve(text: &str, cwd: &Path, skill: Option<&Skill>) -> Result<Vec<Reso
     Ok(mentioned
         .into_iter()
         .map(|(path, index)| match &attachments[index] {
-            Record::Attachment { path: file, text, .. } => Resolved {
+            Attachment::Text { path: file, text, .. } => Resolved {
                 path,
                 file: file.clone(),
                 kind: Attached::Text {
-                    lines: text.lines().count(),
+                    lines: text.lines().count() as u32,
                     head: text.lines().take(8).map(|line| line.chars().take(40).collect::<String>() + "\n").collect(),
                 },
             },
-            Record::ImageAttachment { path: file, .. } => Resolved { path, file: file.clone(), kind: Attached::Image },
-            _ => unreachable!(),
+            Attachment::Image { path: file, .. } => Resolved { path, file: file.clone(), kind: Attached::Image },
         })
         .collect())
 }
 
 struct Gathered {
-    attachments: Vec<Record>,
+    attachments: Vec<Attachment>,
     // Each mention that attaches something, by its path as written, and which attachment it is.
     mentioned: Vec<(String, usize)>,
 }
@@ -95,15 +97,15 @@ fn gather(text: &str, cwd: &Path, skill: Option<&Skill>) -> Result<Gathered> {
     let mut mentioned = vec![];
     if let Some(skill) = skill {
         let canonical = skill.path.canonicalize().map_err(|e| format!("{}: {e}", skill.path.display()))?;
-        let body =
-            text_content(read_file(&skill.path, TEXT_LIMIT)?).map_err(|e| format!("{}: {e}", skill.path.display()))?;
+        let body = text_content(read_limited(&skill.path, TEXT_LIMIT)?)
+            .map_err(|e| format!("{}: {e}", skill.path.display()))?;
         let label = format!("Skill: /{}", skill.name);
         size += body.len() + label.len() + skill.path.as_os_str().len() + 5;
         if size > CONTEXT_LIMIT {
             return Err("Attached context exceeds 4 MiB".into());
         }
         seen.insert(canonical, 0);
-        snapshots.push(Record::Attachment { label, path: skill.path.clone(), text: body });
+        snapshots.push(Attachment::Text { label, path: skill.path.clone(), text: body });
     }
     let mut images = 0;
     // Mentions are optional context; a typo or unreadable file must not prevent sending.
@@ -119,20 +121,19 @@ fn gather(text: &str, cwd: &Path, skill: Option<&Skill>) -> Result<Gathered> {
             continue;
         };
         match &attachment {
-            Record::Attachment { label, path, text } => {
+            Attachment::Text { label, path, text } => {
                 let added = text.len() + label.len() + path.as_os_str().len() + 5;
                 if size + added > CONTEXT_LIMIT {
                     continue;
                 }
                 size += added;
             }
-            Record::ImageAttachment { .. } => {
+            Attachment::Image { .. } => {
                 if images >= IMAGE_COUNT_LIMIT {
                     continue;
                 }
                 images += 1;
             }
-            _ => unreachable!(),
         }
         seen.insert(canonical, snapshots.len());
         mentioned.push((mention.path, snapshots.len()));
@@ -175,21 +176,21 @@ fn file_entry(name: String) -> MentionEntry {
     MentionEntry { text: format!("@{token}{}", if directory { "" } else { " " }), label: name }
 }
 
-pub fn mention_at(text: &str, cursor: usize) -> Option<(Range<usize>, String)> {
-    let prefix: String = text.chars().take(cursor).collect();
+pub fn mention_at(text: &str, cursor: u32) -> Option<(Range<u32>, String)> {
+    let prefix: String = text.chars().take(cursor as usize).collect();
     let mention = mentions(&prefix).pop()?;
-    if mention.range.end != cursor || (mention.quoted && mention.closed) {
+    if mention.end != cursor || (mention.quoted && mention.closed) {
         return None;
     }
-    let range = mentions(text).into_iter().find(|m| m.range.start == mention.range.start)?.range;
-    Some((range, mention.path))
+    let whole = mentions(text).into_iter().find(|m| m.start == mention.start)?;
+    Some((whole.start..whole.end, mention.path))
 }
 
 pub fn is_path(query: &str) -> bool {
     ["/", "~/", "./", "../"].iter().any(|p| query.starts_with(p))
 }
 
-pub fn complete(range: Range<usize>, query: String, cwd: &Path, files: &[String]) -> wire::Mention {
+pub fn complete(range: Range<u32>, query: String, cwd: &Path, files: &[String]) -> wire::Mention {
     let mut matches = if is_path(&query) {
         let (parent, leaf) = query.rsplit_once('/').unwrap_or(("", &query));
         let parent = format!("{parent}/");
@@ -216,7 +217,13 @@ pub fn complete(range: Range<usize>, query: String, cwd: &Path, files: &[String]
     };
     matches.sort_unstable();
     let entries = matches.into_iter().take(40).map(|(_, name)| file_entry(name)).collect();
-    wire::Mention { range, exact_file: !query.is_empty() && path(cwd, &query).is_file(), query, entries }
+    wire::Mention {
+        start: range.start,
+        end: range.end,
+        exact_file: !query.is_empty() && path(cwd, &query).is_file(),
+        query,
+        entries,
+    }
 }
 
 pub fn index(cwd: &Path) -> Result<Vec<String>> {

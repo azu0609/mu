@@ -1,10 +1,10 @@
 use crate::{
-    Result, api, input,
-    session::{self, End, Record, Session},
+    Result, api, input, now,
+    session::{End, Entry, Record, Session},
     skills::{self, Skill},
     tools,
 };
-use mu_wire::{Block, Event, Kind, Model, Resume, Snapshot, Span, State, Stats, Status, TreeEntry};
+use mu_wire::{Block, Event, Kind, Live, LiveEvent, Model, Resume, Snapshot, Span, State, Stats, Status, TreeEntry};
 use std::{
     mem,
     path::PathBuf,
@@ -24,8 +24,7 @@ pub type Changed = Arc<dyn Fn(&str) + Send + Sync>;
 struct Inner {
     session: Session,
     skills: Vec<Skill>,
-    live: Vec<Block>,
-    live_notice: Option<Block>,
+    live: Live,
     queued: Vec<input::Message>,
     cancel: Option<Arc<AtomicBool>>,
     status: Status,
@@ -88,8 +87,8 @@ impl Inner {
         if blocks.len() > keep {
             events.push(Event::Commit { blocks: blocks[keep..].to_vec() });
         }
-        events.extend(self.live.iter().cloned().map(Event::LivePush));
-        events.extend(self.live_notice.clone().map(Event::LiveNotice));
+        events.extend(self.live.blocks.iter().cloned().map(|block| Event::Live(LiveEvent::Push(block))));
+        events.extend(self.live.notice.clone().map(|block| Event::Live(LiveEvent::Notice(block))));
         events
     }
 
@@ -115,7 +114,6 @@ impl Inner {
     fn commit(&mut self) {
         let blocks = self.session.cursor().map(|i| self.session.node(i).blocks.clone()).unwrap_or_default();
         self.live.clear();
-        self.live_notice = None;
         self.emit(Event::Commit { blocks });
     }
 
@@ -132,8 +130,7 @@ impl Agent {
         Arc::new(Self {
             inner: Mutex::new(Inner {
                 skills,
-                live: vec![],
-                live_notice: None,
+                live: Live::default(),
                 queued: vec![],
                 cancel: None,
                 status: session.status(),
@@ -224,7 +221,6 @@ impl Agent {
             return false;
         }
         inner.live.clear();
-        inner.live_notice = None;
         let request = api::Request {
             instructions: inner.session.header().instructions.clone(),
             model: inner.session.model().name.clone(),
@@ -237,7 +233,7 @@ impl Agent {
         inner.cancel = Some(cancel.clone());
         inner.status = Status::Running;
         let agent = self.clone();
-        let started = session::now();
+        let started = now();
         thread::spawn(move || {
             let result = api::step(request, cancel, &|event| agent.live(event));
             agent.finish(result, started);
@@ -245,75 +241,45 @@ impl Agent {
         true
     }
 
-    fn live(&self, event: api::Event) {
+    fn live(&self, event: LiveEvent) {
         let mut inner = self.inner();
-        match event {
-            api::Event::Push(block) => {
-                inner.live.push(block.clone());
-                inner.emit(Event::LivePush(block));
-            }
-            api::Event::Delta(index, text) => {
-                if let Some(block) = inner.live.get_mut(index) {
-                    block.text.push_str(&text);
-                }
-                inner.emit(Event::LiveDelta { index, text });
-            }
-            api::Event::Set(index, block) => {
-                if let Some(slot) = inner.live.get_mut(index) {
-                    *slot = block.clone();
-                }
-                inner.emit(Event::LiveSet { index, block });
-            }
-            api::Event::ToolOutput(index, output) => {
-                if let Some(tool) = inner.live.get_mut(index).and_then(|block| block.tool.as_mut()) {
-                    tool.output = output.clone();
-                }
-                inner.emit(Event::LiveOutput { index, output });
-            }
-            api::Event::CacheMiss => {
-                let block = Block::new(Kind::Warning, CACHE_MISS);
-                inner.live_notice = Some(block.clone());
-                inner.emit(Event::LiveNotice(block));
-            }
-        }
+        inner.live.apply(&event);
+        inner.emit(Event::Live(event));
     }
 
     fn finish(self: &Arc<Self>, result: Result<api::Step>, started: u64) {
         let mut inner = self.inner();
         let cancelled = inner.cancel.take().is_some_and(|cancel| cancel.load(Ordering::Relaxed));
+        let span = Span { started, finished: now() };
         match result {
             Ok(mut step) => {
                 if step.usage.cache_miss(inner.session.usage()) {
-                    step.entries.insert(0, Record::Notice { text: CACHE_MISS.into() });
+                    step.entries.insert(0, Entry::Notice { text: api::CACHE_MISS.into() });
                 }
                 let again = !cancelled && (step.again || !inner.queued.is_empty());
-                let end = if cancelled {
-                    Some(End::Stopped)
-                } else if again {
-                    None
-                } else {
-                    Some(End::Finished)
+                let (end, status) = match (cancelled, again) {
+                    (true, _) => (Some(End::Stopped), Status::Idle),
+                    // Only reached as a status when the next step cannot start.
+                    (false, true) => (None, Status::Failed),
+                    (false, false) => (Some(End::Finished), Status::Finished),
                 };
-                inner.session.push(step.entries, Some(step.usage), Span { started, finished: session::now() }, end);
+                inner.session.push(step.entries, Some(step.usage), span, end);
                 inner.commit();
                 if !cancelled {
                     inner.drain_queue();
                 }
                 if !(again && self.start(&mut inner)) {
                     inner.save();
-                    inner.status = if cancelled {
-                        Status::Idle
-                    } else if again {
-                        Status::Failed
-                    } else {
-                        Status::Finished
-                    };
+                    inner.status = status;
                 }
             }
             Err(e) => {
-                let end = if cancelled { End::Stopped } else { End::Failed { error: e.to_string() } };
-                inner.status = if cancelled { Status::Idle } else { Status::Failed };
-                inner.session.push(vec![], None, Span { started, finished: session::now() }, Some(end));
+                let (end, status) = match cancelled {
+                    true => (End::Stopped, Status::Idle),
+                    false => (End::Failed { error: e.to_string() }, Status::Failed),
+                };
+                inner.status = status;
+                inner.session.push(vec![], None, span, Some(end));
                 inner.commit();
                 inner.save();
                 if !inner.queued.is_empty() {
@@ -349,8 +315,8 @@ impl Agent {
         }
         let run = take()?;
         let cwd = Some(run.cwd).filter(|cwd| cwd != &inner.session.header().cwd);
-        let mut entries = vec![Record::Shell { command: run.command, cwd, status: run.status, output: run.output }];
-        entries.extend(run.images.into_iter().map(|item| Record::Item { item }));
+        let mut entries = vec![Entry::Shell { command: run.command, cwd, status: run.status, output: run.output }];
+        entries.extend(run.images.into_iter().map(|item| Entry::Item { item }));
         inner.session.push(entries, None, run.span, None);
         inner.commit();
         inner.save();
@@ -359,7 +325,7 @@ impl Agent {
         Ok(())
     }
 
-    // Only while the message at `index` is still `text`: the queue may have been sent, and refilled,since the client saw it.
+    // Only while the message at `index` is still `text`: the queue may have been sent, and refilled, since the client saw it.
     pub fn recall(&self, index: usize, text: &str) -> bool {
         let mut inner = self.inner();
         if inner.queued.get(index).is_none_or(|message| message.text != text) {
@@ -416,7 +382,6 @@ impl Agent {
             inner.save();
         }
         inner.live.clear();
-        inner.live_notice = None;
         inner.queued.clear();
         inner.status = Status::Idle;
         for event in inner.snapshot(None) {
@@ -425,5 +390,3 @@ impl Agent {
         Ok(draft)
     }
 }
-
-const CACHE_MISS: &str = "Cache miss · previously cached prefix was not read";

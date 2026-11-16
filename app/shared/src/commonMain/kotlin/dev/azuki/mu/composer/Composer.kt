@@ -1,22 +1,13 @@
 package dev.azuki.mu.composer
 
 import androidx.compose.animation.animateContentSize
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.animate
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.draggable
-import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -38,8 +29,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -48,66 +37,42 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
-import androidx.compose.ui.input.nestedscroll.NestedScrollSource
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
-import androidx.compose.ui.layout.onSizeChanged
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.azuki.mu.Mu
 import dev.azuki.mu.api.Mention
 import dev.azuki.mu.api.MuException
 import dev.azuki.mu.api.Resolved
-import dev.azuki.mu.api.ToolStatus
 import dev.azuki.mu.baseName
 import dev.azuki.mu.chat.Destination
 import dev.azuki.mu.design.Accent
-import dev.azuki.mu.design.DialogButtons
 import dev.azuki.mu.design.Glyphs
 import dev.azuki.mu.design.Mono
 import dev.azuki.mu.design.Pictograms
 import dev.azuki.mu.design.Solar
 import dev.azuki.mu.design.icon
 import dev.azuki.mu.design.lifted
-import dev.azuki.mu.platform.Attachment
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.CardDefaults
-import top.yukonga.miuix.kmp.basic.DropdownEntry
-import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.IconButton
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
-import top.yukonga.miuix.kmp.basic.PopupPositionProvider
 import top.yukonga.miuix.kmp.basic.Text
-import top.yukonga.miuix.kmp.basic.TextField
-import top.yukonga.miuix.kmp.theme.LocalDismissState
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import top.yukonga.miuix.kmp.window.WindowCascadingListPopup
-import top.yukonga.miuix.kmp.window.WindowDialog
-import top.yukonga.miuix.kmp.window.WindowListPopup
-
-val Efforts = listOf("minimal", "low", "medium", "high", "xhigh")
 
 @Composable
 fun Composer(
@@ -148,12 +113,9 @@ fun Composer(
 
                     trimmed.isEmpty() -> Unit
                     else -> {
-                        val word =
-                            trimmed.takeIf { it.startsWith("/") }?.substringBefore(' ')?.drop(1)
-                        val skill = currentSkills.firstOrNull { it.name == word }?.name
                         state.field.clearText()
                         state.previews.clear()
-                        currentOnSubmit(Submission.Prompt(trimmed, skill))
+                        currentOnSubmit(Submission.Prompt(trimmed, invoked(trimmed, currentSkills)))
                     }
                 }
             }
@@ -458,7 +420,7 @@ private fun Input(
 }
 
 @Composable
-private fun ToolButton(
+internal fun ToolButton(
     icon: ImageVector,
     contentDescription: String,
     modifier: Modifier = Modifier,
@@ -506,218 +468,6 @@ private fun RoundAction(
                     },
             )
         }
-    }
-}
-
-@Composable
-private fun AttachButton(state: ComposerState, mu: Mu, destination: Destination) {
-    var open by remember { mutableStateOf(false) }
-    val size = with(LocalDensity.current) { TileSize.roundToPx() }
-
-    // Picking swaps the dictation bar for the keyboard's, which would cancel this button's scope.
-    fun pick(source: suspend () -> List<Attachment>) {
-        val host = destination.host ?: return mu.toast("Add a host first")
-        mu.launch {
-            val picked = source()
-            if (picked.isEmpty()) return@launch
-            state.useKeyboard(true)
-            state.uploading++
-            try {
-                picked.forEach { attachment ->
-                    try {
-                        val path = mu.core.upload(host, attachment.name, attachment.data)
-                        if (attachment.image) {
-                            mu.platform.decodeImage(attachment.data, size)?.let {
-                                state.previews[path] = it
-                            }
-                        }
-                        state.insert(mention(path))
-                    } catch (e: MuException) {
-                        mu.toast(e.message)
-                    }
-                }
-            } finally {
-                state.uploading--
-            }
-        }
-    }
-
-    // A plus turned an eighth of the way round is a cross.
-    val turn by
-        animateFloatAsState(
-            if (open) -45f else 0f,
-            spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMedium),
-        )
-    Box {
-        ToolButton(
-            Solar.AddCircleBoldDuotone,
-            if (open) "Close" else "Attach",
-            Modifier.graphicsLayer { rotationZ = turn },
-        ) {
-            open = !open
-        }
-        WindowListPopup(
-            show = open,
-            alignment = PopupPositionProvider.Align.Start,
-            onDismissRequest = { open = false },
-        ) {
-            val dismiss = LocalDismissState.current
-            val choose = { action: () -> Unit ->
-                dismiss?.invoke()
-                action()
-            }
-            Column(
-                Modifier.width(260.dp).background(MiuixTheme.colorScheme.surface).padding(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AttachTile(Solar.CameraMinimalisticBoldDuotone, "Camera") {
-                        choose { pick { listOfNotNull(mu.platform.takePhoto()) } }
-                    }
-                    AttachTile(Solar.AlbumBoldDuotone, "Photos") {
-                        choose { pick { mu.platform.pickImages() } }
-                    }
-                    AttachTile(Solar.FileStackBoldDuotone, "Files") {
-                        choose { pick { mu.platform.pickFiles() } }
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    AttachTile(Solar.ToolboxBoldDuotone, "Skills") {
-                        choose {
-                            state.useShell(false)
-                            state.field.setTextAndPlaceCursorAtEnd("/")
-                            state.useKeyboard(true)
-                        }
-                    }
-                    AttachTile(Solar.FileTerminalBoldDuotone, "Shell") {
-                        choose { state.useShell(true) }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun RowScope.AttachTile(icon: ImageVector, label: String, onClick: () -> Unit) {
-    Card(
-        modifier = Modifier.weight(1f),
-        colors = CardDefaults.defaultColors(color = MiuixTheme.colorScheme.surfaceContainer),
-        onClick = onClick,
-    ) {
-        Box(Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.Center) {
-            Icon(icon, label, Modifier.size(30.dp), tint = Accent)
-        }
-    }
-}
-
-@Composable
-private fun ModelButton(mu: Mu, destination: Destination) {
-    var custom by remember { mutableStateOf(false) }
-    val model = destination.model
-    val effort = destination.effort
-    val pick = { picked: String -> destination.use(picked, effort) }
-    val models = destination.host?.let { mu.models[it] }.orEmpty()
-    val modelItems = buildList {
-        if (model != null && models.none { it.name == model }) {
-            add(DropdownItem(model, selected = true, onClick = {}))
-        }
-        models.forEach {
-            add(
-                DropdownItem(
-                    it.name,
-                    summary = it.context?.let(mu.core::compact),
-                    selected = it.name == model,
-                    onClick = { pick(it.name) },
-                )
-            )
-        }
-        add(DropdownItem("Other…", onClick = { custom = true }))
-    }
-    val effortItems =
-        listOf(
-            DropdownItem(
-                "Default",
-                selected = effort == null,
-                onClick = { destination.use(model, null) },
-            )
-        ) +
-            Efforts.map {
-                DropdownItem(it, selected = it == effort, onClick = { destination.use(model, it) })
-            }
-    val entry =
-        DropdownEntry(
-            listOf(
-                DropdownItem(
-                    "Model",
-                    summary = model ?: "None",
-                    children = modelItems,
-                ),
-                DropdownItem("Effort", summary = effort ?: "Default", children = effortItems),
-            )
-        )
-    var open by remember { mutableStateOf(false) }
-    var held by remember { mutableStateOf(false) }
-    val haptics = LocalHapticFeedback.current
-    Box {
-        IconButton(
-            onClick = {
-                open = !open
-                if (open) {
-                    held = true
-                    haptics.performHapticFeedback(HapticFeedbackType.ContextClick)
-                }
-            },
-            holdDownState = held,
-            minWidth = 36.dp,
-            minHeight = 36.dp,
-        ) {
-            Icon(
-                Solar.SpeedometerMaxBoldDuotone,
-                "Model and effort",
-                Modifier.size(24.dp),
-                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            )
-        }
-        WindowCascadingListPopup(
-            show = open,
-            entries = listOf(entry),
-            alignment = PopupPositionProvider.Align.Start,
-            onDismissRequest = { open = false },
-            onDismissFinished = { held = false },
-        )
-    }
-    ModelDialog(custom, onDismiss = { custom = false }, onPick = pick)
-}
-
-@Composable
-private fun ModelDialog(show: Boolean, onDismiss: () -> Unit, onPick: (String) -> Unit) {
-    var name by remember(show) { mutableStateOf("") }
-    WindowDialog(
-        show = show,
-        title = "Model",
-        summary = "Any model the host's endpoint serves",
-        onDismissRequest = onDismiss,
-    ) {
-        val dismiss = LocalDismissState.current
-        TextField(
-            value = name,
-            onValueChange = { name = it },
-            label = "Model",
-            useLabelAsPlaceholder = true,
-            singleLine = true,
-            textStyle = MiuixTheme.textStyles.main.copy(fontFamily = Mono),
-            modifier = Modifier.padding(bottom = 16.dp),
-        )
-        DialogButtons(
-            confirm = "Use",
-            enabled = name.isNotBlank(),
-            onCancel = { dismiss?.invoke() },
-            onConfirm = {
-                onPick(name.trim())
-                dismiss?.invoke()
-            },
-        )
     }
 }
 
@@ -790,13 +540,8 @@ private fun rememberMention(state: ComposerState, mu: Mu, destination: Destinati
                 open = true
                 val mention =
                     try {
-                        mu.core.completeMention(
-                            host,
-                            directory,
-                            text,
-                            chars(text, selection.start),
-                            refresh,
-                        )
+                        mu.remote(host)
+                            .completeMention(directory, text, chars(text, selection.start), refresh)
                     } catch (e: MuException) {
                         if (refresh) mu.toast("File search: ${e.message}")
                         null
@@ -821,161 +566,8 @@ fun utf16(text: String, chars: Int): Int {
 }
 
 // Floats what it holds above where it sits, taking up no room, so the conversation stays put.
-private fun Modifier.above(gap: Dp) = layout { measurable, constraints ->
+internal fun Modifier.above(gap: Dp) = layout { measurable, constraints ->
     val placeable =
         measurable.measure(constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity))
     layout(placeable.width, 0) { placeable.place(0, -placeable.height - gap.roundToPx()) }
-}
-
-// The output of a command run from the composer, peeking out from behind it. Swiping it down
-// tucks it away to just its handle; swiping once more from there stops the command and drops it.
-@Composable
-private fun ShellOutput(run: ShellRun, onDismiss: () -> Unit) {
-    val overlap = 16.dp
-    val scroll = rememberScrollState()
-    LaunchedEffect(run.output) { scroll.scrollTo(scroll.maxValue) }
-    val scope = rememberCoroutineScope()
-    val currentOnDismiss by rememberUpdatedState(onDismiss)
-    var collapsed by remember { mutableStateOf(false) }
-    var delta by remember { mutableFloatStateOf(0f) }
-    var height by remember { mutableIntStateOf(0) }
-    var settling by remember { mutableStateOf<Job?>(null) }
-    val density = LocalDensity.current
-    val hidden = with(density) { overlap.toPx() }
-    val peek = with(density) { 20.dp.toPx() }
-    val threshold = with(density) { 48.dp.toPx() }
-
-    fun gone() = (height - hidden).coerceAtLeast(0f)
-
-    fun rest() = (gone() - peek).coerceAtLeast(0f)
-
-    fun base() = if (collapsed) rest() else 0f
-
-    fun drag(by: Float): Float {
-        settling?.cancel()
-        val before = base() + delta
-        val after = (before + by).coerceIn(0f, if (collapsed) gone() else rest())
-        delta = after - base()
-        return after - before
-    }
-
-    fun settle(velocity: Float) {
-        val at = base() + delta
-        val away = collapsed && (at > rest() + peek / 2 || velocity > 1_200f && at >= rest())
-        val down =
-            when {
-                away -> true
-                velocity > 800f -> true
-                velocity < -800f -> false
-                collapsed -> at > rest() - threshold
-                else -> at > threshold
-            }
-        collapsed = down
-        delta = at - base()
-        val target = if (away) gone() - base() else 0f
-        settling = scope.launch {
-            animate(delta, target, velocity) { value, _ -> delta = value }
-            if (away) {
-                run.job?.cancel()
-                currentOnDismiss()
-            }
-        }
-    }
-
-    fun expand() {
-        settling?.cancel()
-        delta += base()
-        collapsed = false
-        settling = scope.launch { animate(delta, 0f) { value, _ -> delta = value } }
-    }
-
-    val nested = remember {
-        object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource) =
-                if (available.y < 0 && base() + delta > 0f) Offset(0f, drag(available.y))
-                else Offset.Zero
-
-            override fun onPostScroll(
-                consumed: Offset,
-                available: Offset,
-                source: NestedScrollSource,
-            ) =
-                if (available.y > 0 && source == NestedScrollSource.UserInput)
-                    Offset(0f, drag(available.y))
-                else Offset.Zero
-
-            override suspend fun onPreFling(available: Velocity): Velocity {
-                if (base() + delta <= 0f) return Velocity.Zero
-                settle(available.y)
-                return available
-            }
-        }
-    }
-    Box(Modifier.fillMaxWidth().above(-overlap).clipToBounds()) {
-        Card(
-            modifier =
-                Modifier.padding(horizontal = 16.dp)
-                    .fillMaxWidth()
-                    .onSizeChanged { height = it.height }
-                    .graphicsLayer {
-                        val at = base() + delta
-                        translationY = at
-                        val fading = gone() - rest()
-                        alpha = if (at > rest() && fading > 0f) 1f - (at - rest()) / fading else 1f
-                    }
-                    .nestedScroll(nested)
-                    .draggable(
-                        rememberDraggableState { drag(it) },
-                        Orientation.Vertical,
-                        onDragStopped = { settle(it) },
-                    ),
-            cornerRadius = 20.dp,
-            onClick = {
-                when {
-                    collapsed -> expand()
-                    run.done -> onDismiss()
-                }
-            },
-        ) {
-            Column(
-                Modifier.fillMaxWidth()
-                    .padding(start = 18.dp, end = 18.dp, top = 8.dp, bottom = overlap + 12.dp)
-            ) {
-                Box(
-                    Modifier.align(Alignment.CenterHorizontally)
-                        .size(36.dp, 4.dp)
-                        .clip(RoundedCornerShape(2.dp))
-                        .background(
-                            MiuixTheme.colorScheme.onSurfaceVariantSummary.copy(alpha = 0.3f)
-                        )
-                )
-                val status =
-                    when (val status = run.status) {
-                        is ToolStatus.Exited ->
-                            if (status.code == 0) null else "exit ${status.code}"
-
-                        is ToolStatus.TimedOut -> "timed out"
-                        ToolStatus.Cancelled -> "cancelled"
-                        ToolStatus.Failed -> "failed"
-                        else -> null
-                    }
-                Text(
-                    buildString {
-                        append("$ ").append(run.command)
-                        if (run.output.isNotEmpty()) append('\n').append(run.output.trimEnd())
-                        run.failure?.let { append('\n').append(it) }
-                        status?.let { append("\n[").append(it).append(']') }
-                    },
-                    Modifier.fillMaxWidth()
-                        .padding(top = 10.dp)
-                        .heightIn(max = 180.dp)
-                        .verticalScroll(scroll),
-                    fontFamily = Mono,
-                    fontSize = 12.sp,
-                    lineHeight = 17.sp,
-                    color = MiuixTheme.colorScheme.onSurface,
-                )
-            }
-        }
-    }
 }

@@ -1,5 +1,5 @@
 use crate::{Result, commands};
-use mu_client::{Skill, Snippet};
+use mu_client::{MentionEntry as Entry, Skill, Snippet};
 use std::{
     env, fs,
     io::Write,
@@ -50,11 +50,6 @@ pub fn edit(text: &str, cwd: &Path) -> Result<String> {
     fs::read_to_string(&path).map_err(|e| format!("Could not read edited prompt: {e}").into())
 }
 
-pub struct Entry {
-    pub text: String,
-    pub label: String,
-}
-
 pub struct Menu {
     pub range: Range<usize>,
     pub query: String,
@@ -66,6 +61,10 @@ pub struct Menu {
 }
 
 impl Menu {
+    pub fn new(range: Range<usize>, query: String, entries: Vec<Entry>) -> Self {
+        Self { range, query, file: false, exact_file: false, entries, selected: 0, explicit: false }
+    }
+
     pub fn replacement(&self) -> Option<String> {
         self.entries.get(self.selected).map(|e| e.text.clone())
     }
@@ -95,15 +94,7 @@ pub fn command_menu(text: &str, cursor: usize, skills: &[Skill]) -> Option<Menu>
         .filter(|(name, _)| name.starts_with(trimmed))
         .map(|(name, (_, hint))| Entry { text: format!("{name} "), label: format!("{name}  {hint}") })
         .collect();
-    Some(Menu {
-        range: start..end,
-        query: trimmed.into(),
-        file: false,
-        exact_file: false,
-        entries,
-        selected: 0,
-        explicit: false,
-    })
+    Some(Menu::new(start..end, trimmed.into(), entries))
 }
 
 pub fn shell_command(text: &str) -> Option<(bool, &str)> {
@@ -133,13 +124,5 @@ pub fn shell_menu(text: &str, cursor: usize, snippets: &[Snippet]) -> Option<Men
         })
         .collect();
     let start = prefix.chars().count() - prefix.trim_start().chars().count();
-    Some(Menu {
-        range: start..text.chars().count(),
-        query: prefix.trim_start().into(),
-        file: false,
-        exact_file: false,
-        entries,
-        selected: 0,
-        explicit: false,
-    })
+    Some(Menu::new(start..text.chars().count(), prefix.trim_start().into(), entries))
 }

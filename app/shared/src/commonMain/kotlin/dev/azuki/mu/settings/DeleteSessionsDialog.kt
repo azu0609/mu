@@ -32,7 +32,7 @@ fun DeleteSessionsDialog(mu: Mu, presented: Presented<String>) {
             onConfirm = {
                 host?.let {
                     mu.launch {
-                        val deleted = mu.core.deleteSessions(it)
+                        val deleted = mu.remote(it).deleteSessions()
                         mu.toast(
                             buildString {
                                 append(

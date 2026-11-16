@@ -160,13 +160,11 @@ fun rememberResolved(
                     return@collectLatest
                 }
                 delay(150)
-                val word = text.trim().takeIf { it.startsWith("/") }?.substringBefore(' ')?.drop(1)
-                val skill = skills.firstOrNull { it.name == word }?.name
                 try {
                     resolved =
-                        mu.core.resolveMentions(host, directory, text, skill).associateBy {
-                            it.path
-                        }
+                        mu.remote(host)
+                            .resolveMentions(directory, text, invoked(text, skills))
+                            .associateBy { it.path }
                 } catch (_: MuException) {}
             }
     }
@@ -236,7 +234,7 @@ private fun AttachmentTile(
         val size = with(LocalDensity.current) { TileSize.roundToPx() }
         LaunchedEffect(tile.file) {
             try {
-                val data = mu.core.readImage(host, tile.file)
+                val data = mu.remote(host).readImage(tile.file)
                 mu.platform.decodeImage(data, size)?.let { state.previews[tile.file] = it }
             } catch (_: MuException) {}
         }

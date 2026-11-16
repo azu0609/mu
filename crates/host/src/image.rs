@@ -1,7 +1,7 @@
-use crate::Result;
+use crate::{Result, read_limited};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
-use std::{fs, io::Read, path::Path};
+use std::path::Path;
 
 pub const LIMIT: u64 = 20 * 1024 * 1024;
 
@@ -29,14 +29,7 @@ pub fn read(path: &Path) -> Result<Value> {
 }
 
 pub fn load(path: &Path) -> Result<Vec<u8>> {
-    if !fs::metadata(path)?.is_file() {
-        return Err(format!("{} is not a regular file", path.display()).into());
-    }
-    let mut bytes = vec![];
-    fs::File::open(path)?.take(LIMIT + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > LIMIT {
-        return Err("Image exceeds 20 MiB".into());
-    }
+    let bytes = read_limited(path, LIMIT)?;
     if mime(&bytes).is_none() {
         return Err("Expected PNG, JPEG, GIF or WebP".into());
     }

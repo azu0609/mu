@@ -1,5 +1,5 @@
 use crate::{Result, remote::Remote};
-use mu_client::{Endpoint, Invite};
+use mu_client::{CreateInvite, Endpoint, Invite, ListDevices, Unpair};
 use qrcode::{QrCode, render::unicode::Dense1x2};
 use std::{
     net::{IpAddr, SocketAddr},
@@ -7,7 +7,7 @@ use std::{
 };
 
 pub fn pair(endpoint: Endpoint, address: Option<&str>) -> Result<()> {
-    let invitation = Remote::connect(endpoint)?.invite()?;
+    let invitation = Remote::connect(endpoint)?.call(CreateInvite {})?;
     let chosen = match address {
         Some(address) => with_port(address, invitation.port),
         None => match invitation.addresses.first() {
@@ -43,7 +43,7 @@ fn with_port(address: &str, port: u16) -> String {
 }
 
 pub fn devices(endpoint: Endpoint) -> Result<()> {
-    let devices = Remote::connect(endpoint)?.devices()?;
+    let devices = Remote::connect(endpoint)?.call(ListDevices {})?;
     if devices.is_empty() {
         println!("No devices are paired. `mu pair` pairs one.");
         return Ok(());
@@ -62,7 +62,7 @@ pub fn devices(endpoint: Endpoint) -> Result<()> {
 }
 
 pub fn unpair(endpoint: Endpoint, id: &str) -> Result<()> {
-    Remote::connect(endpoint)?.unpair(id)?;
+    Remote::connect(endpoint)?.call(Unpair { device_id: id.into() })?;
     println!("Unpaired {id}. It can no longer reach this host.");
     Ok(())
 }

@@ -1,7 +1,5 @@
 use crate::Result;
-use mu_client::{
-    Client, Device, Endpoint, Event, Invitation, Mention, Model, ShellEvent, Skill, TreeEntry, Update, WatchEvent,
-};
+use mu_client::{Call, Client, CompleteMention, Endpoint, Event, MarkRead, Mention, ShellEvent, Update, WatchEvent};
 use std::{future::Future, path::Path, sync::mpsc, time::Duration};
 use tokio::{runtime::Runtime, task::JoinHandle, time};
 
@@ -49,15 +47,19 @@ impl Remote {
         Ok(Self { runtime, client, tx, rx, subscription: None, subscriptions: 0, shell: None, generation: 0 })
     }
 
-    fn call<T>(&self, call: impl Future<Output = mu_client::Result<T>>) -> Result<T> {
+    fn wait<T>(&self, answer: impl Future<Output = mu_client::Result<T>>) -> Result<T> {
         Ok(self
             .runtime
-            .block_on(async { time::timeout(Duration::from_secs(10), call).await })
+            .block_on(async { time::timeout(Duration::from_secs(10), answer).await })
             .map_err(|_| "The mu host did not answer")??)
     }
 
+    pub fn call<C: Call + Sync>(&self, call: C) -> Result<C::Reply> {
+        self.wait(self.client.call(call))
+    }
+
     pub fn attach(&mut self, id: &str) -> Result<()> {
-        let mut subscription = self.call(self.client.subscribe(id))?;
+        let mut subscription = self.wait(self.client.subscribe(id))?;
         self.subscriptions += 1;
         let generation = self.subscriptions;
         let tx = self.tx.clone();
@@ -87,61 +89,13 @@ impl Remote {
         self.generation = self.subscriptions;
     }
 
-    pub fn create(&self, cwd: &Path, model: Model, text: String, skill: Option<String>) -> Result<String> {
-        self.call(self.client.create(cwd, model, text, skill))
-    }
-
-    pub fn skills(&self, cwd: &Path) -> Result<Vec<Skill>> {
-        self.call(self.client.list_skills(cwd))
-    }
-
     pub fn mark_read(&self, id: &str) {
-        let (client, id) = (self.client.clone(), id.to_owned());
-        self.runtime.spawn(async move { client.mark_read(&id).await });
-    }
-
-    pub fn send(&self, id: &str, text: String, skill: Option<String>) -> Result<()> {
-        self.call(self.client.send(id, text, skill))
-    }
-
-    pub fn stop(&self, id: &str) -> Result<()> {
-        self.call(self.client.stop(id))
-    }
-
-    pub fn recall(&self, id: &str, index: usize, text: &str) -> Result<bool> {
-        self.call(self.client.recall(id, index, text.to_owned()))
-    }
-
-    pub fn set_model(&self, id: &str, model: Model) -> Result<()> {
-        self.call(self.client.set_model(id, model))
-    }
-
-    pub fn tree(&self, id: &str) -> Result<Vec<TreeEntry>> {
-        self.call(self.client.tree(id))
-    }
-
-    pub fn checkout(&self, id: &str, node: Option<usize>) -> Result<Option<String>> {
-        self.call(self.client.checkout(id, node))
-    }
-
-    pub fn invite(&self) -> Result<Invitation> {
-        self.call(self.client.invite())
-    }
-
-    pub fn devices(&self) -> Result<Vec<Device>> {
-        self.call(self.client.devices())
-    }
-
-    pub fn unpair(&self, id: &str) -> Result<()> {
-        self.call(self.client.unpair(id))
-    }
-
-    pub fn append_shell(&self, id: &str, run: &str) -> Result<()> {
-        self.call(self.client.append_shell(id, run))
+        let (client, session_id) = (self.client.clone(), id.to_owned());
+        self.runtime.spawn(async move { client.call(MarkRead { session_id }).await });
     }
 
     pub fn shell(&mut self, seq: u64, cwd: &Path, command: String) -> Result<()> {
-        let mut run = self.call(self.client.shell(cwd, command))?;
+        let mut run = self.wait(self.client.shell(cwd, command))?;
         let tx = self.tx.clone();
         let task = self.runtime.spawn(async move {
             loop {
@@ -172,12 +126,11 @@ impl Remote {
         }
     }
 
-    pub fn complete(&self, seq: u64, cwd: &Path, text: String, cursor: usize, refresh: bool) {
+    pub fn complete(&self, seq: u64, call: CompleteMention) {
         let client = self.client.clone();
-        let cwd = cwd.to_owned();
         let tx = self.tx.clone();
         self.runtime.spawn(async move {
-            let result = client.complete(&cwd, text, cursor, refresh).await;
+            let result = client.call(call).await;
             let _ = tx.send(Incoming::Mention(seq, result.map_err(Into::into)));
         });
     }

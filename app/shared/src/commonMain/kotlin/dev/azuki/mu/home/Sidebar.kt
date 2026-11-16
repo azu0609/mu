@@ -235,6 +235,12 @@ private fun Carousel(pager: PagerState) {
         ) { index ->
             val filter = Filter.entries[index]
             val tint = filter.tint()
+            // How close the page is to the middle, 0 to 1.
+            val near = {
+                val distance =
+                    ((pager.currentPage - index) + pager.currentPageOffsetFraction).absoluteValue
+                (1f - distance).coerceIn(0f, 1f)
+            }
             Box(
                 Modifier.size(page)
                     .clickable(
@@ -244,21 +250,14 @@ private fun Carousel(pager: PagerState) {
                         scope.launch { pager.animateScrollToPage(index, animationSpec = settle) }
                     }
                     .graphicsLayer {
-                        val distance =
-                            ((pager.currentPage - index) + pager.currentPageOffsetFraction)
-                                .absoluteValue
-                        val near = (1f - distance).coerceIn(0f, 1f)
-                        scaleX = 0.75f + 0.25f * near
+                        scaleX = 0.75f + 0.25f * near()
                         scaleY = scaleX
                     },
                 contentAlignment = Alignment.Center,
             ) {
-                val distance =
-                    ((pager.currentPage - index) + pager.currentPageOffsetFraction).absoluteValue
-                val near = (1f - distance).coerceIn(0f, 1f)
                 Box(
                     Modifier.size(88.dp)
-                        .graphicsLayer { alpha = near }
+                        .graphicsLayer { alpha = near() }
                         .lifted(CircleShape)
                         .clip(CircleShape)
                         .background(MiuixTheme.colorScheme.surfaceContainer)
@@ -266,7 +265,7 @@ private fun Carousel(pager: PagerState) {
                 Icon(
                     filter.icon,
                     filter.label,
-                    Modifier.size(lerp(44.dp, 52.dp, near)),
+                    Modifier.size(lerp(44.dp, 52.dp, near())),
                     tint = tint,
                 )
             }
@@ -409,11 +408,10 @@ private fun HostsButton(mu: Mu, onAddHost: () -> Unit, onSettings: () -> Unit) {
                 listOf(
                     DropdownEntry(
                         mu.hosts.map { host ->
-                            val description =
-                                mu.live[host.id]?.profile?.description ?: host.description
                             DropdownItem(
-                                mu.name(host.id),
-                                summary = description.takeIf(String::isNotBlank)?.let { "“$it”" },
+                                host.name,
+                                summary =
+                                    host.description.takeIf(String::isNotBlank)?.let { "“$it”" },
                                 selected = host.id in mu.selected,
                                 onClick = { mu.select(host.id, host.id !in mu.selected) },
                             )

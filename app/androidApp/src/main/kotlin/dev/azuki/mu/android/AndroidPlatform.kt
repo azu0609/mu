@@ -11,6 +11,7 @@ import android.os.Build
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContract
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -48,41 +49,18 @@ class AndroidPlatform(private val activity: ComponentActivity) : Platform {
             override fun set(key: String, value: String?) = shared.edit { putString(key, value) }
         }
 
-    private var permitted: CompletableDeferred<Boolean>? = null
-    private val permission =
-        activity.registerForActivityResult(ActivityResultContracts.RequestPermission()) {
-            permitted?.complete(it)
-        }
+    private val permission = Asking(activity, ActivityResultContracts.RequestPermission())
 
     override val dictation: Dictation =
         SpeechDictation(context) { ask(Manifest.permission.RECORD_AUDIO) }
 
-    private var shot: CompletableDeferred<Boolean>? = null
-    private val camera =
-        activity.registerForActivityResult(ActivityResultContracts.TakePicture()) {
-            shot?.complete(it)
-        }
+    private val camera = Asking(activity, ActivityResultContracts.TakePicture())
+    private val images = Asking(activity, ActivityResultContracts.PickMultipleVisualMedia(8))
+    private val documents = Asking(activity, ActivityResultContracts.OpenMultipleDocuments())
 
-    private var picked: CompletableDeferred<List<Uri>>? = null
-    private val images =
-        activity.registerForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(8)) {
-            picked?.complete(it)
-        }
-    private val documents =
-        activity.registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) {
-            picked?.complete(it)
-        }
-
-    private suspend fun ask(permission: String): Boolean {
-        if (
-            ContextCompat.checkSelfPermission(context, permission) ==
-                PackageManager.PERMISSION_GRANTED
-        )
-            return true
-        val result = CompletableDeferred<Boolean>().also { permitted = it }
-        this.permission.launch(permission)
-        return result.await()
-    }
+    private suspend fun ask(permission: String): Boolean =
+        ContextCompat.checkSelfPermission(context, permission) ==
+            PackageManager.PERMISSION_GRANTED || this.permission.ask(permission)
 
     override suspend fun allowCamera(): Boolean = ask(Manifest.permission.CAMERA)
 
@@ -98,23 +76,17 @@ class AndroidPlatform(private val activity: ComponentActivity) : Platform {
         if (!allowCamera()) throw MuException("Taking a photo needs the camera")
         val file = File(File(context.cacheDir, "photos").apply { mkdirs() }, "photo.jpg")
         val uri = FileProvider.getUriForFile(context, "${context.packageName}.files", file)
-        val result = CompletableDeferred<Boolean>().also { shot = it }
-        camera.launch(uri)
-        if (!result.await()) return null
+        if (!camera.ask(uri)) return null
         return withContext(Dispatchers.IO) { read(uri, "photo.jpg").also { file.delete() } }
     }
 
-    override suspend fun pickImages(): List<Attachment> {
-        val result = CompletableDeferred<List<Uri>>().also { picked = it }
-        images.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-        return withContext(Dispatchers.IO) { result.await().map { read(it, null) } }
-    }
+    override suspend fun pickImages(): List<Attachment> =
+        read(images.ask(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)))
 
-    override suspend fun pickFiles(): List<Attachment> {
-        val result = CompletableDeferred<List<Uri>>().also { picked = it }
-        documents.launch(arrayOf("*/*"))
-        return withContext(Dispatchers.IO) { result.await().map { read(it, null) } }
-    }
+    override suspend fun pickFiles(): List<Attachment> = read(documents.ask(arrayOf("*/*")))
+
+    private suspend fun read(picked: List<Uri>): List<Attachment> =
+        withContext(Dispatchers.IO) { picked.map { read(it, null) } }
 
     override suspend fun decodeImage(data: ByteArray, size: Int): ImageBitmap? =
         withContext(Dispatchers.Default) {
@@ -122,10 +94,7 @@ class AndroidPlatform(private val activity: ComponentActivity) : Platform {
             BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
             val edge = minOf(bounds.outWidth, bounds.outHeight)
             if (edge <= 0) return@withContext null
-            var sample = 1
-            while (edge / (sample * 2) >= size) sample *= 2
-            val options = BitmapFactory.Options().apply { inSampleSize = sample }
-            BitmapFactory.decodeByteArray(data, 0, data.size, options)?.asImageBitmap()
+            sampled(data, edge, size)?.asImageBitmap()
         }
 
     private fun read(uri: Uri, fallbackName: String?): Attachment {
@@ -170,20 +139,32 @@ class AndroidPlatform(private val activity: ComponentActivity) : Platform {
             } else {
                 val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
                 BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                var sample = 1
-                while (
-                    maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= IMAGE_EDGE
-                ) sample *= 2
-                BitmapFactory.decodeByteArray(
-                    bytes,
-                    0,
-                    bytes.size,
-                    BitmapFactory.Options().apply { inSampleSize = sample },
-                ) ?: throw MuException("Cannot read this image")
+                sampled(bytes, maxOf(bounds.outWidth, bounds.outHeight), IMAGE_EDGE)
+                    ?: throw MuException("Cannot read this image")
             }
         val out = ByteArrayOutputStream()
         bitmap.compress(Bitmap.CompressFormat.JPEG, 88, out)
         bitmap.recycle()
         return out.toByteArray()
+    }
+}
+
+// Decoded at the largest power-of-two reduction that keeps `edge` pixels at `target` or more.
+private fun sampled(data: ByteArray, edge: Int, target: Int): Bitmap? {
+    var sample = 1
+    while (edge / (sample * 2) >= target) sample *= 2
+    val options = BitmapFactory.Options().apply { inSampleSize = sample }
+    return BitmapFactory.decodeByteArray(data, 0, data.size, options)
+}
+
+// Something another activity is asked for, one answer at a time.
+private class Asking<I, O>(activity: ComponentActivity, contract: ActivityResultContract<I, O>) {
+    private var answer: CompletableDeferred<O>? = null
+    private val launcher = activity.registerForActivityResult(contract) { answer?.complete(it) }
+
+    suspend fun ask(input: I): O {
+        val answer = CompletableDeferred<O>().also { answer = it }
+        launcher.launch(input)
+        return answer.await()
     }
 }

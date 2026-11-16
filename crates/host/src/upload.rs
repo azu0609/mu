@@ -1,7 +1,7 @@
-use crate::{Result, home, image, input};
+use crate::{Result, config, home, image, input};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use std::{
-    env, fs,
+    fs,
     io::{ErrorKind, Write},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
@@ -30,7 +30,7 @@ pub fn save(name: &str, data: &str) -> Result<PathBuf> {
         Some((stem, extension)) if !stem.is_empty() => (stem, format!(".{extension}")),
         _ => (name, String::new()),
     };
-    let dir = env::var_os("XDG_CACHE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".cache")).join("mu");
+    let dir = config::cache_dir();
     fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
     prune(&dir);
     let mut n = 0;

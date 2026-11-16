@@ -12,12 +12,6 @@ use hyper::{
     header::{self, HeaderValue},
 };
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
-use mu_wire::{
-    AppendShell, Call, Checkout, CompleteMention, CreateInvite, CreateSession, DeleteSessions, DeleteSnippet, Failure,
-    GetTree, Hello, ListDevices, ListDirectory, ListModels, ListSessions, ListSkills, MarkRead, PROTOCOL, Pair,
-    ReadImage, RecallQueued, ResolveMentions, Resume, SaveSnippet, SendMessage, SetDescription, SetIcon, SetModel,
-    Shell, Stop, Subscribe, Unpair, Upload, Watch,
-};
 use rustls::pki_types::ServerName;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
@@ -35,11 +29,7 @@ use tokio::{
 };
 use tokio_rustls::TlsConnector;
 
-pub use mu_wire::{
-    Attached, Block, Deleted, Device, Directory, DirectoryEntry, EntryKind, Event, HostInfo, Invitation, Invite, Kind,
-    Mention, MentionEntry, Model, ModelInfo, Profile, Resolved, SessionSummary, ShellEvent, Skill, Snippet, Span,
-    State, Stats, Status, Tool, ToolOutput, ToolStatus, TreeEntry, WatchEvent, Written, mentions,
-};
+pub use mu_wire::*;
 pub use view::{Change, HostView, View};
 
 // The host accepts calls up to 4 MiB, and a user message near that must still
@@ -205,115 +195,13 @@ impl Client {
         Ok(sender)
     }
 
-    async fn call<C: Call + Sync>(&self, call: C) -> Result<C::Reply> {
+    pub async fn call<C: Call + Sync>(&self, call: C) -> Result<C::Reply> {
         self::call(&mut self.sender().await?, self.0.authorization.as_ref(), &call).await
-    }
-
-    pub async fn pair(&self, code: &str, device: &str) -> Result<String> {
-        self.call(Pair { code: code.into(), device: device.into() }).await
-    }
-
-    pub async fn invite(&self) -> Result<Invitation> {
-        self.call(CreateInvite {}).await
-    }
-
-    pub async fn devices(&self) -> Result<Vec<Device>> {
-        self.call(ListDevices {}).await
-    }
-
-    pub async fn unpair(&self, device_id: &str) -> Result<()> {
-        self.call(Unpair { device_id: device_id.into() }).await
-    }
-
-    pub async fn sessions(&self) -> Result<Vec<SessionSummary>> {
-        self.call(ListSessions {}).await
-    }
-
-    pub async fn create(&self, cwd: &Path, model: Model, text: String, skill: Option<String>) -> Result<String> {
-        self.call(CreateSession { cwd: cwd.into(), model, text, skill }).await
-    }
-
-    pub async fn send(&self, id: &str, text: String, skill: Option<String>) -> Result<()> {
-        self.call(SendMessage { session_id: id.into(), text, skill }).await
-    }
-
-    pub async fn stop(&self, id: &str) -> Result<()> {
-        self.call(Stop { session_id: id.into() }).await
-    }
-
-    pub async fn mark_read(&self, id: &str) -> Result<()> {
-        self.call(MarkRead { session_id: id.into() }).await
-    }
-
-    pub async fn recall(&self, id: &str, index: usize, text: String) -> Result<bool> {
-        self.call(RecallQueued { session_id: id.into(), index, text }).await
-    }
-
-    pub async fn set_model(&self, id: &str, model: Model) -> Result<()> {
-        self.call(SetModel { session_id: id.into(), model }).await
-    }
-
-    pub async fn models(&self) -> Result<Vec<ModelInfo>> {
-        self.call(ListModels {}).await
-    }
-
-    pub async fn tree(&self, id: &str) -> Result<Vec<TreeEntry>> {
-        self.call(GetTree { session_id: id.into() }).await
-    }
-
-    pub async fn checkout(&self, id: &str, node: Option<usize>) -> Result<Option<String>> {
-        self.call(Checkout { session_id: id.into(), node }).await
-    }
-
-    pub async fn complete(&self, cwd: &Path, text: String, cursor: usize, refresh: bool) -> Result<Option<Mention>> {
-        self.call(CompleteMention { cwd: cwd.into(), text, cursor, refresh }).await
-    }
-
-    pub async fn resolve(&self, cwd: &Path, text: String, skill: Option<String>) -> Result<Vec<Resolved>> {
-        self.call(ResolveMentions { cwd: cwd.into(), text, skill }).await
     }
 
     pub async fn read_image(&self, path: &Path) -> Result<Vec<u8>> {
         let data = self.call(ReadImage { path: path.into() }).await?;
         STANDARD.decode(data).map_err(|_| Error::Other("The host sent an image that is not base64".into()))
-    }
-
-    pub async fn append_shell(&self, id: &str, run: &str) -> Result<()> {
-        self.call(AppendShell { session_id: id.into(), run: run.into() }).await
-    }
-
-    pub async fn delete_sessions(&self) -> Result<Deleted> {
-        self.call(DeleteSessions {}).await
-    }
-
-    pub async fn set_icon(&self, icon: Option<String>) -> Result<()> {
-        self.call(SetIcon { icon }).await
-    }
-
-    pub async fn set_description(&self, description: String) -> Result<()> {
-        self.call(SetDescription { description }).await
-    }
-
-    pub async fn save_snippet(
-        &self,
-        id: Option<String>,
-        name: String,
-        command: String,
-        icon: Option<String>,
-    ) -> Result<String> {
-        self.call(SaveSnippet { id, name, command, icon }).await
-    }
-
-    pub async fn delete_snippet(&self, id: &str) -> Result<()> {
-        self.call(DeleteSnippet { id: id.into() }).await
-    }
-
-    pub async fn list_directory(&self, path: &Path) -> Result<Directory> {
-        self.call(ListDirectory { path: path.into() }).await
-    }
-
-    pub async fn list_skills(&self, cwd: &Path) -> Result<Vec<Skill>> {
-        self.call(ListSkills { cwd: cwd.into() }).await
     }
 
     pub async fn upload(&self, name: &str, bytes: &[u8]) -> Result<PathBuf> {
@@ -357,7 +245,7 @@ impl Client {
 pub async fn pair(invite: &Invite, device: &str) -> Result<(Remote, HostInfo)> {
     let remote = Remote { address: invite.address.clone(), cert: invite.cert.clone(), token: None };
     let client = Client::connect(Endpoint::Remote(remote.clone())).await?;
-    let token = client.pair(&invite.code, device).await?;
+    let token = client.call(Pair { code: invite.code.clone(), device: device.into() }).await?;
     let host = client.host().ok_or("The mu host did not say hello")?;
     Ok((Remote { token: Some(token), ..remote }, host))
 }
@@ -409,6 +297,8 @@ async fn call<C: Call + Sync>(
     Ok(serde_json::from_slice(&read(body).await?)?)
 }
 
+// A subscription outlives its connection: it says once that the host is lost,
+// then carries on with events when it is back.
 pub enum Update<T = Event> {
     Event(T),
     Lost,
@@ -434,10 +324,7 @@ impl<T: DeserializeOwned> Subscription<T> {
         loop {
             let Some(lines) = &mut self.lines else {
                 time::sleep(Duration::from_secs(1)).await;
-                match self.client.open(&self.feed).await {
-                    Ok(lines) => self.lines = Some(lines),
-                    Err(_) => return Update::Lost,
-                }
+                self.lines = self.client.open(&self.feed).await.ok();
                 continue;
             };
             if let Ok(Some(event)) = lines.next().await {

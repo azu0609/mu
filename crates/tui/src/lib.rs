@@ -11,7 +11,10 @@ use crossterm::event::{
 };
 pub use devices::{devices, pair, unpair};
 pub use mu_client::Endpoint;
-use mu_client::{Block, Change, Event, HostView, Kind, Model, ShellEvent, Tool, ToolOutput, ToolStatus, View, counts};
+use mu_client::{
+    AppendShell, Block, Change, Checkout, CompleteMention, CreateSession, Event, GetTree, HostView, Kind, ListSkills,
+    Model, RecallQueued, SendMessage, SetModel, ShellEvent, Stop, Tool, ToolOutput, ToolStatus, View, counts,
+};
 use remote::{Incoming, Remote};
 use std::{
     env,
@@ -51,6 +54,29 @@ fn cycle_selection(selected: usize, len: usize, up: bool) -> usize {
     }
 }
 
+// The @mention the host is completing: each edit asks again, and only the
+// latest answer counts.
+#[derive(Default)]
+struct Mentioning {
+    asked: Option<(String, usize)>,
+    open: bool,
+    seq: u64,
+    done: u64,
+}
+
+impl Mentioning {
+    fn close(&mut self) {
+        self.asked = None;
+        self.open = false;
+        self.seq += 1;
+        self.done = self.seq;
+    }
+
+    fn pending(&self) -> bool {
+        self.done < self.seq
+    }
+}
+
 // A conversation not started yet: the host only makes one with its first message.
 struct Draft {
     model: Option<Model>,
@@ -66,10 +92,7 @@ struct App {
     feedback: Vec<Block>,
     completion: Option<input::Menu>,
     dismissed: bool,
-    mention_key: Option<(String, usize)>,
-    mention_open: bool,
-    mention_seq: u64,
-    mention_done: u64,
+    mention: Mentioning,
     picker: Option<Picker>,
     shell: Option<Shell>,
     shell_seq: u64,
@@ -84,7 +107,7 @@ impl App {
     fn model(&self) -> Option<&Model> {
         match &self.draft {
             Some(draft) => draft.model.as_ref(),
-            None => Some(&self.view.model),
+            None => Some(&self.view.state.model),
         }
     }
 
@@ -95,12 +118,17 @@ impl App {
         }
     }
 
-    fn reset_view(&mut self) {
-        self.feedback.clear();
+    // Back to the newest lines, where the transcript follows what arrives.
+    fn follow(&mut self) {
         self.scroll = 0;
         self.scroll_layout = None;
+    }
+
+    fn reset_view(&mut self) {
+        self.feedback.clear();
+        self.follow();
         self.transcript_static = None;
-        self.close_mention();
+        self.mention.close();
     }
 
     fn notice(&mut self, text: impl Into<String>) {
@@ -126,8 +154,7 @@ impl App {
         match change {
             Change::Reset { .. } => {
                 self.connected = true;
-                self.scroll = 0;
-                self.scroll_layout = None;
+                self.follow();
                 self.transcript_static = None;
             }
             Change::State { started } => {
@@ -135,11 +162,10 @@ impl App {
                     if started {
                         self.feedback.clear();
                     }
-                    self.scroll = 0;
-                    self.scroll_layout = None;
+                    self.follow();
                 }
             }
-            Change::Committed { .. } | Change::Live(_) | Change::LiveNotice => (),
+            Change::Committed { .. } | Change::Live(_) => (),
             Change::Feedback(block) => self.push_feedback(block),
         }
     }
@@ -167,31 +193,24 @@ impl App {
                 }
             }
             Incoming::Mention(seq, result) => {
-                self.mention_done = self.mention_done.max(seq);
-                if seq != self.mention_seq {
+                self.mention.done = self.mention.done.max(seq);
+                if seq != self.mention.seq {
                     return;
                 }
                 match result {
                     Ok(Some(mention)) => {
+                        let range = mention.start as usize..mention.end as usize;
                         let mut menu = input::Menu {
-                            range: mention.range,
-                            query: mention.query,
                             file: true,
                             exact_file: mention.exact_file,
-                            entries: mention
-                                .entries
-                                .into_iter()
-                                .map(|entry| input::Entry { text: entry.text, label: entry.label })
-                                .collect(),
-                            selected: 0,
-                            explicit: false,
+                            ..input::Menu::new(range, mention.query, mention.entries)
                         };
                         menu.inherit(self.completion.as_ref());
                         self.completion = Some(menu);
                     }
                     Ok(None) => {
                         self.completion = None;
-                        self.mention_open = false;
+                        self.mention.open = false;
                     }
                     Err(e) => {
                         self.completion = None;
@@ -226,7 +245,7 @@ impl App {
         };
         let shell = self.shell.take().expect("matched");
         let error = match (run, &shell.session) {
-            (Some(run), Some(session)) => match self.remote.append_shell(session, &run) {
+            (Some(run), Some(session)) => match self.remote.call(AppendShell { session_id: session.clone(), run }) {
                 Ok(()) => return,
                 Err(e) => Some(format!("Not added to the conversation: {e}")),
             },
@@ -279,7 +298,7 @@ impl App {
 
     fn start_draft(&mut self, cwd: PathBuf, model: Option<Model>) {
         self.remote.detach();
-        let skills = self.remote.skills(&cwd);
+        let skills = self.remote.call(ListSkills { cwd: cwd.clone() });
         self.view = View { cwd, skills: skills.as_ref().cloned().unwrap_or_default(), ..View::default() };
         self.draft = Some(Draft { model });
         self.connected = true;
@@ -292,13 +311,13 @@ impl App {
     fn quit(&mut self) {
         self.quitting = true;
         if let Ok(id) = self.session() {
-            let _ = self.remote.stop(id);
+            let _ = self.remote.call(Stop { session_id: id.into() });
         }
     }
 
     fn stop(&mut self) {
         if self.view.running()
-            && let Err(e) = self.remote.stop(&self.view.id)
+            && let Err(e) = self.remote.call(Stop { session_id: self.view.id.clone() })
         {
             self.warn(e.to_string());
         }
@@ -311,13 +330,18 @@ impl App {
         }
         let newest = match self.draft {
             Some(_) => None,
-            None => self.view.queued.last().cloned(),
+            None => self.view.state.queued.last().cloned(),
         };
         let Some(text) = newest else {
             self.notice("No queued messages.");
             return;
         };
-        match self.remote.recall(&self.view.id, self.view.queued.len() - 1, &text) {
+        let recall = RecallQueued {
+            session_id: self.view.id.clone(),
+            index: self.view.state.queued.len() - 1,
+            text: text.clone(),
+        };
+        match self.remote.call(recall) {
             Ok(true) => {
                 self.editor.insert(&text);
                 self.notice("Restored newest queued message to input.");
@@ -358,12 +382,12 @@ impl App {
                 };
                 match &mut self.draft {
                     Some(draft) => draft.model = Some(model),
-                    None => self.remote.set_model(&self.view.id, model)?,
+                    None => self.remote.call(SetModel { session_id: self.view.id.clone(), model })?,
                 }
             }
             commands::BuiltinKind::New => self.start_draft(self.view.cwd.clone(), self.model().cloned()),
             commands::BuiltinKind::Tree => {
-                let entries: Vec<_> = self.remote.tree(self.session()?)?;
+                let entries = self.remote.call(GetTree { session_id: self.session()?.into() })?;
                 let selected = entries.iter().position(|entry| entry.current).unwrap_or(0);
                 let entries = entries
                     .into_iter()
@@ -394,8 +418,7 @@ impl App {
         if let Err(e) = self.send_input() {
             self.warn(e.to_string());
         }
-        self.scroll = 0;
-        self.scroll_layout = None;
+        self.follow();
     }
 
     fn send_input(&mut self) -> Result<()> {
@@ -422,12 +445,12 @@ impl App {
         match &self.draft {
             Some(draft) => {
                 let model = draft.model.clone().ok_or("Pick a model first: /model <model> [effort|-] [context]")?;
-                let id = self.remote.create(&self.view.cwd, model, text, skill)?;
+                let id = self.remote.call(CreateSession { cwd: self.view.cwd.clone(), model, text, skill })?;
                 self.editor.clear();
                 self.attach(&id)
             }
             None => {
-                self.remote.send(&self.view.id, text, skill)?;
+                self.remote.call(SendMessage { session_id: self.view.id.clone(), text, skill })?;
                 self.editor.clear();
                 Ok(())
             }
@@ -440,13 +463,6 @@ impl App {
         {
             self.editor.replace(menu.range.clone(), &text);
         }
-    }
-
-    fn close_mention(&mut self) {
-        self.mention_key = None;
-        self.mention_open = false;
-        self.mention_seq += 1;
-        self.mention_done = self.mention_seq;
     }
 
     fn refresh_completion(&mut self) {
@@ -462,25 +478,31 @@ impl App {
         if let Some(mut menu) = menu {
             menu.inherit(self.completion.as_ref());
             self.completion = Some(menu);
-            self.close_mention();
+            self.mention.close();
             return;
         }
         if self.dismissed || self.picker.is_some() || shell || !text.contains('@') {
             self.completion = None;
-            self.close_mention();
+            self.mention.close();
             return;
         }
-        if self.mention_key.as_ref().is_some_and(|(t, c)| *t == text && *c == cursor) {
+        if self.mention.asked.as_ref().is_some_and(|(t, c)| *t == text && *c == cursor) {
             return;
         }
-        self.mention_seq += 1;
-        self.remote.complete(self.mention_seq, &self.view.cwd, text.clone(), cursor, !self.mention_open);
-        self.mention_open = true;
-        self.mention_key = Some((text, cursor));
+        self.mention.seq += 1;
+        let call = CompleteMention {
+            cwd: self.view.cwd.clone(),
+            text: text.clone(),
+            cursor: cursor as u32,
+            refresh: !self.mention.open,
+        };
+        self.remote.complete(self.mention.seq, call);
+        self.mention.open = true;
+        self.mention.asked = Some((text, cursor));
         // A nearby host answers before the next frame, so the menu never lags the
         // input. Only a slow answer (a first index of a large tree) arrives later.
         let deadline = Instant::now() + Duration::from_millis(50);
-        while self.mention_done < self.mention_seq {
+        while self.mention.pending() {
             match self.remote.rx.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
                 Ok(incoming) => self.handle(incoming),
                 Err(_) => {
@@ -498,7 +520,7 @@ impl App {
         if let Some((target, _)) = picker.entries.into_iter().nth(picker.selected) {
             match target {
                 Target::Node(node) => {
-                    let draft = self.remote.checkout(&self.view.id, node)?;
+                    let draft = self.remote.call(Checkout { session_id: self.view.id.clone(), node })?;
                     if let Some(text) = draft {
                         self.editor.clear();
                         self.editor.insert(&text);
@@ -670,7 +692,7 @@ impl App {
                 ui::draw(self)?;
                 dirty = false;
             }
-            let busy = self.view.running() || self.shell.is_some() || self.mention_done < self.mention_seq;
+            let busy = self.view.running() || self.shell.is_some() || self.mention.pending();
             if event::poll(Duration::from_millis(if busy { 33 } else { 250 }))? {
                 let before = (self.editor.text(), self.editor.cursor);
                 match event::read()? {
@@ -748,10 +770,7 @@ pub fn run(endpoint: Endpoint) -> Result<()> {
         feedback: vec![],
         completion: None,
         dismissed: false,
-        mention_key: None,
-        mention_open: false,
-        mention_seq: 0,
-        mention_done: 0,
+        mention: Mentioning::default(),
         picker: None,
         shell: None,
         shell_seq: 0,

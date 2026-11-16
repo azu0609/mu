@@ -67,6 +67,7 @@ import dev.azuki.mu.design.Solar
 import dev.azuki.mu.design.Spinning
 import dev.azuki.mu.design.TopBar
 import dev.azuki.mu.duration
+import dev.azuki.mu.ending
 import kotlin.time.Clock
 import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.Card
@@ -138,7 +139,7 @@ fun Chat(
                                 append(
                                     "in ${mu.core.compact(state.uncachedInput)} (${mu.core.compact(state.input)}) / ${mu.core.compact(state.output)} out"
                                 )
-                                val context = state.context
+                                val context = state.model.context
                                 if (context != null)
                                     append(" / ${state.contextUsed * 100 / context}% ctx")
                                 else append(" / ${mu.core.compact(state.contextUsed)} ctx")
@@ -404,16 +405,6 @@ private fun CallView(block: Block, open: Boolean, onToggle: () -> Unit) {
         }
     }
 }
-
-private fun ending(status: ToolStatus): String? =
-    when (status) {
-        is ToolStatus.Exited -> if (status.code == 0) null else "exit ${status.code}"
-        is ToolStatus.TimedOut -> "timed out"
-        ToolStatus.Cancelled -> "cancelled"
-        ToolStatus.Failed -> "failed"
-        ToolStatus.Running,
-        ToolStatus.Pending -> null
-    }
 
 @Composable
 private fun ShellCard(block: Block) {

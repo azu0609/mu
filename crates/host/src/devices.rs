@@ -1,4 +1,4 @@
-use crate::Result;
+use crate::{Result, store};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use mu_wire as wire;
 use ring::{
@@ -8,9 +8,6 @@ use ring::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
-    fs,
-    io::{self, Write},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::PathBuf,
     sync::Mutex,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -52,12 +49,7 @@ pub struct Devices {
 
 impl Devices {
     pub fn load(path: PathBuf) -> Result<Self> {
-        let list = match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => vec![],
-            Err(e) => return Err(format!("{}: {e}", path.display()).into()),
-        };
-        Ok(Self { path, list: Mutex::new(list), invites: Mutex::default() })
+        Ok(Self { list: Mutex::new(store::load(&path)?), path, invites: Mutex::default() })
     }
 
     pub fn invite(&self) -> Result<String> {
@@ -83,7 +75,7 @@ impl Devices {
         };
         let mut list = self.list.lock().unwrap();
         list.push(device);
-        if let Err(e) = self.save(&list) {
+        if let Err(e) = store::save(&self.path, &*list) {
             list.pop();
             return Err(e);
         }
@@ -106,22 +98,10 @@ impl Devices {
             return Ok(false);
         };
         let device = list.remove(i);
-        if let Err(e) = self.save(&list) {
+        if let Err(e) = store::save(&self.path, &*list) {
             list.insert(i, device);
             return Err(e);
         }
         Ok(true)
-    }
-
-    fn save(&self, list: &[Device]) -> Result<()> {
-        if let Some(dir) = self.path.parent() {
-            fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
-        }
-        let temporary = self.path.with_extension("json.tmp");
-        let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&temporary)?;
-        file.write_all(&serde_json::to_vec_pretty(list)?)?;
-        file.sync_all()?;
-        fs::rename(&temporary, &self.path)?;
-        Ok(())
     }
 }

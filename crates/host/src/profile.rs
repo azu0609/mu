@@ -1,13 +1,7 @@
-use crate::{Result, devices::short_id, home};
+use crate::{Result, devices::short_id, home, store};
 use mu_wire::{self as wire, Snippet};
 use serde::{Deserialize, Serialize};
-use std::{
-    fs,
-    io::{self, Write},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
-    path::PathBuf,
-    sync::Mutex,
-};
+use std::{path::PathBuf, sync::Mutex};
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Stored {
@@ -24,12 +18,7 @@ pub struct Profile {
 
 impl Profile {
     pub fn load(path: PathBuf, name: String) -> Result<Self> {
-        let stored = match fs::read(&path) {
-            Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => Stored::default(),
-            Err(e) => return Err(format!("{}: {e}", path.display()).into()),
-        };
-        Ok(Self { path, stored: Mutex::new(stored), name })
+        Ok(Self { stored: Mutex::new(store::load(&path)?), path, name })
     }
 
     pub fn get(&self) -> wire::Profile {
@@ -103,21 +92,9 @@ impl Profile {
         let mut stored = self.stored.lock().unwrap();
         let mut changed = stored.clone();
         let result = change(&mut changed)?;
-        self.save(&changed)?;
+        store::save(&self.path, &changed)?;
         *stored = changed;
         Ok(result)
-    }
-
-    fn save(&self, stored: &Stored) -> Result<()> {
-        if let Some(dir) = self.path.parent() {
-            fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
-        }
-        let temporary = self.path.with_extension("json.tmp");
-        let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&temporary)?;
-        file.write_all(&serde_json::to_vec_pretty(stored)?)?;
-        file.sync_all()?;
-        fs::rename(&temporary, &self.path)?;
-        Ok(())
     }
 }
 

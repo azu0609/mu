@@ -7,6 +7,7 @@ import androidx.compose.runtime.setValue
 import dev.azuki.mu.ChatTarget
 import dev.azuki.mu.Mu
 import dev.azuki.mu.api.Block
+import dev.azuki.mu.api.Model
 import dev.azuki.mu.api.MuException
 import dev.azuki.mu.api.Session
 import dev.azuki.mu.api.SessionState
@@ -46,17 +47,17 @@ class ChatState(private val mu: Mu, val target: ChatTarget) : Destination {
         get() = state?.status == Status.Running
 
     override val model
-        get() = state?.model
+        get() = state?.model?.name
 
     override val effort
-        get() = state?.effort
+        get() = state?.model?.effort
 
     private var session: Session? = null
 
     suspend fun run() {
         while (true) {
             try {
-                mu.core.openSession(host, target.session).use { session ->
+                mu.remote(host).openSession(target.session).use { session ->
                     this.session = session
                     error = null
                     coroutineScope {
@@ -124,6 +125,6 @@ class ChatState(private val mu: Mu, val target: ChatTarget) : Destination {
 
     // A session always runs some model, so there is no unpicking it.
     override fun use(model: String?, effort: String?) {
-        if (model != null) mu.launch { connected().setModel(model, effort) }
+        if (model != null) mu.launch { connected().setModel(Model(model, effort)) }
     }
 }

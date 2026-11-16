@@ -64,7 +64,7 @@ fun SnippetSheet(
                     onClick = {
                         scope.launch {
                             try {
-                                mu.core.deleteSnippet(host, snippet.id)
+                                mu.remote(host).deleteSnippet(snippet.id)
                                 dismiss?.invoke()
                             } catch (e: MuException) {
                                 mu.toast(e.message)
@@ -83,7 +83,7 @@ fun SnippetSheet(
                 saving = true
                 scope.launch {
                     try {
-                        mu.core.saveSnippet(host, snippet?.id, name.trim(), command.trim(), icon)
+                        mu.remote(host).saveSnippet(snippet?.id, name.trim(), command.trim(), icon)
                         dismiss?.invoke()
                     } catch (e: MuException) {
                         mu.toast(e.message)

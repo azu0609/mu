@@ -76,6 +76,9 @@ sealed interface Attached {
 
 data class ModelInfo(val name: String, val context: Long?)
 
+// A null effort is the endpoint's own default; the host fills in a null context when it can.
+data class Model(val name: String, val effort: String?, val context: Long? = null)
+
 enum class BlockKind {
     User,
     Agent,
@@ -110,9 +113,7 @@ sealed interface ToolStatus {
 data class SessionState(
     val status: Status,
     val title: String,
-    val model: String,
-    val effort: String?,
-    val context: Long?,
+    val model: Model,
     val contextUsed: Long,
     val input: Long,
     val uncachedInput: Long,

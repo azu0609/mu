@@ -13,8 +13,10 @@ import dev.azuki.mu.api.HostProfile
 import dev.azuki.mu.api.HostUpdate
 import dev.azuki.mu.api.Mention
 import dev.azuki.mu.api.MentionEntry
+import dev.azuki.mu.api.Model
 import dev.azuki.mu.api.ModelInfo
 import dev.azuki.mu.api.MuException
+import dev.azuki.mu.api.Remote
 import dev.azuki.mu.api.Resolved
 import dev.azuki.mu.api.Session
 import dev.azuki.mu.api.SessionState
@@ -33,6 +35,7 @@ import dev.azuki.mu.core.HostListener
 import dev.azuki.mu.core.MuException as FfiException
 import dev.azuki.mu.core.SessionListener
 import dev.azuki.mu.core.ShellListener
+import dev.azuki.mu.wire.Kind
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -45,101 +48,6 @@ import kotlinx.coroutines.flow.receiveAsFlow
 class FfiCore(private val core: Ffi, private val device: String) : Core {
     override val version: String = dev.azuki.mu.core.version()
 
-    override fun hosts(): List<Host> = core.hosts().map { it.toModel() }
-
-    override suspend fun pair(invite: String): Host = mapped { core.pair(invite, device).toModel() }
-
-    override fun forget(host: String) = mapped { core.forget(host) }
-
-    override fun watch(host: String): Flow<HostUpdate> =
-        callbackFlow {
-                val handle = mapped {
-                    core.watchHost(
-                        host,
-                        object : HostListener {
-                            override fun onUpdate(update: dev.azuki.mu.core.HostUpdate) {
-                                trySend(update.toModel())
-                            }
-                        },
-                    )
-                }
-                awaitClose { handle.close() }
-            }
-            .buffer(Channel.CONFLATED)
-
-    override suspend fun createSession(
-        host: String,
-        cwd: String,
-        model: String,
-        effort: String?,
-        text: String,
-        skill: String?,
-    ): String = mapped { core.createSession(host, cwd, model, effort, text, skill) }
-
-    override suspend fun listModels(host: String): List<ModelInfo> = mapped {
-        core.listModels(host).map { ModelInfo(it.name, it.context) }
-    }
-
-    override suspend fun deleteSessions(host: String): Deleted = mapped {
-        core.deleteSessions(host).let { Deleted(it.deleted, it.inUse) }
-    }
-
-    override suspend fun setIcon(host: String, icon: String?) = mapped { core.setIcon(host, icon) }
-
-    override suspend fun setDescription(host: String, description: String) = mapped {
-        core.setDescription(host, description)
-    }
-
-    override suspend fun saveSnippet(
-        host: String,
-        id: String?,
-        name: String,
-        command: String,
-        icon: String?,
-    ): String = mapped { core.saveSnippet(host, id, name, command, icon) }
-
-    override suspend fun deleteSnippet(host: String, id: String) = mapped {
-        core.deleteSnippet(host, id)
-    }
-
-    override suspend fun listDirectory(host: String, path: String): Directory = mapped {
-        val directory = core.listDirectory(host, path)
-        Directory(
-            directory.path,
-            directory.entries.map { entry ->
-                DirectoryEntry(
-                    entry.name,
-                    when (entry.kind) {
-                        dev.azuki.mu.core.EntryKind.FILE -> EntryKind.File
-                        dev.azuki.mu.core.EntryKind.DIRECTORY -> EntryKind.Directory
-                        dev.azuki.mu.core.EntryKind.REPOSITORY -> EntryKind.Repository
-                    },
-                )
-            },
-        )
-    }
-
-    override suspend fun listSkills(host: String, cwd: String): List<Skill> = mapped {
-        core.listSkills(host, cwd).map { it.toModel() }
-    }
-
-    override suspend fun completeMention(
-        host: String,
-        cwd: String,
-        text: String,
-        cursor: Int,
-        refresh: Boolean,
-    ): Mention? = mapped {
-        core.completeMention(host, cwd, text, cursor.toUInt(), refresh)?.let { mention ->
-            Mention(
-                mention.start.toInt(),
-                mention.end.toInt(),
-                mention.query,
-                mention.entries.map { MentionEntry(it.text, it.label) },
-            )
-        }
-    }
-
     override fun compact(n: Long): String = dev.azuki.mu.core.compact(n.toULong())
 
     override fun mentions(text: String): List<Written> =
@@ -147,60 +55,44 @@ class FfiCore(private val core: Ffi, private val device: String) : Core {
             Written(it.start.toInt(), it.end.toInt(), it.path, it.closed)
         }
 
-    override suspend fun resolveMentions(
-        host: String,
-        cwd: String,
-        text: String,
-        skill: String?,
-    ): List<Resolved> = mapped {
-        core.resolveMentions(host, cwd, text, skill).map {
-            Resolved(
-                it.path,
-                it.file,
-                when (val kind = it.kind) {
-                    dev.azuki.mu.core.Attached.Image -> Attached.Image
-                    is dev.azuki.mu.core.Attached.Text ->
-                        Attached.Text(kind.lines.toInt(), kind.head)
-                },
-            )
-        }
-    }
+    override fun hosts(): List<Host> = core.hosts().map { it.toModel() }
 
-    override suspend fun readImage(host: String, path: String): ByteArray = mapped {
-        core.readImage(host, path)
-    }
+    override suspend fun pair(invite: String): Host = mapped { core.pair(invite, device).toModel() }
 
-    override suspend fun upload(host: String, name: String, data: ByteArray): String = mapped {
-        core.upload(host, name, data)
-    }
+    override fun forget(host: String) = mapped { core.forget(host) }
 
-    // Each update replaces the last, so only the latest matters.
-    override fun shell(host: String, cwd: String, command: String): Flow<ShellUpdate> =
+    override fun remote(host: String): Remote = FfiRemote(core.remote(host))
+}
+
+private class FfiRemote(private val remote: dev.azuki.mu.core.Remote) : Remote {
+    // Each update is all of it, so only the latest matters.
+    override fun watch(): Flow<HostUpdate> =
         callbackFlow {
                 val handle = mapped {
-                    core.shell(
-                        host,
-                        cwd,
-                        command,
-                        object : ShellListener {
-                            override fun onUpdate(update: dev.azuki.mu.core.ShellUpdate) {
-                                val model = update.toModel()
-                                trySend(model)
-                                if (model !is ShellUpdate.Output) close()
+                    remote.watch(
+                        object : HostListener {
+                            override fun onUpdate(update: dev.azuki.mu.core.HostUpdate) {
+                                trySend(update.toModel())
                             }
-                        },
+                        }
                     )
                 }
                 awaitClose { handle.close() }
             }
             .buffer(Channel.CONFLATED)
 
-    override suspend fun openSession(host: String, session: String): Session {
+    override suspend fun createSession(
+        cwd: String,
+        model: Model,
+        text: String,
+        skill: String?,
+    ): String = mapped { remote.createSession(cwd, model.toFfi(), text, skill) }
+
+    override suspend fun openSession(session: String): Session {
         // None may be dropped: each update builds on the last.
         val updates = Channel<SessionUpdate>(Channel.UNLIMITED)
         val handle = mapped {
-            core.openSession(
-                host,
+            remote.openSession(
                 session,
                 object : SessionListener {
                     override fun onUpdate(update: dev.azuki.mu.core.SessionUpdate) {
@@ -218,9 +110,7 @@ class FfiCore(private val core: Ffi, private val device: String) : Core {
 
             override suspend fun appendShell(run: String) = mapped { handle.appendShell(run) }
 
-            override suspend fun setModel(name: String, effort: String?) = mapped {
-                handle.setModel(name, effort)
-            }
+            override suspend fun setModel(model: Model) = mapped { handle.setModel(model.toFfi()) }
 
             override suspend fun stop() = mapped { handle.stop() }
 
@@ -236,6 +126,110 @@ class FfiCore(private val core: Ffi, private val device: String) : Core {
             }
         }
     }
+
+    override suspend fun deleteSessions(): Deleted = mapped {
+        remote.deleteSessions().let { Deleted(it.sessions.toLong(), it.inUse.toLong()) }
+    }
+
+    override suspend fun listModels(): List<ModelInfo> = mapped {
+        remote.listModels().map { ModelInfo(it.name, it.context?.toLong()) }
+    }
+
+    override suspend fun setIcon(icon: String?) = mapped { remote.setIcon(icon) }
+
+    override suspend fun setDescription(description: String) = mapped {
+        remote.setDescription(description)
+    }
+
+    override suspend fun saveSnippet(
+        id: String?,
+        name: String,
+        command: String,
+        icon: String?,
+    ): String = mapped { remote.saveSnippet(id, name, command, icon) }
+
+    override suspend fun deleteSnippet(id: String) = mapped { remote.deleteSnippet(id) }
+
+    override suspend fun listDirectory(path: String): Directory = mapped {
+        val directory = remote.listDirectory(path)
+        Directory(
+            directory.path,
+            directory.entries.map { entry ->
+                DirectoryEntry(
+                    entry.name,
+                    when (entry.kind) {
+                        dev.azuki.mu.wire.EntryKind.FILE -> EntryKind.File
+                        dev.azuki.mu.wire.EntryKind.DIRECTORY -> EntryKind.Directory
+                        dev.azuki.mu.wire.EntryKind.REPOSITORY -> EntryKind.Repository
+                    },
+                )
+            },
+        )
+    }
+
+    override suspend fun listSkills(cwd: String): List<Skill> = mapped {
+        remote.listSkills(cwd).map { it.toModel() }
+    }
+
+    override suspend fun completeMention(
+        cwd: String,
+        text: String,
+        cursor: Int,
+        refresh: Boolean,
+    ): Mention? = mapped {
+        remote.completeMention(cwd, text, cursor.toUInt(), refresh)?.let { mention ->
+            Mention(
+                mention.start.toInt(),
+                mention.end.toInt(),
+                mention.query,
+                mention.entries.map { MentionEntry(it.text, it.label) },
+            )
+        }
+    }
+
+    override suspend fun resolveMentions(
+        cwd: String,
+        text: String,
+        skill: String?,
+    ): List<Resolved> = mapped {
+        remote.resolveMentions(cwd, text, skill).map {
+            Resolved(
+                it.path,
+                it.file,
+                when (val kind = it.kind) {
+                    dev.azuki.mu.wire.Attached.Image -> Attached.Image
+                    is dev.azuki.mu.wire.Attached.Text ->
+                        Attached.Text(kind.lines.toInt(), kind.head)
+                },
+            )
+        }
+    }
+
+    override suspend fun readImage(path: String): ByteArray = mapped { remote.readImage(path) }
+
+    override suspend fun upload(name: String, data: ByteArray): String = mapped {
+        remote.upload(name, data)
+    }
+
+    // Each update replaces the last, so only the latest matters.
+    override fun shell(cwd: String, command: String): Flow<ShellUpdate> =
+        callbackFlow {
+                val handle = mapped {
+                    remote.shell(
+                        cwd,
+                        command,
+                        object : ShellListener {
+                            override fun onUpdate(update: dev.azuki.mu.core.ShellUpdate) {
+                                val model = update.toModel()
+                                trySend(model)
+                                if (model !is ShellUpdate.Output) close()
+                            }
+                        },
+                    )
+                }
+                awaitClose { handle.close() }
+            }
+            .buffer(Channel.CONFLATED)
 }
 
 private inline fun <T> mapped(call: () -> T): T =
@@ -245,9 +239,11 @@ private inline fun <T> mapped(call: () -> T): T =
         throw MuException(e.message.orEmpty(), unpaired = e is FfiException.Unpaired)
     }
 
+private fun Model.toFfi() = dev.azuki.mu.wire.Model(name, effort, context?.toULong())
+
 private fun dev.azuki.mu.core.Host.toModel() = Host(id, name, icon, description, address)
 
-private fun dev.azuki.mu.core.Skill.toModel() = Skill(name, description)
+private fun dev.azuki.mu.wire.Skill.toModel() = Skill(name, description)
 
 private fun dev.azuki.mu.core.HostUpdate.toModel(): HostUpdate =
     when (this) {
@@ -260,44 +256,50 @@ private fun dev.azuki.mu.core.HostUpdate.toModel(): HostUpdate =
                     profile.description,
                     profile.snippets.map { Snippet(it.id, it.name, it.command, it.icon) },
                 ),
-                sessions.map { it.toModel() },
+                sessions.map {
+                    SessionSummary(
+                        it.id,
+                        it.title,
+                        it.cwd,
+                        it.status.toModel(),
+                        it.error,
+                        it.unread,
+                        it.updated.toLong(),
+                    )
+                },
             )
         dev.azuki.mu.core.HostUpdate.Lost -> HostUpdate.Lost
     }
 
-private fun dev.azuki.mu.core.SessionSummary.toModel() =
-    SessionSummary(id, title, cwd, status.toModel(), error, unread, updated)
-
-private fun dev.azuki.mu.core.Status.toModel() =
+private fun dev.azuki.mu.wire.Status.toModel() =
     when (this) {
-        dev.azuki.mu.core.Status.IDLE -> Status.Idle
-        dev.azuki.mu.core.Status.RUNNING -> Status.Running
-        dev.azuki.mu.core.Status.FINISHED -> Status.Finished
-        dev.azuki.mu.core.Status.FAILED -> Status.Failed
+        dev.azuki.mu.wire.Status.IDLE -> Status.Idle
+        dev.azuki.mu.wire.Status.RUNNING -> Status.Running
+        dev.azuki.mu.wire.Status.FINISHED -> Status.Finished
+        dev.azuki.mu.wire.Status.FAILED -> Status.Failed
     }
 
-private fun dev.azuki.mu.core.SessionState.toModel() =
+private fun dev.azuki.mu.wire.State.toModel() =
     SessionState(
         status.toModel(),
         title,
-        model,
-        effort,
-        context,
-        contextUsed,
-        input,
-        uncachedInput,
-        output,
+        Model(model.name, model.effort, model.context?.toLong()),
+        stats.contextUsed.toLong(),
+        stats.input.toLong(),
+        stats.uncachedInput.toLong(),
+        stats.output.toLong(),
         queued,
     )
 
 private fun dev.azuki.mu.core.SessionUpdate.toModel(): SessionUpdate =
     when (this) {
         is dev.azuki.mu.core.SessionUpdate.Reset ->
-            SessionUpdate.Reset(keep, cwd, state.toModel(), skills.map { it.toModel() })
+            SessionUpdate.Reset(keep.toInt(), cwd, state.toModel(), skills.map { it.toModel() })
         is dev.azuki.mu.core.SessionUpdate.State -> SessionUpdate.State(state.toModel(), started)
         is dev.azuki.mu.core.SessionUpdate.Committed ->
             SessionUpdate.Committed(blocks.map { it.toModel() })
-        is dev.azuki.mu.core.SessionUpdate.Live -> SessionUpdate.Live(index, block.toModel())
+        is dev.azuki.mu.core.SessionUpdate.Live ->
+            SessionUpdate.Live(index.toInt(), block.toModel())
         is dev.azuki.mu.core.SessionUpdate.LiveNotice -> SessionUpdate.LiveNotice(block.toModel())
         is dev.azuki.mu.core.SessionUpdate.Feedback -> SessionUpdate.Feedback(block.toModel())
         dev.azuki.mu.core.SessionUpdate.Lost -> SessionUpdate.Lost
@@ -305,37 +307,38 @@ private fun dev.azuki.mu.core.SessionUpdate.toModel(): SessionUpdate =
 
 private fun dev.azuki.mu.core.ShellUpdate.toModel(): ShellUpdate =
     when (this) {
-        is dev.azuki.mu.core.ShellUpdate.Output -> ShellUpdate.Output(tool.toModel())
-        is dev.azuki.mu.core.ShellUpdate.Done -> ShellUpdate.Done(run, tool.toModel())
+        is dev.azuki.mu.core.ShellUpdate.Output ->
+            ShellUpdate.Output(tool(dev.azuki.mu.wire.ToolStatus.Running, output))
+        is dev.azuki.mu.core.ShellUpdate.Done -> ShellUpdate.Done(run, tool(status, output))
         is dev.azuki.mu.core.ShellUpdate.Failed -> ShellUpdate.Failed(message)
     }
 
-private fun dev.azuki.mu.core.Block.toModel() =
+private fun dev.azuki.mu.wire.Block.toModel() =
     Block(
         when (kind) {
-            dev.azuki.mu.core.BlockKind.USER -> BlockKind.User
-            dev.azuki.mu.core.BlockKind.AGENT -> BlockKind.Agent
-            dev.azuki.mu.core.BlockKind.THOUGHT -> BlockKind.Thought
-            dev.azuki.mu.core.BlockKind.CALL -> BlockKind.Call
-            dev.azuki.mu.core.BlockKind.SHELL -> BlockKind.Shell
-            dev.azuki.mu.core.BlockKind.NOTICE -> BlockKind.Notice
-            dev.azuki.mu.core.BlockKind.WARNING -> BlockKind.Warning
+            Kind.USER -> BlockKind.User
+            Kind.AGENT -> BlockKind.Agent
+            Kind.THOUGHT -> BlockKind.Thought
+            Kind.CALL -> BlockKind.Call
+            Kind.SHELL -> BlockKind.Shell
+            Kind.NOTICE -> BlockKind.Notice
+            Kind.WARNING -> BlockKind.Warning
         },
         text,
-        tool?.toModel(),
-        span?.let { Span(it.started, it.finished) },
+        tool?.let { tool(it.status, it.output) },
+        span?.let { Span(it.started.toLong(), it.finished.toLong()) },
     )
 
-private fun dev.azuki.mu.core.Tool.toModel() =
+private fun tool(status: dev.azuki.mu.wire.ToolStatus, output: dev.azuki.mu.wire.ToolOutput) =
     Tool(
-        when (val status = status) {
-            dev.azuki.mu.core.ToolStatus.Pending -> ToolStatus.Pending
-            dev.azuki.mu.core.ToolStatus.Running -> ToolStatus.Running
-            is dev.azuki.mu.core.ToolStatus.Exited -> ToolStatus.Exited(status.code)
-            is dev.azuki.mu.core.ToolStatus.TimedOut -> ToolStatus.TimedOut(status.millis)
-            dev.azuki.mu.core.ToolStatus.Cancelled -> ToolStatus.Cancelled
-            dev.azuki.mu.core.ToolStatus.Failed -> ToolStatus.Failed
+        when (status) {
+            dev.azuki.mu.wire.ToolStatus.Pending -> ToolStatus.Pending
+            dev.azuki.mu.wire.ToolStatus.Running -> ToolStatus.Running
+            is dev.azuki.mu.wire.ToolStatus.Exited -> ToolStatus.Exited(status.v1)
+            is dev.azuki.mu.wire.ToolStatus.TimedOut -> ToolStatus.TimedOut(status.v1.toLong())
+            dev.azuki.mu.wire.ToolStatus.Cancelled -> ToolStatus.Cancelled
+            dev.azuki.mu.wire.ToolStatus.Error -> ToolStatus.Failed
         },
-        output,
-        truncated,
+        output.text,
+        output.truncated,
     )

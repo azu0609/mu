@@ -1,45 +1,31 @@
-use mu_wire::{Block, Event, Kind, Model, Profile, SessionSummary, Skill, State, Stats, Status, WatchEvent};
+use mu_wire::{Block, Event, Kind, Live, Profile, SessionSummary, Skill, State, Status, Touched, WatchEvent};
 use std::{mem, path::PathBuf};
 
 #[derive(Default)]
 pub struct View {
     pub id: String,
     pub cwd: PathBuf,
-    pub title: String,
-    pub status: Status,
-    pub model: Model,
-    pub stats: Stats,
-    pub queued: Vec<String>,
+    pub state: State,
     pub skills: Vec<Skill>,
     pub blocks: Vec<Block>,
-    pub live: Vec<Block>,
-    pub live_notice: Option<Block>,
+    pub live: Live,
 }
 
 pub enum Change {
     Reset { keep: usize },
     State { started: bool },
     Committed { from: usize },
-    Live(usize),
-    LiveNotice,
+    Live(Touched),
     Feedback(Block),
 }
 
 impl View {
     pub fn running(&self) -> bool {
-        self.status == Status::Running
+        self.state.status == Status::Running
     }
 
     pub fn last_text(&self, kind: Kind) -> Option<String> {
         self.blocks.iter().rev().find(|block| block.kind == kind).map(|block| block.text.clone())
-    }
-
-    fn set_state(&mut self, state: State) {
-        self.status = state.status;
-        self.title = state.title;
-        self.model = state.model;
-        self.stats = state.stats;
-        self.queued = state.queued;
     }
 
     pub fn apply(&mut self, event: Event) -> Change {
@@ -47,48 +33,28 @@ impl View {
             Event::Snapshot(snapshot) => {
                 let mut blocks = mem::take(&mut self.blocks);
                 blocks.truncate(snapshot.keep);
-                *self = Self { id: snapshot.id, cwd: snapshot.cwd, skills: snapshot.skills, blocks, ..Self::default() };
-                self.set_state(snapshot.state);
+                *self = Self {
+                    id: snapshot.id,
+                    cwd: snapshot.cwd,
+                    state: snapshot.state,
+                    skills: snapshot.skills,
+                    blocks,
+                    live: Live::default(),
+                };
                 Change::Reset { keep: snapshot.keep }
             }
             Event::State(state) => {
                 let was_running = self.running();
-                self.set_state(state);
+                self.state = state;
                 Change::State { started: self.running() && !was_running }
             }
             Event::Commit { blocks } => {
                 let from = self.blocks.len();
                 self.blocks.extend(blocks);
                 self.live.clear();
-                self.live_notice = None;
                 Change::Committed { from }
             }
-            Event::LivePush(block) => {
-                self.live.push(block);
-                Change::Live(self.live.len() - 1)
-            }
-            Event::LiveDelta { index, text } => {
-                if let Some(block) = self.live.get_mut(index) {
-                    block.text.push_str(&text);
-                }
-                Change::Live(index)
-            }
-            Event::LiveSet { index, block } => {
-                if let Some(slot) = self.live.get_mut(index) {
-                    *slot = block;
-                }
-                Change::Live(index)
-            }
-            Event::LiveOutput { index, output } => {
-                if let Some(tool) = self.live.get_mut(index).and_then(|block| block.tool.as_mut()) {
-                    tool.output = output;
-                }
-                Change::Live(index)
-            }
-            Event::LiveNotice(block) => {
-                self.live_notice = Some(block);
-                Change::LiveNotice
-            }
+            Event::Live(event) => Change::Live(self.live.apply(&event)),
             Event::Feedback(block) => Change::Feedback(block),
         }
     }

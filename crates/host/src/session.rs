@@ -1,121 +1,13 @@
-use crate::{Result, home, instructions, skills::Skill};
+use crate::{Result, config, input::Attachment, instructions, items::block_from_item, skills::Skill};
 use mu_wire::{Block, Kind, Model, Span, Status, Tool, ToolOutput, ToolStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
-    env, fs,
-    io::{self, BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
+    fs,
+    io::{self, BufRead, BufReader, BufWriter, Seek, SeekFrom, Write},
     os::unix::fs::OpenOptionsExt,
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
+    path::PathBuf,
 };
-
-pub fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
-}
-
-pub fn block_from_item(item: &Value, partial: bool) -> Option<Block> {
-    if item["role"] == "user"
-        && let Some(text) = item["content"].as_str()
-    {
-        return Some(Block::new(Kind::User, text));
-    }
-    let texts = |field: &str, typ: &str| {
-        item[field]
-            .as_array()
-            .map(|a| {
-                a.iter().filter(|v| v["type"] == typ).filter_map(|v| v["text"].as_str()).collect::<Vec<_>>().join("\n")
-            })
-            .unwrap_or_default()
-    };
-    match item["type"].as_str()? {
-        "message" => {
-            let mut text = texts("content", "output_text");
-            if let Some(content) = item["content"].as_array() {
-                for part in content {
-                    if let Some(refusal) = part["refusal"].as_str() {
-                        text.push_str(refusal);
-                    }
-                }
-            }
-            Some(Block::new(Kind::Agent, text))
-        }
-        "reasoning" => {
-            let mut text = texts("summary", "summary_text");
-            if text.is_empty() {
-                text = texts("content", "reasoning_text");
-            }
-            Some(Block::new(Kind::Thought, text))
-        }
-        "function_call" => {
-            let name = item["name"].as_str().unwrap_or("tool");
-            let raw = item["arguments"].as_str().unwrap_or("");
-            let args: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
-            let text = if name == "bash" {
-                args["command"]
-                    .as_str()
-                    .map(str::to_owned)
-                    .or_else(|| partial.then(|| command_prefix(raw)).flatten())
-                    .unwrap_or_else(|| if partial || raw.is_empty() { "bash …" } else { raw }.to_owned())
-            } else {
-                format!("{name} {raw}")
-            };
-            let mut block = Block::new(Kind::Call, text);
-            block.tool = Some(Tool {
-                call_id: item["call_id"].as_str().unwrap_or("").into(),
-                status: ToolStatus::Pending,
-                output: ToolOutput::default(),
-            });
-            Some(block)
-        }
-        _ => None,
-    }
-}
-
-// A partial JSON string is display-only: execution still uses the final, validated args.
-fn command_prefix(raw: &str) -> Option<String> {
-    let mut rest = raw.trim_start().strip_prefix('{')?;
-    loop {
-        let mut key = serde_json::Deserializer::from_str(rest).into_iter::<String>();
-        let name = key.next()?.ok()?;
-        rest = rest[key.byte_offset()..].trim_start().strip_prefix(':')?.trim_start();
-        if name == "command" {
-            return string_prefix(rest);
-        }
-        let mut value = serde_json::Deserializer::from_str(rest).into_iter::<serde::de::IgnoredAny>();
-        value.next()?.ok()?;
-        rest = rest[value.byte_offset()..].trim_start().strip_prefix(',')?;
-    }
-}
-
-fn string_prefix(raw: &str) -> Option<String> {
-    match serde_json::Deserializer::from_str(raw).into_iter::<String>().next()? {
-        Ok(text) => return Some(text),
-        Err(e) if e.is_eof() => (),
-        Err(_) => return None,
-    }
-    // Supply the missing quote and let serde decode. On an unfinished escape,
-    // withhold it from the preview (and its high surrogate, if paired).
-    let mut prefix = raw.to_owned();
-    loop {
-        prefix.push('"');
-        if let Ok(text) = serde_json::from_str(&prefix) {
-            return Some(text);
-        }
-        prefix.truncate(prefix.rfind('\\')?);
-    }
-}
-
-fn summary(status: ToolStatus) -> Option<String> {
-    Some(match status {
-        ToolStatus::Exited(0) | ToolStatus::Error => return None,
-        ToolStatus::Pending => "pending".into(),
-        ToolStatus::Running => "running".into(),
-        ToolStatus::Exited(code) => format!("exit {code}"),
-        ToolStatus::TimedOut(ms) => format!("timed out after {ms} ms; process group killed"),
-        ToolStatus::Cancelled => "cancelled; process group killed".into(),
-    })
-}
 
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
 pub struct Usage {
@@ -138,36 +30,19 @@ impl Usage {
     }
 }
 
-// This is both the on-disk log and the in-memory history. Nodes only index
-// ranges in it; blocks are a disposable rendering cache, not a second history.
+// What a turn is made of: all that the model is given, and the notices shown with it.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub enum Record {
+pub enum Entry {
     Item { item: Value },
     Attachment { label: String, path: PathBuf, text: String },
     ImageAttachment { path: PathBuf, image: Value },
     Notice { text: String },
     Tool(Tool),
     Shell { command: String, cwd: Option<PathBuf>, status: ToolStatus, output: ToolOutput },
-    Node(Node),
-    Cursor { node: Option<usize> },
-    Model(Model),
-    Read,
 }
 
-impl Record {
-    fn is_entry(&self) -> bool {
-        matches!(
-            self,
-            Self::Item { .. }
-                | Self::Attachment { .. }
-                | Self::ImageAttachment { .. }
-                | Self::Notice { .. }
-                | Self::Tool(_)
-                | Self::Shell { .. }
-        )
-    }
-
+impl Entry {
     fn input(&self) -> Option<Value> {
         Some(match self {
             Self::Item { item } => item.clone(),
@@ -184,8 +59,32 @@ impl Record {
                 let text = format!("{prompt}$ {command}\n{}", tool_text(*status, output).trim_start_matches('\n'));
                 json!({"role":"user", "content":text.trim_end()})
             }
-            _ => return None,
         })
+    }
+}
+
+// This is both the on-disk log and the in-memory history. A node commits the
+// entries since the record before them; its blocks are a disposable rendering
+// cache, not a second history.
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Record {
+    Node(Node),
+    Cursor {
+        node: Option<usize>,
+    },
+    Model(Model),
+    Read,
+    #[serde(untagged)]
+    Entry(Entry),
+}
+
+impl Record {
+    fn entry(&self) -> Option<&Entry> {
+        match self {
+            Self::Entry(entry) => Some(entry),
+            _ => None,
+        }
     }
 }
 
@@ -214,7 +113,7 @@ pub struct Node {
 }
 
 impl Node {
-    fn status(&self) -> Status {
+    pub fn status(&self) -> Status {
         match self.end {
             Some(End::Finished) => Status::Finished,
             Some(End::Failed { .. }) => Status::Failed,
@@ -229,7 +128,7 @@ fn tool_item(tool: &Tool) -> Value {
 
 fn tool_text(status: ToolStatus, output: &ToolOutput) -> String {
     let mut text = output.text.clone();
-    if let Some(summary) = summary(status) {
+    if let Some(summary) = status.summary() {
         text.push_str(&format!("\n[{summary}]"));
     }
     if output.truncated
@@ -245,7 +144,7 @@ fn tool_text(status: ToolStatus, output: &ToolOutput) -> String {
 
 #[derive(Serialize, Deserialize)]
 pub struct Header {
-    version: u32,
+    pub version: u32,
     pub id: String,
     pub title: String,
     pub cwd: PathBuf,
@@ -260,14 +159,6 @@ pub struct Session {
     file: Option<fs::File>,
     saved: usize,
     offset: u64,
-}
-
-pub fn unique_id() -> String {
-    format!("{}-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos(), std::process::id())
-}
-
-pub fn state_dir() -> PathBuf {
-    env::var_os("XDG_STATE_HOME").map(PathBuf::from).unwrap_or_else(|| home().join(".local/state")).join("mu")
 }
 
 // Lock the transcript's stable inode, not a separate sentinel. Closing the file
@@ -290,7 +181,7 @@ impl Session {
     pub fn new(cwd: PathBuf, model: Model, skills: &[Skill]) -> Self {
         let header = Header {
             version: 1,
-            id: unique_id(),
+            id: crate::unique_id(),
             title: String::new(),
             instructions: instructions::build(&cwd, skills),
             cwd,
@@ -360,7 +251,11 @@ impl Session {
     }
 
     pub fn input(&self) -> Vec<Value> {
-        self.path().iter().flat_map(|&i| self.records[self.node(i).start..i].iter().filter_map(Record::input)).collect()
+        self.path()
+            .iter()
+            .flat_map(|&i| self.records[self.node(i).start..i].iter().filter_map(Record::entry))
+            .filter_map(Entry::input)
+            .collect()
     }
 
     pub fn usage(&self) -> Usage {
@@ -383,10 +278,9 @@ impl Session {
             .fold(0u64, |total, usage| total.saturating_add(usage.input.saturating_sub(usage.cached.unwrap_or(0))))
     }
 
-    pub fn push(&mut self, entries: Vec<Record>, usage: Option<Usage>, span: Span, end: Option<End>) {
+    pub fn push(&mut self, entries: Vec<Entry>, usage: Option<Usage>, span: Span, end: Option<End>) {
         let parent = self.cursor();
-        debug_assert!(entries.iter().all(Record::is_entry));
-        self.records.extend(entries);
+        self.records.extend(entries.into_iter().map(Record::Entry));
         let node = Node { parent, usage, span: Some(span), end, ..Node::default() };
         self.record(Record::Node(node)).expect("valid cursor");
     }
@@ -403,13 +297,13 @@ impl Session {
             .unwrap_or(Status::Idle)
     }
 
-    pub fn user(&mut self, text: String, attachments: Vec<Record>) {
+    pub fn user(&mut self, text: String, attachments: Vec<Attachment>) {
         if self.file.is_none() && self.nodes().next().is_none() {
             self.header.title = text.lines().next().unwrap_or("").chars().take(60).collect();
         }
-        let mut entries = vec![Record::Item { item: json!({"role":"user", "content":text}) }];
-        entries.extend(attachments);
-        let now = now();
+        let mut entries = vec![Entry::Item { item: json!({"role":"user", "content":text}) }];
+        entries.extend(attachments.into_iter().map(Into::into));
+        let now = crate::now();
         self.push(entries, None, Span { started: now, finished: now }, None);
     }
 
@@ -433,8 +327,8 @@ impl Session {
     }
 
     pub fn record(&mut self, mut record: Record) -> Result<()> {
-        if !record.is_entry() && !matches!(record, Record::Node(_)) && self.records.last().is_some_and(Record::is_entry)
-        {
+        let uncommitted = self.records.last().is_some_and(|last| last.entry().is_some());
+        if uncommitted && !matches!(record, Record::Node(_) | Record::Entry(_)) {
             return Err("Uncommitted session entries".into());
         }
         match &mut record {
@@ -442,19 +336,19 @@ impl Session {
                 if node.parent.is_some_and(|i| !matches!(self.records.get(i), Some(Record::Node(_)))) {
                     return Err("Invalid session parent".into());
                 }
-                node.start = self.records.iter().rposition(|r| !r.is_entry()).map_or(0, |i| i + 1);
+                node.start = self.records.iter().rposition(|r| r.entry().is_none()).map_or(0, |i| i + 1);
                 let span = node.span;
-                for entry in &self.records[node.start..] {
+                for entry in self.records[node.start..].iter().filter_map(Record::entry) {
                     match entry {
-                        Record::Item { item } => node.blocks.extend(block_from_item(item, false)),
-                        Record::Attachment { label, path, .. } => {
+                        Entry::Item { item } => node.blocks.extend(block_from_item(item, false)),
+                        Entry::Attachment { label, path, .. } => {
                             node.blocks.push(Block::new(Kind::Notice, format!("{label}: {}", path.display())))
                         }
-                        Record::ImageAttachment { path, .. } => {
+                        Entry::ImageAttachment { path, .. } => {
                             node.blocks.push(Block::new(Kind::Notice, format!("Image: {}", path.display())))
                         }
-                        Record::Notice { text } => node.blocks.push(Block::new(Kind::Warning, text)),
-                        Record::Tool(tool) => {
+                        Entry::Notice { text } => node.blocks.push(Block::new(Kind::Warning, text)),
+                        Entry::Tool(tool) => {
                             if let Some(block) = node
                                 .blocks
                                 .iter_mut()
@@ -464,12 +358,11 @@ impl Session {
                                 block.tool = Some(tool.clone());
                             }
                         }
-                        Record::Shell { command, status, output, .. } => {
+                        Entry::Shell { command, status, output, .. } => {
                             let mut block = Block::new(Kind::Shell, command);
                             block.tool = Some(Tool { call_id: String::new(), status: *status, output: output.clone() });
                             node.blocks.push(block);
                         }
-                        _ => unreachable!(),
                     }
                 }
                 match &node.end {
@@ -494,7 +387,7 @@ impl Session {
         if self.saved == self.records.len() || self.nodes().next().is_none() {
             return Ok(());
         }
-        let path = state_dir().join(format!("{}.jsonl", self.header.id));
+        let path = config::state_dir().join(format!("{}.jsonl", self.header.id));
         if self.file.is_none() {
             fs::create_dir_all(path.parent().unwrap())?;
             let file = fs::OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(&path)?;
@@ -547,7 +440,7 @@ impl Session {
             }
             let record: Record =
                 serde_json::from_slice(&line).map_err(|e| format!("Session near byte {offset}: {e}"))?;
-            let committed = !record.is_entry();
+            let committed = record.entry().is_none();
             session.record(record)?;
             if committed {
                 session.saved = session.records.len();
@@ -630,11 +523,11 @@ impl Session {
 }
 
 // Ids arrive from clients; never let one name a path outside the state directory.
-fn path(id: &str) -> Result<PathBuf> {
+pub fn path(id: &str) -> Result<PathBuf> {
     if id.is_empty() || !id.chars().all(|c| c.is_ascii_digit() || c == '-') {
         return Err("Invalid session id".into());
     }
-    Ok(state_dir().join(format!("{id}.jsonl")))
+    Ok(config::state_dir().join(format!("{id}.jsonl")))
 }
 
 pub fn delete(id: &str) -> Result<bool> {
@@ -652,106 +545,4 @@ pub fn delete(id: &str) -> Result<bool> {
     }
     fs::remove_file(&path)?;
     Ok(true)
-}
-
-pub struct Summary {
-    pub id: String,
-    pub title: String,
-    pub cwd: PathBuf,
-    pub status: Status,
-    pub error: Option<String>,
-    pub unread: bool,
-    pub updated: u64,
-}
-
-pub fn summary_of(id: &str) -> Option<Summary> {
-    summarize(&path(id).ok()?)
-}
-
-fn summarize(path: &Path) -> Option<Summary> {
-    let mut file = fs::File::open(path).ok()?;
-    let mut line = String::new();
-    BufReader::new(&file).read_line(&mut line).ok()?;
-    if !line.ends_with('\n') {
-        return None;
-    }
-    let header: Header = serde_json::from_str(&line).ok()?;
-    if header.version != 1 {
-        return None;
-    }
-    let tail = tail(&mut file).ok()?;
-    let (node, read) = (tail.node, tail.read);
-    let status = node.as_ref().filter(|_| !tail.moved).map_or(Status::Idle, Node::status);
-    let error = match node.as_ref().and_then(|node| node.end.as_ref()) {
-        Some(End::Failed { error }) if status == Status::Failed => Some(error.clone()),
-        _ => None,
-    };
-    let modified = || {
-        let modified = file.metadata().and_then(|m| m.modified()).ok()?;
-        Some(modified.duration_since(UNIX_EPOCH).ok()?.as_millis() as u64)
-    };
-    Some(Summary {
-        id: header.id,
-        title: header.title,
-        cwd: header.cwd,
-        status,
-        error,
-        unread: node.is_some() && !read,
-        updated: node.and_then(|node| node.span).map(|span| span.finished).or_else(modified).unwrap_or(0),
-    })
-}
-
-struct Tail {
-    node: Option<Node>,
-    read: bool,
-    moved: bool,
-}
-
-fn tail(file: &mut fs::File) -> io::Result<Tail> {
-    let len = file.metadata()?.len();
-    let mut window = 16 * 1024;
-    loop {
-        let start = len.saturating_sub(window);
-        file.seek(SeekFrom::Start(start))?;
-        let mut bytes = vec![];
-        file.take(len - start).read_to_end(&mut bytes)?;
-        // Complete lines only: not an unfinished last one, nor one the window cuts into.
-        let end = bytes.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1);
-        let mut lines: Vec<_> = bytes[..end].split(|&b| b == b'\n').collect();
-        lines.pop();
-        let complete = if start == 0 { &lines[..] } else { lines.get(1..).unwrap_or_default() };
-        let (mut read, mut moved) = (false, false);
-        for line in complete.iter().rev() {
-            // serde writes the tag first.
-            if line.starts_with(br#"{"type":"read""#) {
-                read = true;
-            } else if line.starts_with(br#"{"type":"cursor""#) {
-                moved = true;
-            } else if line.starts_with(br#"{"type":"node""#) {
-                let Ok(Record::Node(node)) = serde_json::from_slice(line) else {
-                    return Err(io::ErrorKind::InvalidData.into());
-                };
-                return Ok(Tail { node: Some(node), read, moved });
-            }
-        }
-        if start == 0 {
-            return Ok(Tail { node: None, read, moved });
-        }
-        window *= 4;
-    }
-}
-
-pub fn sessions() -> Result<Vec<Summary>> {
-    let dir = &state_dir();
-    if !dir.exists() {
-        return Ok(vec![]);
-    }
-    let mut sessions: Vec<_> = fs::read_dir(dir)?
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
-        .filter_map(|path| summarize(&path))
-        .collect();
-    sessions.sort_by_key(|summary| std::cmp::Reverse(summary.updated));
-    Ok(sessions)
 }

@@ -1,9 +1,11 @@
 use crate::{
-    Result, config, process,
-    session::{Record, Usage, block_from_item},
+    Result, config,
+    items::block_from_item,
+    process,
+    session::{Entry, Usage},
     tools,
 };
-use mu_wire::{Block, Kind, ModelInfo, ToolOutput, ToolStatus};
+use mu_wire::{Block, Kind, LiveEvent, ModelInfo, ToolStatus};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -17,18 +19,12 @@ use std::{
     time::Duration,
 };
 
-pub enum Event {
-    Push(Block),
-    Delta(usize, String),
-    Set(usize, Block),
-    ToolOutput(usize, ToolOutput),
-    CacheMiss,
-}
+pub const CACHE_MISS: &str = "Cache miss · previously cached prefix was not read";
 
-pub type Emit<'a> = &'a (dyn Fn(Event) + Sync);
+pub type Emit<'a> = &'a (dyn Fn(LiveEvent) + Sync);
 
 pub struct Step {
-    pub entries: Vec<Record>,
+    pub entries: Vec<Entry>,
     pub usage: Usage,
     pub again: bool,
 }
@@ -67,11 +63,11 @@ struct Live<'a> {
 impl Live<'_> {
     fn upsert(&mut self, index: usize, block: Block) {
         if let Some(&slot) = self.slots.get(&index) {
-            (self.emit)(Event::Set(slot, block));
+            (self.emit)(LiveEvent::Set { index: slot, block });
         } else {
             let slot = self.slots.len();
             self.slots.insert(index, slot);
-            (self.emit)(Event::Push(block));
+            (self.emit)(LiveEvent::Push(block));
         }
     }
 
@@ -79,7 +75,7 @@ impl Live<'_> {
         if !self.slots.contains_key(&index) {
             self.upsert(index, Block::new(kind, ""));
         }
-        (self.emit)(Event::Delta(self.slots[&index], text.into()));
+        (self.emit)(LiveEvent::Delta { index: self.slots[&index], text: text.into() });
     }
 }
 
@@ -268,7 +264,7 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, emit: Emit) -> Result<Ste
         .ok_or_else(|| format!("Stream ended without response.completed: {}", String::from_utf8_lossy(&preview)))?;
     let usage = Usage::from_json(&response["usage"]);
     if usage.cache_miss(request.previous_usage) {
-        emit(Event::CacheMiss);
+        emit(LiveEvent::Notice(Block::new(Kind::Warning, CACHE_MISS)));
     }
     let output: Vec<Value> = response["output"].as_array().cloned().unwrap_or_else(|| items.into_values().collect());
     for (index, item) in output.iter().enumerate() {
@@ -288,14 +284,14 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, emit: Emit) -> Result<Ste
                 let cancel = &cancel;
                 scope.spawn(move || {
                     block.tool.as_mut().unwrap().status = ToolStatus::Running;
-                    emit(Event::Set(slot, block.clone()));
+                    emit(LiveEvent::Set { index: slot, block: block.clone() });
                     let tool = block.tool.as_mut().unwrap();
                     let result = if call["name"] != "bash" {
                         Err("Unknown tool (only bash is available)".into())
                     } else {
                         tools::bash(call["arguments"].as_str().unwrap_or(""), cwd, cancel, |output| {
                             tool.output = output.clone();
-                            emit(Event::ToolOutput(slot, output));
+                            emit(LiveEvent::Output { index: slot, output });
                         })
                     };
                     let mut images = vec![];
@@ -310,8 +306,8 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, emit: Emit) -> Result<Ste
                             tool.status = ToolStatus::Error;
                         }
                     }
-                    let entry = Record::Tool(tool.clone());
-                    emit(Event::Set(slot, block));
+                    let entry = Entry::Tool(tool.clone());
+                    emit(LiveEvent::Set { index: slot, block });
                     (entry, images)
                 })
             })
@@ -319,12 +315,12 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, emit: Emit) -> Result<Ste
         handles.into_iter().map(|h| h.join().map_err(|_| "Tool worker panicked".into())).collect::<Result<Vec<_>>>()
     })?;
     let again = !results.is_empty() && !cancel.load(Ordering::Relaxed);
-    let mut entries: Vec<_> = output.into_iter().map(|item| Record::Item { item }).collect();
+    let mut entries: Vec<_> = output.into_iter().map(|item| Entry::Item { item }).collect();
     let mut images = vec![];
     for (entry, attached) in results {
         entries.push(entry);
         images.extend(attached);
     }
-    entries.extend(images.into_iter().map(|item| Record::Item { item }));
+    entries.extend(images.into_iter().map(|item| Entry::Item { item }));
     Ok(Step { entries, usage, again })
 }

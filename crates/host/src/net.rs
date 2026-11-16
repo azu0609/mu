@@ -1,13 +1,11 @@
-use crate::{Result, devices::sha256};
+use crate::{Result, devices::sha256, store};
 use rustls::{
     ServerConfig,
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer},
 };
 use std::{
     fs,
-    io::Write,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::Path,
     sync::Arc,
 };
@@ -24,12 +22,8 @@ pub fn identity(dir: &Path) -> Result<Identity> {
         _ => {
             let made = rcgen::generate_simple_self_signed(vec!["mu".to_owned()])?;
             let (cert, key) = (made.cert.der().to_vec(), made.signing_key.serialize_der());
-            fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
-            for (path, bytes) in [(&key_path, &key), (&cert_path, &cert)] {
-                let mut file = fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(path)?;
-                file.write_all(bytes)?;
-                file.sync_all()?;
-            }
+            store::write(&key_path, &key)?;
+            store::write(&cert_path, &cert)?;
             (cert, key)
         }
     };

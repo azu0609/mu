@@ -1,7 +1,10 @@
 // Listeners are called on the core's own threads; hop to the UI's before
 // touching its state.
 use mu_client::{
-    Change, Client, Endpoint, HostView, Invite, Model, ShellEvent, Update, View,
+    AppendShell, Block, Call, Change, Client, CompleteMention, CreateSession, DeleteSessions, DeleteSnippet, Deleted,
+    Directory, Endpoint, HostView, Invite, ListDirectory, ListModels, ListSkills, MarkRead, Mention, Model, ModelInfo,
+    Profile, RecallQueued, ResolveMentions, Resolved, SaveSnippet, SendMessage, SessionSummary, SetDescription,
+    SetIcon, SetModel, ShellEvent, Skill, State, Stop, ToolOutput, ToolStatus, Touched, Update, View, Written,
     hosts::{Hosts, Paired},
 };
 use std::{
@@ -11,9 +14,13 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex},
 };
-use tokio::runtime::{Handle, Runtime};
+use tokio::{
+    runtime::{Handle, Runtime},
+    task::JoinHandle,
+};
 
 uniffi::setup_scaffolding!();
+uniffi::use_remote_type!(mu_wire::PathBuf);
 
 #[uniffi::export]
 pub fn version() -> String {
@@ -25,18 +32,9 @@ pub fn compact(n: u64) -> String {
     mu_client::counts::compact(n)
 }
 
-// Offsets count characters, not UTF-16 units.
 #[uniffi::export]
 pub fn mentions(text: String) -> Vec<Written> {
     mu_client::mentions(&text)
-        .into_iter()
-        .map(|mention| Written {
-            start: mention.range.start as u32,
-            end: mention.range.end as u32,
-            path: mention.path,
-            closed: mention.closed,
-        })
-        .collect()
 }
 
 #[derive(Debug, uniffi::Error)]
@@ -73,6 +71,16 @@ async fn spawn<T: Send + 'static>(
     runtime.spawn(future).await.map_err(|e| MuError::Failed(e.to_string()))?.map_err(Into::into)
 }
 
+// Something the core keeps doing until this is dropped.
+#[derive(uniffi::Object)]
+pub struct Task(JoinHandle<()>);
+
+impl Drop for Task {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 #[derive(uniffi::Record)]
 pub struct Host {
     pub id: String,
@@ -94,11 +102,17 @@ impl From<&Paired> for Host {
     }
 }
 
-#[derive(uniffi::Object)]
-pub struct Core {
-    runtime: Runtime,
+#[derive(Clone)]
+struct Shared {
+    runtime: Handle,
     hosts: Arc<Mutex<Hosts>>,
     clients: Arc<Mutex<HashMap<String, Client>>>,
+}
+
+#[derive(uniffi::Object)]
+pub struct Core {
+    shared: Shared,
+    _runtime: Runtime,
 }
 
 #[uniffi::export]
@@ -112,214 +126,194 @@ impl Core {
             .build()
             .map_err(|e| MuError::Failed(e.to_string()))?;
         let hosts = Hosts::load(PathBuf::from(dir).join("hosts.json"))?;
-        Ok(Arc::new(Self { runtime, hosts: Arc::new(Mutex::new(hosts)), clients: Arc::default() }))
+        let shared =
+            Shared { runtime: runtime.handle().clone(), hosts: Arc::new(Mutex::new(hosts)), clients: Arc::default() };
+        Ok(Arc::new(Self { shared, _runtime: runtime }))
     }
 
     pub fn hosts(&self) -> Vec<Host> {
-        self.hosts.lock().unwrap().list().iter().map(Host::from).collect()
+        self.shared.hosts.lock().unwrap().list().iter().map(Host::from).collect()
     }
 
     pub async fn pair(&self, invite: String, device: String) -> Result<Host, MuError> {
         let invite: Invite = invite.parse().map_err(MuError::Failed)?;
         let (remote, info) =
-            spawn(self.runtime.handle(), async move { mu_client::pair(&invite, &device).await }).await?;
+            spawn(&self.shared.runtime, async move { mu_client::pair(&invite, &device).await }).await?;
         let paired = Paired { name: info.name, icon: None, description: String::new(), remote };
-        self.hosts.lock().unwrap().add(paired.clone())?;
+        self.shared.hosts.lock().unwrap().add(paired.clone())?;
         // A connection made with an older token would keep presenting it.
-        self.clients.lock().unwrap().remove(&paired.remote.cert);
+        self.shared.clients.lock().unwrap().remove(&paired.remote.cert);
         Ok(Host::from(&paired))
     }
 
     pub fn forget(&self, host: String) -> Result<(), MuError> {
-        self.hosts.lock().unwrap().remove(&host)?;
-        self.clients.lock().unwrap().remove(&host);
+        self.shared.hosts.lock().unwrap().remove(&host)?;
+        self.shared.clients.lock().unwrap().remove(&host);
         Ok(())
     }
 
-    pub async fn sessions(&self, host: String) -> Result<Vec<SessionSummary>, MuError> {
-        let sessions = self.on(&host, |client| async move { client.sessions().await }).await?;
-        Ok(sessions.into_iter().map(Into::into).collect())
+    // The paired host with this id, to call; it connects when first called.
+    pub fn remote(&self, host: String) -> Arc<Remote> {
+        Arc::new(Remote { id: host, shared: self.shared.clone() })
+    }
+}
+
+#[derive(uniffi::Object)]
+pub struct Remote {
+    id: String,
+    shared: Shared,
+}
+
+impl Remote {
+    fn connect(&self) -> Result<impl Future<Output = mu_client::Result<Client>> + use<>, MuError> {
+        let Shared { hosts, clients, .. } = &self.shared;
+        let cached = clients.lock().unwrap().get(&self.id).cloned();
+        let hosts = hosts.lock().unwrap();
+        let paired = hosts.get(&self.id).ok_or_else(|| MuError::Failed("This host is not paired".into()))?;
+        let (remote, clients, id) = (paired.remote.clone(), clients.clone(), self.id.clone());
+        Ok(async move {
+            if let Some(client) = cached {
+                return Ok(client);
+            }
+            let client = Client::connect(Endpoint::Remote(remote)).await?;
+            clients.lock().unwrap().insert(id, client.clone());
+            Ok(client)
+        })
     }
 
+    async fn on<T, F>(&self, run: impl FnOnce(Client) -> F + Send + 'static) -> Result<T, MuError>
+    where
+        T: Send + 'static,
+        F: Future<Output = mu_client::Result<T>> + Send + 'static,
+    {
+        let connect = self.connect()?;
+        spawn(&self.shared.runtime, async move { run(connect.await?).await }).await
+    }
+
+    async fn call<C: Call + Send + Sync + 'static>(&self, call: C) -> Result<C::Reply, MuError>
+    where
+        C::Reply: Send,
+    {
+        self.on(|client| async move { client.call(call).await }).await
+    }
+}
+
+#[uniffi::export]
+impl Remote {
+    pub async fn watch(&self, listener: Arc<dyn HostListener>) -> Result<Arc<Task>, MuError> {
+        let mut watch = self.on(|client| async move { client.watch().await }).await?;
+        let (hosts, id) = (self.shared.hosts.clone(), self.id.clone());
+        let task = self.shared.runtime.spawn(async move {
+            let mut view = HostView::default();
+            loop {
+                let Update::Event(event) = watch.next().await else {
+                    listener.on_update(HostUpdate::Lost);
+                    continue;
+                };
+                view.apply(event);
+                let profile = &view.profile;
+                let _ = hosts.lock().unwrap().update(&id, |paired| {
+                    paired.name = profile.name.clone();
+                    paired.icon = profile.icon.clone();
+                    paired.description = profile.description.clone();
+                });
+                listener.on_update(HostUpdate::Host { profile: profile.clone(), sessions: view.sessions.clone() });
+            }
+        });
+        Ok(Arc::new(Task(task)))
+    }
+
+    // Starts the session with its first message.
     pub async fn create_session(
         &self,
-        host: String,
-        cwd: String,
-        model: String,
-        effort: Option<String>,
+        cwd: PathBuf,
+        model: Model,
         text: String,
         skill: Option<String>,
     ) -> Result<String, MuError> {
-        let model = Model { name: model, effort, context: None };
-        self.on(&host, |client| async move { client.create(cwd.as_ref(), model, text, skill).await }).await
+        self.call(CreateSession { cwd, model, text, skill }).await
     }
 
-    pub async fn list_models(&self, host: String) -> Result<Vec<ModelInfo>, MuError> {
-        let models = self.on(&host, |client| async move { client.models().await }).await?;
-        Ok(models
-            .into_iter()
-            .map(|model| ModelInfo { name: model.name, context: model.context.map(|context| context as i64) })
-            .collect())
+    pub async fn list_models(&self) -> Result<Vec<ModelInfo>, MuError> {
+        self.call(ListModels {}).await
     }
 
-    pub async fn delete_sessions(&self, host: String) -> Result<DeletedSessions, MuError> {
-        let deleted = self.on(&host, |client| async move { client.delete_sessions().await }).await?;
-        Ok(DeletedSessions { deleted: deleted.sessions as i64, in_use: deleted.in_use as i64 })
+    pub async fn delete_sessions(&self) -> Result<Deleted, MuError> {
+        self.call(DeleteSessions {}).await
     }
 
-    pub async fn watch_host(&self, host: String, listener: Arc<dyn HostListener>) -> Result<Arc<Watch>, MuError> {
-        let mut watch = self.on(&host, |client| async move { client.watch().await }).await?;
-        let hosts = self.hosts.clone();
-        let task = self.runtime.spawn(async move {
-            let mut view = HostView::default();
-            let mut lost = false;
-            loop {
-                match watch.next().await {
-                    Update::Event(event) => {
-                        lost = false;
-                        view.apply(event);
-                        let profile = &view.profile;
-                        let _ = hosts.lock().unwrap().update(&host, |paired| {
-                            paired.name = profile.name.clone();
-                            paired.icon = profile.icon.clone();
-                            paired.description = profile.description.clone();
-                        });
-                        listener.on_update(HostUpdate::Host {
-                            profile: profile.into(),
-                            sessions: view.sessions.iter().cloned().map(Into::into).collect(),
-                        });
-                    }
-                    Update::Lost if lost => (),
-                    Update::Lost => {
-                        lost = true;
-                        listener.on_update(HostUpdate::Lost);
-                    }
-                }
-            }
-        });
-        Ok(Arc::new(Watch { task }))
+    pub async fn set_icon(&self, icon: Option<String>) -> Result<(), MuError> {
+        self.call(SetIcon { icon }).await
     }
 
-    pub async fn set_icon(&self, host: String, icon: Option<String>) -> Result<(), MuError> {
-        self.on(&host, |client| async move { client.set_icon(icon).await }).await
-    }
-
-    pub async fn set_description(&self, host: String, description: String) -> Result<(), MuError> {
-        self.on(&host, |client| async move { client.set_description(description).await }).await
+    pub async fn set_description(&self, description: String) -> Result<(), MuError> {
+        self.call(SetDescription { description }).await
     }
 
     pub async fn save_snippet(
         &self,
-        host: String,
         id: Option<String>,
         name: String,
         command: String,
         icon: Option<String>,
     ) -> Result<String, MuError> {
-        self.on(&host, |client| async move { client.save_snippet(id, name, command, icon).await }).await
+        self.call(SaveSnippet { id, name, command, icon }).await
     }
 
-    pub async fn delete_snippet(&self, host: String, id: String) -> Result<(), MuError> {
-        self.on(&host, |client| async move { client.delete_snippet(&id).await }).await
+    pub async fn delete_snippet(&self, id: String) -> Result<(), MuError> {
+        self.call(DeleteSnippet { id }).await
     }
 
-    pub async fn list_directory(&self, host: String, path: String) -> Result<Directory, MuError> {
-        let directory = self.on(&host, |client| async move { client.list_directory(path.as_ref()).await }).await?;
-        Ok(Directory {
-            path: directory.path.to_string_lossy().into_owned(),
-            entries: directory
-                .entries
-                .into_iter()
-                .map(|entry| DirectoryEntry {
-                    name: entry.name,
-                    kind: match entry.kind {
-                        mu_client::EntryKind::File => EntryKind::File,
-                        mu_client::EntryKind::Directory => EntryKind::Directory,
-                        mu_client::EntryKind::Repository => EntryKind::Repository,
-                    },
-                })
-                .collect(),
-        })
+    pub async fn list_directory(&self, path: PathBuf) -> Result<Directory, MuError> {
+        self.call(ListDirectory { path }).await
     }
 
-    pub async fn upload(&self, host: String, name: String, data: Vec<u8>) -> Result<String, MuError> {
-        let path = self.on(&host, |client| async move { client.upload(&name, &data).await }).await?;
-        Ok(path.to_string_lossy().into_owned())
+    pub async fn list_skills(&self, cwd: PathBuf) -> Result<Vec<Skill>, MuError> {
+        self.call(ListSkills { cwd }).await
     }
 
-    pub async fn list_skills(&self, host: String, cwd: String) -> Result<Vec<Skill>, MuError> {
-        let skills = self.on(&host, |client| async move { client.list_skills(cwd.as_ref()).await }).await?;
-        Ok(skills.into_iter().map(|skill| Skill { name: skill.name, description: skill.description }).collect())
-    }
-
-    // Offsets count characters, not UTF-16 units.
     pub async fn complete_mention(
         &self,
-        host: String,
-        cwd: String,
+        cwd: PathBuf,
         text: String,
         cursor: u32,
         refresh: bool,
     ) -> Result<Option<Mention>, MuError> {
-        let mention = self
-            .on(&host, move |client| async move { client.complete(cwd.as_ref(), text, cursor as usize, refresh).await })
-            .await?;
-        Ok(mention.map(|mention| Mention {
-            start: mention.range.start as u32,
-            end: mention.range.end as u32,
-            query: mention.query,
-            entries: mention
-                .entries
-                .into_iter()
-                .map(|entry| MentionEntry { text: entry.text, label: entry.label })
-                .collect(),
-        }))
+        self.call(CompleteMention { cwd, text, cursor, refresh }).await
     }
 
     pub async fn resolve_mentions(
         &self,
-        host: String,
-        cwd: String,
+        cwd: PathBuf,
         text: String,
         skill: Option<String>,
     ) -> Result<Vec<Resolved>, MuError> {
-        let resolved =
-            self.on(&host, move |client| async move { client.resolve(cwd.as_ref(), text, skill).await }).await?;
-        Ok(resolved
-            .into_iter()
-            .map(|resolved| Resolved {
-                path: resolved.path,
-                file: resolved.file.to_string_lossy().into_owned(),
-                kind: match resolved.kind {
-                    mu_client::Attached::Image => Attached::Image,
-                    mu_client::Attached::Text { lines, head } => Attached::Text { lines: lines as u32, head },
-                },
-            })
-            .collect())
+        self.call(ResolveMentions { cwd, text, skill }).await
     }
 
-    pub async fn read_image(&self, host: String, path: String) -> Result<Vec<u8>, MuError> {
-        self.on(&host, |client| async move { client.read_image(path.as_ref()).await }).await
+    pub async fn read_image(&self, path: PathBuf) -> Result<Vec<u8>, MuError> {
+        self.on(|client| async move { client.read_image(&path).await }).await
+    }
+
+    pub async fn upload(&self, name: String, data: Vec<u8>) -> Result<PathBuf, MuError> {
+        self.on(|client| async move { client.upload(&name, &data).await }).await
     }
 
     pub async fn shell(
         &self,
-        host: String,
-        cwd: String,
+        cwd: PathBuf,
         command: String,
         listener: Arc<dyn ShellListener>,
-    ) -> Result<Arc<Shell>, MuError> {
-        let mut run = self.on(&host, |client| async move { client.shell(cwd.as_ref(), command).await }).await?;
-        let task = self.runtime.spawn(async move {
+    ) -> Result<Arc<Task>, MuError> {
+        let mut run = self.on(|client| async move { client.shell(&cwd, command).await }).await?;
+        let task = self.shared.runtime.spawn(async move {
             loop {
                 let update = match run.next().await {
                     Ok(Some(ShellEvent::Output(output))) => {
-                        listener.on_update(ShellUpdate::Output { tool: tool(mu_client::ToolStatus::Running, &output) });
+                        listener.on_update(ShellUpdate::Output { output });
                         continue;
                     }
-                    Ok(Some(ShellEvent::Done { run, status, output })) => {
-                        ShellUpdate::Done { run, tool: tool(status, &output) }
-                    }
+                    Ok(Some(ShellEvent::Done { run, status, output })) => ShellUpdate::Done { run, status, output },
                     Ok(None) => ShellUpdate::Failed { message: "The host stopped sending the command's output".into() },
                     Err(e) => ShellUpdate::Failed { message: e.to_string() },
                 };
@@ -327,109 +321,56 @@ impl Core {
                 return;
             }
         });
-        Ok(Arc::new(Shell { task }))
+        Ok(Arc::new(Task(task)))
     }
 
     pub async fn open_session(
         &self,
-        host: String,
         session: String,
         listener: Arc<dyn SessionListener>,
     ) -> Result<Arc<Session>, MuError> {
-        let connect = self.connect(&host)?;
-        let id = session.clone();
-        let (client, mut subscription) = spawn(self.runtime.handle(), async move {
+        let (connect, id) = (self.connect()?, session.clone());
+        let (client, mut subscription) = spawn(&self.shared.runtime, async move {
             let client = connect.await?;
             let subscription = client.subscribe(&id).await?;
             Ok((client, subscription))
         })
         .await?;
-        let task = self.runtime.spawn(async move {
+        let task = self.shared.runtime.spawn(async move {
             let mut view = View::default();
-            let mut lost = false;
             loop {
                 let update = match subscription.next().await {
                     Update::Event(event) => {
-                        lost = false;
                         let change = view.apply(event);
                         translate(&view, change)
                     }
-                    Update::Lost if lost => None,
-                    Update::Lost => {
-                        lost = true;
-                        Some(SessionUpdate::Lost)
-                    }
+                    Update::Lost => Some(SessionUpdate::Lost),
                 };
                 if let Some(update) = update {
                     listener.on_update(update);
                 }
             }
         });
-        Ok(Arc::new(Session { id: session, client, runtime: self.runtime.handle().clone(), task }))
-    }
-}
-
-impl Core {
-    async fn on<T, F>(&self, host: &str, call: impl FnOnce(Client) -> F + Send + 'static) -> Result<T, MuError>
-    where
-        T: Send + 'static,
-        F: Future<Output = mu_client::Result<T>> + Send + 'static,
-    {
-        let connect = self.connect(host)?;
-        spawn(self.runtime.handle(), async move { call(connect.await?).await }).await
-    }
-
-    fn connect(&self, host: &str) -> Result<impl Future<Output = mu_client::Result<Client>> + use<>, MuError> {
-        let cached = self.clients.lock().unwrap().get(host).cloned();
-        let hosts = self.hosts.lock().unwrap();
-        let remote = hosts.get(host).ok_or_else(|| MuError::Failed("This host is not paired".into()))?.remote.clone();
-        let (clients, host) = (self.clients.clone(), host.to_owned());
-        Ok(async move {
-            if let Some(client) = cached {
-                return Ok(client);
-            }
-            let client = Client::connect(Endpoint::Remote(remote)).await?;
-            clients.lock().unwrap().insert(host, client.clone());
-            Ok(client)
-        })
+        Ok(Arc::new(Session { id: session, client, runtime: self.shared.runtime.clone(), _task: Task(task) }))
     }
 }
 
 fn translate(view: &View, change: Change) -> Option<SessionUpdate> {
     Some(match change {
         Change::Reset { keep } => SessionUpdate::Reset {
-            keep: keep as i32,
-            cwd: view.cwd.to_string_lossy().into_owned(),
-            state: state(view),
-            skills: view
-                .skills
-                .iter()
-                .map(|skill| Skill { name: skill.name.clone(), description: skill.description.clone() })
-                .collect(),
+            keep: keep as u32,
+            cwd: view.cwd.clone(),
+            state: view.state.clone(),
+            skills: view.skills.clone(),
         },
-        Change::State { started } => SessionUpdate::State { state: state(view), started },
-        Change::Committed { from } => {
-            SessionUpdate::Committed { blocks: view.blocks[from..].iter().map(Into::into).collect() }
+        Change::State { started } => SessionUpdate::State { state: view.state.clone(), started },
+        Change::Committed { from } => SessionUpdate::Committed { blocks: view.blocks[from..].to_vec() },
+        Change::Live(Touched::Block(index)) => {
+            SessionUpdate::Live { index: index as u32, block: view.live.blocks.get(index)?.clone() }
         }
-        Change::Live(index) => SessionUpdate::Live { index: index as i32, block: view.live.get(index)?.into() },
-        Change::LiveNotice => SessionUpdate::LiveNotice { block: view.live_notice.as_ref()?.into() },
-        Change::Feedback(block) => SessionUpdate::Feedback { block: (&block).into() },
+        Change::Live(Touched::Notice) => SessionUpdate::LiveNotice { block: view.live.notice.clone()? },
+        Change::Feedback(block) => SessionUpdate::Feedback { block },
     })
-}
-
-fn state(view: &View) -> SessionState {
-    SessionState {
-        status: view.status.into(),
-        title: view.title.clone(),
-        model: view.model.name.clone(),
-        effort: view.model.effort.clone(),
-        context: view.model.context.map(|context| context as i64),
-        context_used: view.stats.context_used as i64,
-        input: view.stats.input as i64,
-        uncached_input: view.stats.uncached_input as i64,
-        output: view.stats.output as i64,
-        queued: view.queued.clone(),
-    }
 }
 
 #[derive(uniffi::Object)]
@@ -437,61 +378,44 @@ pub struct Session {
     id: String,
     client: Client,
     runtime: Handle,
-    task: tokio::task::JoinHandle<()>,
+    _task: Task,
+}
+
+impl Session {
+    async fn call<C: Call + Send + Sync + 'static>(&self, call: C) -> Result<C::Reply, MuError>
+    where
+        C::Reply: Send,
+    {
+        let client = self.client.clone();
+        spawn(&self.runtime, async move { client.call(call).await }).await
+    }
 }
 
 #[uniffi::export]
 impl Session {
-    pub fn id(&self) -> String {
-        self.id.clone()
-    }
-
     pub async fn send(&self, text: String, skill: Option<String>) -> Result<(), MuError> {
-        let (client, id) = (self.client.clone(), self.id.clone());
-        spawn(&self.runtime, async move { client.send(&id, text, skill).await }).await
+        self.call(SendMessage { session_id: self.id.clone(), text, skill }).await
     }
 
     pub async fn append_shell(&self, run: String) -> Result<(), MuError> {
-        let (client, id) = (self.client.clone(), self.id.clone());
-        spawn(&self.runtime, async move { client.append_shell(&id, &run).await }).await
+        self.call(AppendShell { session_id: self.id.clone(), run }).await
     }
 
-    pub async fn set_model(&self, name: String, effort: Option<String>) -> Result<(), MuError> {
-        let (client, id) = (self.client.clone(), self.id.clone());
-        let model = Model { name, effort, context: None };
-        spawn(&self.runtime, async move { client.set_model(&id, model).await }).await
+    pub async fn set_model(&self, model: Model) -> Result<(), MuError> {
+        self.call(SetModel { session_id: self.id.clone(), model }).await
     }
 
     pub async fn stop(&self) -> Result<(), MuError> {
-        let (client, id) = (self.client.clone(), self.id.clone());
-        spawn(&self.runtime, async move { client.stop(&id).await }).await
+        self.call(Stop { session_id: self.id.clone() }).await
     }
 
     pub async fn mark_read(&self) -> Result<(), MuError> {
-        let (client, id) = (self.client.clone(), self.id.clone());
-        spawn(&self.runtime, async move { client.mark_read(&id).await }).await
+        self.call(MarkRead { session_id: self.id.clone() }).await
     }
 
+    // False when the message at `index` is no longer `text`, having been sent.
     pub async fn recall_queued(&self, index: u32, text: String) -> Result<bool, MuError> {
-        let (client, id) = (self.client.clone(), self.id.clone());
-        spawn(&self.runtime, async move { client.recall(&id, index as usize, text).await }).await
-    }
-}
-
-impl Drop for Session {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-#[derive(uniffi::Object)]
-pub struct Watch {
-    task: tokio::task::JoinHandle<()>,
-}
-
-impl Drop for Watch {
-    fn drop(&mut self) {
-        self.task.abort();
+        self.call(RecallQueued { session_id: self.id.clone(), index: index as usize, text }).await
     }
 }
 
@@ -500,84 +424,11 @@ pub trait HostListener: Send + Sync {
     fn on_update(&self, update: HostUpdate);
 }
 
+// Each update is all of it.
 #[derive(uniffi::Enum)]
 pub enum HostUpdate {
-    Host { profile: HostProfile, sessions: Vec<SessionSummary> },
+    Host { profile: Profile, sessions: Vec<SessionSummary> },
     Lost,
-}
-
-#[derive(uniffi::Record)]
-pub struct HostProfile {
-    pub name: String,
-    pub home: String,
-    pub icon: Option<String>,
-    pub description: String,
-    pub snippets: Vec<Snippet>,
-}
-
-impl From<&mu_client::Profile> for HostProfile {
-    fn from(profile: &mu_client::Profile) -> Self {
-        Self {
-            name: profile.name.clone(),
-            home: profile.home.to_string_lossy().into_owned(),
-            icon: profile.icon.clone(),
-            description: profile.description.clone(),
-            snippets: profile
-                .snippets
-                .iter()
-                .map(|snippet| Snippet {
-                    id: snippet.id.clone(),
-                    name: snippet.name.clone(),
-                    command: snippet.command.clone(),
-                    icon: snippet.icon.clone(),
-                })
-                .collect(),
-        }
-    }
-}
-
-#[derive(uniffi::Record)]
-pub struct Snippet {
-    pub id: String,
-    pub name: String,
-    pub command: String,
-    pub icon: Option<String>,
-}
-
-#[derive(uniffi::Record)]
-pub struct DeletedSessions {
-    pub deleted: i64,
-    pub in_use: i64,
-}
-
-#[derive(uniffi::Record)]
-pub struct Directory {
-    pub path: String,
-    pub entries: Vec<DirectoryEntry>,
-}
-
-#[derive(uniffi::Record)]
-pub struct DirectoryEntry {
-    pub name: String,
-    pub kind: EntryKind,
-}
-
-#[derive(uniffi::Enum)]
-pub enum EntryKind {
-    File,
-    Directory,
-    Repository,
-}
-
-#[derive(uniffi::Object)]
-pub struct Shell {
-    task: tokio::task::JoinHandle<()>,
-}
-
-impl Drop for Shell {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
 }
 
 #[uniffi::export(with_foreign)]
@@ -587,8 +438,8 @@ pub trait ShellListener: Send + Sync {
 
 #[derive(uniffi::Enum)]
 pub enum ShellUpdate {
-    Output { tool: Tool },
-    Done { run: String, tool: Tool },
+    Output { output: ToolOutput },
+    Done { run: String, status: ToolStatus, output: ToolOutput },
     Failed { message: String },
 }
 
@@ -601,194 +452,11 @@ pub trait SessionListener: Send + Sync {
 // rest of it then arrives as ordinary commits.
 #[derive(uniffi::Enum)]
 pub enum SessionUpdate {
-    Reset { keep: i32, cwd: String, state: SessionState, skills: Vec<Skill> },
-    State { state: SessionState, started: bool },
+    Reset { keep: u32, cwd: PathBuf, state: State, skills: Vec<Skill> },
+    State { state: State, started: bool },
     Committed { blocks: Vec<Block> },
-    Live { index: i32, block: Block },
+    Live { index: u32, block: Block },
     LiveNotice { block: Block },
     Feedback { block: Block },
     Lost,
-}
-
-#[derive(uniffi::Record)]
-pub struct SessionState {
-    pub status: Status,
-    pub title: String,
-    pub model: String,
-    pub effort: Option<String>,
-    pub context: Option<i64>,
-    pub context_used: i64,
-    pub input: i64,
-    pub uncached_input: i64,
-    pub output: i64,
-    pub queued: Vec<String>,
-}
-
-#[derive(uniffi::Record)]
-pub struct Mention {
-    pub start: u32,
-    pub end: u32,
-    pub query: String,
-    pub entries: Vec<MentionEntry>,
-}
-
-#[derive(uniffi::Record)]
-pub struct MentionEntry {
-    pub text: String,
-    pub label: String,
-}
-
-#[derive(uniffi::Record)]
-pub struct Written {
-    pub start: u32,
-    pub end: u32,
-    pub path: String,
-    pub closed: bool,
-}
-
-#[derive(uniffi::Record)]
-pub struct Resolved {
-    pub path: String,
-    pub file: String,
-    pub kind: Attached,
-}
-
-#[derive(uniffi::Enum)]
-pub enum Attached {
-    Image,
-    Text { lines: u32, head: String },
-}
-
-#[derive(uniffi::Record)]
-pub struct ModelInfo {
-    pub name: String,
-    pub context: Option<i64>,
-}
-
-#[derive(uniffi::Record)]
-pub struct Skill {
-    pub name: String,
-    pub description: String,
-}
-
-#[derive(uniffi::Record)]
-pub struct SessionSummary {
-    pub id: String,
-    pub title: String,
-    pub cwd: String,
-    pub status: Status,
-    pub error: Option<String>,
-    pub unread: bool,
-    // Milliseconds since the Unix epoch.
-    pub updated: i64,
-}
-
-impl From<mu_client::SessionSummary> for SessionSummary {
-    fn from(summary: mu_client::SessionSummary) -> Self {
-        Self {
-            id: summary.id,
-            title: summary.title,
-            cwd: summary.cwd.to_string_lossy().into_owned(),
-            status: summary.status.into(),
-            error: summary.error,
-            unread: summary.unread,
-            updated: summary.updated as i64,
-        }
-    }
-}
-
-#[derive(uniffi::Enum)]
-pub enum Status {
-    Idle,
-    Running,
-    Finished,
-    Failed,
-}
-
-impl From<mu_client::Status> for Status {
-    fn from(status: mu_client::Status) -> Self {
-        match status {
-            mu_client::Status::Idle => Self::Idle,
-            mu_client::Status::Running => Self::Running,
-            mu_client::Status::Finished => Self::Finished,
-            mu_client::Status::Failed => Self::Failed,
-        }
-    }
-}
-
-#[derive(uniffi::Record)]
-pub struct Block {
-    pub kind: BlockKind,
-    pub text: String,
-    pub tool: Option<Tool>,
-    pub span: Option<Span>,
-}
-
-// Milliseconds since the Unix epoch.
-#[derive(uniffi::Record)]
-pub struct Span {
-    pub started: i64,
-    pub finished: i64,
-}
-
-impl From<&mu_client::Block> for Block {
-    fn from(block: &mu_client::Block) -> Self {
-        Self {
-            kind: match block.kind {
-                mu_client::Kind::User => BlockKind::User,
-                mu_client::Kind::Agent => BlockKind::Agent,
-                mu_client::Kind::Thought => BlockKind::Thought,
-                mu_client::Kind::Call => BlockKind::Call,
-                mu_client::Kind::Shell => BlockKind::Shell,
-                mu_client::Kind::Notice => BlockKind::Notice,
-                mu_client::Kind::Warning => BlockKind::Warning,
-            },
-            text: block.text.clone(),
-            tool: block.tool.as_ref().map(|t| tool(t.status, &t.output)),
-            span: block.span.map(|span| Span { started: span.started as i64, finished: span.finished as i64 }),
-        }
-    }
-}
-
-#[derive(uniffi::Enum)]
-pub enum BlockKind {
-    User,
-    Agent,
-    Thought,
-    Call,
-    Shell,
-    Notice,
-    Warning,
-}
-
-#[derive(uniffi::Record)]
-pub struct Tool {
-    pub status: ToolStatus,
-    pub output: String,
-    pub truncated: bool,
-}
-
-fn tool(status: mu_client::ToolStatus, output: &mu_client::ToolOutput) -> Tool {
-    Tool {
-        status: match status {
-            mu_client::ToolStatus::Pending => ToolStatus::Pending,
-            mu_client::ToolStatus::Running => ToolStatus::Running,
-            mu_client::ToolStatus::Exited(code) => ToolStatus::Exited { code },
-            mu_client::ToolStatus::TimedOut(millis) => ToolStatus::TimedOut { millis: millis as i64 },
-            mu_client::ToolStatus::Cancelled => ToolStatus::Cancelled,
-            mu_client::ToolStatus::Error => ToolStatus::Failed,
-        },
-        output: output.text.clone(),
-        truncated: output.truncated,
-    }
-}
-
-#[derive(uniffi::Enum)]
-pub enum ToolStatus {
-    Pending,
-    Running,
-    Exited { code: i32 },
-    TimedOut { millis: i64 },
-    Cancelled,
-    Failed,
 }

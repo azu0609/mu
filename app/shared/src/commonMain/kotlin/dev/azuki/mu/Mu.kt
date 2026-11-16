@@ -10,7 +10,10 @@ import dev.azuki.mu.api.HostProfile
 import dev.azuki.mu.api.HostUpdate
 import dev.azuki.mu.api.ModelInfo
 import dev.azuki.mu.api.MuException
+import dev.azuki.mu.api.Remote
 import dev.azuki.mu.api.SessionSummary
+import dev.azuki.mu.chat.ChatState
+import dev.azuki.mu.chat.Destination
 import dev.azuki.mu.chat.Draft
 import dev.azuki.mu.platform.Platform
 import kotlinx.coroutines.CoroutineScope
@@ -45,10 +48,16 @@ class Mu(val core: Core, val platform: Platform, private val scope: CoroutineSco
     var selected by mutableStateOf(prefs[SELECTED]?.lines()?.toSet() ?: hosts.map { it.id }.toSet())
         private set
 
-    var chat by mutableStateOf<ChatTarget?>(null)
+    var chat by mutableStateOf<ChatState?>(null)
         private set
 
     val draft = Draft(this)
+
+    // Where the composer's next message goes.
+    val destination: Destination
+        get() = chat ?: draft
+
+    private val remotes = mutableMapOf<String, Remote>()
 
     val models = mutableStateMapOf<String, List<ModelInfo>>()
 
@@ -56,7 +65,9 @@ class Mu(val core: Core, val platform: Platform, private val scope: CoroutineSco
 
     fun host(id: String): Host? = hosts.find { it.id == id }
 
-    fun name(id: String): String = live[id]?.profile?.name ?: host(id)?.name ?: id
+    fun remote(id: String): Remote = remotes.getOrPut(id) { core.remote(id) }
+
+    fun name(id: String): String = host(id)?.name ?: id
 
     fun home(id: String): String? = live[id]?.profile?.home
 
@@ -78,7 +89,7 @@ class Mu(val core: Core, val platform: Platform, private val scope: CoroutineSco
     suspend fun watch(id: String) {
         while (true) {
             try {
-                core.watch(id).collect { update ->
+                remote(id).watch().collect { update ->
                     val known = live[id] ?: HostLive()
                     live[id] =
                         when (update) {
@@ -114,7 +125,7 @@ class Mu(val core: Core, val platform: Platform, private val scope: CoroutineSco
 
     // The session's directory, or the host's home when none is picked.
     suspend fun resolveCwd(host: String, cwd: String?): String =
-        cwd ?: home(host) ?: core.listDirectory(host, "~").path
+        cwd ?: home(host) ?: remote(host).listDirectory("~").path
 
     fun forget(id: String) {
         try {
@@ -136,7 +147,8 @@ class Mu(val core: Core, val platform: Platform, private val scope: CoroutineSco
     }
 
     fun open(host: String, session: String) {
-        chat = ChatTarget(host, session)
+        val target = ChatTarget(host, session)
+        if (chat?.target != target) chat = ChatState(this, target)
     }
 
     fun newChat(
@@ -150,7 +162,7 @@ class Mu(val core: Core, val platform: Platform, private val scope: CoroutineSco
     // Keeps the last list when the host can't say, as many endpoints don't.
     suspend fun loadModels(host: String) {
         try {
-            models[host] = core.listModels(host)
+            models[host] = remote(host).listModels()
         } catch (_: MuException) {}
     }
 

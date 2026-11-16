@@ -72,8 +72,8 @@ fun HostPage(mu: Mu, id: String, onBack: () -> Unit) {
     var choosingIcon by remember { mutableStateOf(false) }
     val snippet = remember { Presented<Editing>() }
     val deleting = remember { Presented<String>() }
-    val icon = profile?.icon ?: host?.icon
-    val description = profile?.description ?: host?.description.orEmpty()
+    val icon = host?.icon
+    val description = host?.description.orEmpty()
     val gray = MiuixTheme.colorScheme.onSurfaceVariantSummary
 
     Scaffold(
@@ -245,13 +245,13 @@ fun HostPage(mu: Mu, id: String, onBack: () -> Unit) {
         )
     }
     DescriptionDialog(describing, description, onDismiss = { describing = false }) { text ->
-        mu.launch { mu.core.setDescription(id, text) }
+        mu.launch { mu.remote(id).setDescription(text) }
     }
     IconPicker(
         choosingIcon,
         icon,
         snippet = false,
-        onPick = { name -> mu.launch { mu.core.setIcon(id, name) } },
+        onPick = { name -> mu.launch { mu.remote(id).setIcon(name) } },
         onDismiss = { choosingIcon = false },
     )
     snippet.value?.let { editing ->

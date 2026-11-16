@@ -1,5 +1,7 @@
 package dev.azuki.mu
 
+import dev.azuki.mu.api.ToolStatus
+
 fun duration(millis: Long): String {
     val seconds = (millis / 1000).coerceAtLeast(0)
     return when {
@@ -21,3 +23,14 @@ fun tilde(path: String, home: String?): String =
 fun parentOf(path: String): String = path.trimEnd('/').substringBeforeLast('/', "").ifEmpty { "/" }
 
 fun baseName(path: String): String = path.trimEnd('/').substringAfterLast('/').ifEmpty { "/" }
+
+// How a command ended, unless it just succeeded or is yet to end.
+fun ending(status: ToolStatus): String? =
+    when (status) {
+        is ToolStatus.Exited -> if (status.code == 0) null else "exit ${status.code}"
+        is ToolStatus.TimedOut -> "timed out"
+        ToolStatus.Cancelled -> "cancelled"
+        ToolStatus.Failed -> "failed"
+        ToolStatus.Running,
+        ToolStatus.Pending -> null
+    }
