@@ -182,12 +182,13 @@ fn run(
     let mut updated = Instant::now();
     let mut published = 0;
     let mut bash = Command::new("bash");
-    bash.args(["-c", command])
+    // Keep the command out of argv so `pkill -f` and friends can't match their own shell.
+    bash.args(["-c", "export -n MU_COMMAND; eval \"$MU_COMMAND\""])
         .current_dir(cwd)
+        .env("MU_COMMAND", command)
         .env("PATH", path)
         .env("MU_EXE", env::current_exe()?)
         .env("MU_IMAGES", &manifest);
-    // Never inherited: only the user's own commands get it.
     match user {
         true => bash.env("MU_USER_TRIGGERED", "1"),
         false => bash.env_remove("MU_USER_TRIGGERED"),

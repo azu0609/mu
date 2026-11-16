@@ -117,7 +117,7 @@ impl ToolStatus {
             Self::Running => "running".into(),
             Self::Exited(code) => format!("exit {code}"),
             Self::TimedOut(ms) => format!("timed out after {ms} ms; process group killed"),
-            Self::Cancelled => "cancelled; process group killed".into(),
+            Self::Cancelled => "cancelled by user; process group killed".into(),
         })
     }
 }
