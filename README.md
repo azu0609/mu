@@ -26,7 +26,10 @@ nix run # Starts the TUI
 
 #### Data Store
 
-All persisted data (e.g., sessions) are stored under `$XDG_STATE_HOME/mu`. Falls back to `$HOME/.local/state/mu` otherwise.
+- **Sessions:** `$XDG_STATE_HOME/mu`, falling back to `$HOME/.local/state/mu` otherwise.
+- **Socket:** `$XDG_RUNTIME_DIR/mu.sock`, falling back to `XDG_STATE_HOME/mu.sock` and then `$HOME/.local/state/mu`.
+- **Remote File Uploads:** `$XDG_CACHE_HOME`, falling back to `$HOME/.cache` otherwise.
+- **Host Config:** `$XDG_CONFIG_HOME`, falling back to `$HOME/.config` otherwise.
 
 ### FAQ
 
