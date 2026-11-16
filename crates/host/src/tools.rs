@@ -93,6 +93,10 @@ impl Capture {
     }
 }
 
+const PREAMBLE: &str = r#"export -n MU_COMMAND
+command -v direnv >/dev/null && eval "$(DIRENV_LOG_FORMAT= direnv export bash)"
+eval "$MU_COMMAND""#;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Args {
@@ -183,7 +187,7 @@ fn run(
     let mut published = 0;
     let mut bash = Command::new("bash");
     // Keep the command out of argv so `pkill -f` and friends can't match their own shell.
-    bash.args(["-c", "export -n MU_COMMAND; eval \"$MU_COMMAND\""])
+    bash.args(["-c", PREAMBLE])
         .current_dir(cwd)
         .env("MU_COMMAND", command)
         .env("PATH", path)
