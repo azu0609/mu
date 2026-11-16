@@ -20,6 +20,11 @@ pub fn version() -> String {
     env!("CARGO_PKG_VERSION").into()
 }
 
+#[uniffi::export]
+pub fn compact(n: u64) -> String {
+    mu_client::counts::compact(n)
+}
+
 // Offsets count characters, not UTF-16 units.
 #[uniffi::export]
 pub fn mentions(text: String) -> Vec<Written> {

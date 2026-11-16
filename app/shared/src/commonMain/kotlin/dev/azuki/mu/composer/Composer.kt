@@ -79,7 +79,6 @@ import dev.azuki.mu.api.Resolved
 import dev.azuki.mu.api.ToolStatus
 import dev.azuki.mu.baseName
 import dev.azuki.mu.chat.Destination
-import dev.azuki.mu.compact
 import dev.azuki.mu.design.Accent
 import dev.azuki.mu.design.DialogButtons
 import dev.azuki.mu.design.Glyphs
@@ -627,7 +626,7 @@ private fun ModelButton(mu: Mu, destination: Destination) {
             add(
                 DropdownItem(
                     it.name,
-                    summary = it.context?.let(::compact),
+                    summary = it.context?.let(mu.core::compact),
                     selected = it.name == model,
                     onClick = { pick(it.name) },
                 )

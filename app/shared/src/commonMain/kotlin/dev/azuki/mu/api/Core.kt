@@ -6,6 +6,8 @@ import kotlinx.coroutines.flow.Flow
 interface Core {
     val version: String
 
+    fun compact(n: Long): String
+
     fun hosts(): List<Host>
 
     suspend fun pair(invite: String): Host

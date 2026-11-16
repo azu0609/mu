@@ -140,6 +140,8 @@ class FfiCore(private val core: Ffi, private val device: String) : Core {
         }
     }
 
+    override fun compact(n: Long): String = dev.azuki.mu.core.compact(n.toULong())
+
     override fun mentions(text: String): List<Written> =
         dev.azuki.mu.core.mentions(text).map {
             Written(it.start.toInt(), it.end.toInt(), it.path, it.closed)

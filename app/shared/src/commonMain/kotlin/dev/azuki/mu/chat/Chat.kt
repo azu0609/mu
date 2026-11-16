@@ -56,7 +56,6 @@ import dev.azuki.mu.Mu
 import dev.azuki.mu.api.Block
 import dev.azuki.mu.api.BlockKind
 import dev.azuki.mu.api.ToolStatus
-import dev.azuki.mu.compact
 import dev.azuki.mu.design.Accent
 import dev.azuki.mu.design.CircleButton
 import dev.azuki.mu.design.Danger
@@ -137,12 +136,12 @@ fun Chat(
                         else ->
                             buildString {
                                 append(
-                                    "in ${compact(state.uncachedInput)} (${compact(state.input)}) / ${compact(state.output)} out"
+                                    "in ${mu.core.compact(state.uncachedInput)} (${mu.core.compact(state.input)}) / ${mu.core.compact(state.output)} out"
                                 )
                                 val context = state.context
                                 if (context != null)
                                     append(" / ${state.contextUsed * 100 / context}% ctx")
-                                else append(" / ${compact(state.contextUsed)} ctx")
+                                else append(" / ${mu.core.compact(state.contextUsed)} ctx")
                             }
                     },
                 navigation = { CircleButton(Solar.HamburgerMenuLineDuotone, "Sessions", onMenu) },

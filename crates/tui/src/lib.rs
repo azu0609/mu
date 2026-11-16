@@ -1,5 +1,4 @@
 mod commands;
-mod counts;
 mod devices;
 mod input;
 mod markdown;
@@ -12,7 +11,7 @@ use crossterm::event::{
 };
 pub use devices::{devices, pair, unpair};
 pub use mu_client::Endpoint;
-use mu_client::{Block, Change, Event, HostView, Kind, Model, ShellEvent, Tool, ToolOutput, ToolStatus, View};
+use mu_client::{Block, Change, Event, HostView, Kind, Model, ShellEvent, Tool, ToolOutput, ToolStatus, View, counts};
 use remote::{Incoming, Remote};
 use std::{
     env,

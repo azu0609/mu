@@ -1,3 +1,4 @@
+pub mod counts;
 pub mod hosts;
 mod tls;
 mod view;
