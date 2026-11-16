@@ -131,39 +131,39 @@ private fun Sheet(
             val loose = constraints.copy(minWidth = 0, minHeight = 0)
             val header =
                 subcompose(SheetSlot.Header) {
-                    Box(
-                        Modifier.fillMaxWidth()
-                            .scrim(edgeToEdge = true)
-                            .padding(top = 6.dp, bottom = 12.dp)
-                    ) {
-                        Box(Modifier.align(Alignment.CenterStart)) { startAction() }
-                        Text(
-                            title,
-                            Modifier.align(Alignment.Center).padding(horizontal = 52.dp),
-                            fontSize = MiuixTheme.textStyles.title4.fontSize,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Box(Modifier.align(Alignment.CenterEnd)) { endAction() }
+                        Box(
+                            Modifier.fillMaxWidth()
+                                .scrim(edgeToEdge = true)
+                                .padding(top = 6.dp, bottom = 12.dp)
+                        ) {
+                            Box(Modifier.align(Alignment.CenterStart)) { startAction() }
+                            Text(
+                                title,
+                                Modifier.align(Alignment.Center).padding(horizontal = 52.dp),
+                                fontSize = MiuixTheme.textStyles.title4.fontSize,
+                                fontWeight = FontWeight.Medium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Box(Modifier.align(Alignment.CenterEnd)) { endAction() }
+                        }
                     }
-                }
                     .map { it.measure(loose) }
             val footer =
                 subcompose(SheetSlot.Footer) {
-                    Box(
-                        Modifier.fillMaxWidth()
-                            .then(
-                                if (bottomAction != null)
-                                    Modifier.scrim(top = false).padding(top = 16.dp)
-                                else Modifier
-                            )
-                            .navigationBarsPadding()
-                            .padding(bottom = 16.dp)
-                    ) {
-                        bottomAction?.invoke()
+                        Box(
+                            Modifier.fillMaxWidth()
+                                .then(
+                                    if (bottomAction != null)
+                                        Modifier.scrim(top = false).padding(top = 16.dp)
+                                    else Modifier
+                                )
+                                .navigationBarsPadding()
+                                .padding(bottom = 16.dp)
+                        ) {
+                            bottomAction?.invoke()
+                        }
                     }
-                }
                     .map { it.measure(loose) }
             val top = header.maxOfOrNull { it.height } ?: 0
             val bottom = footer.maxOfOrNull { it.height } ?: 0
@@ -522,9 +522,9 @@ fun SnippetSheet(
     var name by remember(snippet, show) { mutableStateOf(snippet?.name.orEmpty()) }
     var command by remember(snippet, show) { mutableStateOf(snippet?.command.orEmpty()) }
     var icon by
-    remember(snippet, show) {
-        mutableStateOf(snippet?.icon ?: "solar:box-minimalistic-bold-duotone")
-    }
+        remember(snippet, show) {
+            mutableStateOf(snippet?.icon ?: "solar:box-minimalistic-bold-duotone")
+        }
     var picking by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()

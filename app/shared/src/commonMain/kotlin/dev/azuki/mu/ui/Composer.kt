@@ -801,7 +801,7 @@ private fun Suggestions(items: List<Suggestion>, onPick: (Int) -> Unit) {
                     Icon(item.icon, null, Modifier.size(22.dp), tint = Accent)
                     Text(
                         item.title,
-                        Modifier.padding(start = 10.dp).weight(1f, fill = false),
+                        Modifier.padding(start = 10.dp),
                         style = MiuixTheme.textStyles.body1,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -809,7 +809,7 @@ private fun Suggestions(items: List<Suggestion>, onPick: (Int) -> Unit) {
                     item.detail?.let { detail ->
                         Text(
                             detail,
-                            Modifier.padding(start = 8.dp),
+                            Modifier.padding(start = 8.dp).weight(1f, fill = false),
                             fontFamily = Mono,
                             fontSize = 12.sp,
                             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
