@@ -29,7 +29,6 @@ import androidx.compose.ui.unit.dp
 import dev.azuki.mu.Mu
 import dev.azuki.mu.api.MuException
 import dev.azuki.mu.chat.Destination
-import dev.azuki.mu.design.Accent
 import dev.azuki.mu.design.Solar
 import dev.azuki.mu.design.icon
 import dev.azuki.mu.platform.Attachment
@@ -139,7 +138,7 @@ private fun RowScope.AttachTile(icon: ImageVector, label: String, onClick: () ->
         onClick = onClick,
     ) {
         Box(Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.Center) {
-            Icon(icon, label, Modifier.size(30.dp), tint = Accent)
+            Icon(icon, label, Modifier.size(30.dp), tint = MiuixTheme.colorScheme.primary)
         }
     }
 }

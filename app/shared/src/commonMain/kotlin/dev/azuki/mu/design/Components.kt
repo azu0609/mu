@@ -54,9 +54,7 @@ fun Modifier.lifted(shape: Shape) =
 @Composable
 fun Floating(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     val colors = MiuixTheme.colorScheme
-    val rim =
-        if (colors.surface.luminance() < 0.5f) colors.dividerLine
-        else colors.onSurface.copy(alpha = 0.05f)
+    val rim = colors.onSurface.copy(alpha = if (colors.surface.luminance() < 0.5f) 0.1f else 0.05f)
     FloatingToolbar(modifier, outSidePadding = PaddingValues(0.dp)) {
         Box(Modifier.border(0.75.dp, rim, CircleShape)) {
             content()

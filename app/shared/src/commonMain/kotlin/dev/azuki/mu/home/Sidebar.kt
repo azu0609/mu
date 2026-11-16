@@ -57,9 +57,7 @@ import dev.azuki.mu.Connection
 import dev.azuki.mu.Mu
 import dev.azuki.mu.api.SessionSummary
 import dev.azuki.mu.api.Status
-import dev.azuki.mu.design.Accent
 import dev.azuki.mu.design.CircleButton
-import dev.azuki.mu.design.Danger
 import dev.azuki.mu.design.Dropdown
 import dev.azuki.mu.design.Floating
 import dev.azuki.mu.design.SmallIconButton
@@ -87,17 +85,22 @@ private enum class Filter(
     val label: String,
     val keep: (SessionSummary) -> Boolean,
 ) {
-    All(Solar.MailboxBoldDuotone, { Accent }, "All", { true }),
+    All(Solar.MailboxBoldDuotone, { MiuixTheme.colorScheme.primary }, "All", { true }),
     Running(
         Solar.LoaderBold,
         { MiuixTheme.colorScheme.onSurfaceVariantSummary },
         "In Progress",
         { it.status == Status.Running },
     ),
-    Failed(Solar.DangerTriangleBoldDuotone, { Danger }, "Failed", { it.status == Status.Failed }),
+    Failed(
+        Solar.DangerTriangleBoldDuotone,
+        { MiuixTheme.colorScheme.error },
+        "Failed",
+        { it.status == Status.Failed },
+    ),
     Finished(
         Solar.CheckCircleLineDuotone,
-        { Accent },
+        { MiuixTheme.colorScheme.primary },
         "Finished",
         { it.status == Status.Finished },
     ),
@@ -439,10 +442,20 @@ fun StatusIcon(status: Status, unread: Boolean, modifier: Modifier = Modifier) {
     when {
         status == Status.Running -> Spinning(Solar.LoaderBold, modifier)
         status == Status.Failed ->
-            Icon(Solar.DangerTriangleBoldDuotone, "Failed", modifier, tint = Danger)
+            Icon(
+                Solar.DangerTriangleBoldDuotone,
+                "Failed",
+                modifier,
+                tint = MiuixTheme.colorScheme.error,
+            )
 
         status == Status.Finished && unread ->
-            Icon(Solar.CheckCircleLineDuotone, "Finished", modifier, tint = Accent)
+            Icon(
+                Solar.CheckCircleLineDuotone,
+                "Finished",
+                modifier,
+                tint = MiuixTheme.colorScheme.primary,
+            )
 
         else -> Spacer(modifier)
     }

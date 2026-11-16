@@ -66,7 +66,7 @@ fun Markdown(
                 ordered = body,
                 bullet = body,
                 list = body,
-                textLink = TextLinkStyles(SpanStyle(color = Accent)),
+                textLink = TextLinkStyles(SpanStyle(color = MiuixTheme.colorScheme.primary)),
                 table = body,
             ),
         modifier = modifier.fillMaxWidth(),

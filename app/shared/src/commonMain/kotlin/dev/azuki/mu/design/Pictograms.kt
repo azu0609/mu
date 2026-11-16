@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -17,7 +18,10 @@ import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 // Hosts and snippets name their icon, as "solar:<name>", for every client to draw.
-class Pictogram(val name: String, val vector: ImageVector, val tint: Color)
+class Pictogram(val name: String, val vector: ImageVector, private val hue: Color? = null) {
+    val tint: Color
+        @Composable @ReadOnlyComposable get() = hue ?: MiuixTheme.colorScheme.primary
+}
 
 object Pictograms {
     val all =
@@ -38,7 +42,7 @@ object Pictograms {
                 Solar.SmartphoneBoldDuotone,
                 Color(0xFFFF9F43),
             ),
-            Pictogram("solar:database-bold-duotone", Solar.DatabaseBoldDuotone, Accent),
+            Pictogram("solar:database-bold-duotone", Solar.DatabaseBoldDuotone),
             Pictogram(
                 "solar:star-shine-bold-duotone",
                 Solar.StarShineBoldDuotone,
@@ -49,27 +53,26 @@ object Pictograms {
                 Solar.CrownStarBoldDuotone,
                 Color(0xFF5AB4F0),
             ),
-            Pictogram("solar:cat-bold-duotone", Solar.CatBoldDuotone, Accent),
-            Pictogram("solar:git-branch-bold-duotone", Solar.GitBranchBoldDuotone, Accent),
-            Pictogram("solar:folder-git-bold-duotone", Solar.FolderGitBoldDuotone, Accent),
-            Pictogram("solar:file-stack-bold-duotone", Solar.FileStackBoldDuotone, Accent),
-            Pictogram("solar:file-terminal-bold-duotone", Solar.FileTerminalBoldDuotone, Accent),
-            Pictogram("solar:file-text-bold-duotone", Solar.FileTextBoldDuotone, Accent),
-            Pictogram("solar:toolbox-bold-duotone", Solar.ToolboxBoldDuotone, Accent),
+            Pictogram("solar:cat-bold-duotone", Solar.CatBoldDuotone),
+            Pictogram("solar:git-branch-bold-duotone", Solar.GitBranchBoldDuotone),
+            Pictogram("solar:folder-git-bold-duotone", Solar.FolderGitBoldDuotone),
+            Pictogram("solar:file-stack-bold-duotone", Solar.FileStackBoldDuotone),
+            Pictogram("solar:file-terminal-bold-duotone", Solar.FileTerminalBoldDuotone),
+            Pictogram("solar:file-text-bold-duotone", Solar.FileTextBoldDuotone),
+            Pictogram("solar:toolbox-bold-duotone", Solar.ToolboxBoldDuotone),
             Pictogram(
                 "solar:magic-wand-2-bold-duotone",
                 Solar.MagicWand2BoldDuotone,
                 Color(0xFF9B7BF7),
             ),
             Pictogram("solar:settings-bold-duotone", Solar.SettingsBoldDuotone, Color(0xFF7D99A3)),
-            Pictogram("solar:mailbox-bold-duotone", Solar.MailboxBoldDuotone, Accent),
+            Pictogram("solar:mailbox-bold-duotone", Solar.MailboxBoldDuotone),
             Pictogram("solar:keyboard-bold-duotone", Solar.KeyboardBoldDuotone, Color(0xFF7D99A3)),
             Pictogram(
                 "solar:camera-minimalistic-bold-duotone",
                 Solar.CameraMinimalisticBoldDuotone,
-                Accent,
             ),
-            Pictogram("solar:album-bold-duotone", Solar.AlbumBoldDuotone, Accent),
+            Pictogram("solar:album-bold-duotone", Solar.AlbumBoldDuotone),
         )
 
     private val byName = all.associateBy { it.name }
@@ -79,7 +82,7 @@ object Pictograms {
     // Snippets take the accent whatever the icon, so a list of them reads as one.
     fun snippet(name: String?): Pictogram {
         val found = name?.let(byName::get) ?: byName.getValue("solar:file-terminal-bold-duotone")
-        return Pictogram(found.name, found.vector, Accent)
+        return Pictogram(found.name, found.vector)
     }
 }
 

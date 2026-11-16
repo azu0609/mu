@@ -31,10 +31,8 @@ import androidx.compose.ui.unit.sp
 import dev.azuki.mu.Connection
 import dev.azuki.mu.Mu
 import dev.azuki.mu.api.Snippet
-import dev.azuki.mu.design.Accent
 import dev.azuki.mu.design.BackButton
 import dev.azuki.mu.design.CircleButton
-import dev.azuki.mu.design.Danger
 import dev.azuki.mu.design.DialogButtons
 import dev.azuki.mu.design.Mono
 import dev.azuki.mu.design.PictogramBadge
@@ -176,7 +174,12 @@ fun HostPage(mu: Mu, id: String, onBack: () -> Unit) {
                             Modifier.fillMaxWidth().padding(vertical = 28.dp),
                             horizontalAlignment = Alignment.CenterHorizontally,
                         ) {
-                            Icon(Solar.CatBoldDuotone, null, Modifier.size(48.dp), tint = Accent)
+                            Icon(
+                                Solar.CatBoldDuotone,
+                                null,
+                                Modifier.size(48.dp),
+                                tint = MiuixTheme.colorScheme.primary,
+                            )
                             Text(
                                 "We have nothing but a cat",
                                 Modifier.padding(top = 12.dp),
@@ -216,7 +219,7 @@ fun HostPage(mu: Mu, id: String, onBack: () -> Unit) {
                                     Solar.TrashBinTrashBoldDuotone,
                                     null,
                                     Modifier.size(24.dp),
-                                    tint = Danger,
+                                    tint = MiuixTheme.colorScheme.error,
                                 )
                             },
                             onClick = { deleting.present(id) },

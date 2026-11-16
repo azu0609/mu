@@ -11,6 +11,9 @@ interface Platform {
 
     val dictation: Dictation
 
+    // Whether the system derives a palette from the wallpaper.
+    val wallpaperColors: Boolean
+
     // False when the user refuses.
     suspend fun allowCamera(): Boolean
 

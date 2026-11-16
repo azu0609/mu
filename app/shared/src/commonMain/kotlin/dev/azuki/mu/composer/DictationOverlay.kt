@@ -22,16 +22,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import dev.azuki.mu.design.Accent
 import dev.azuki.mu.platform.Dictation
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-
-private val Deep = Color(0xFF075E66)
-private val Muted = Color(0xFF8A8A8A)
 
 @Composable
 fun DictationOverlay(visible: Boolean, cancelArmed: Boolean, dictation: Dictation) {
@@ -43,8 +40,11 @@ fun DictationOverlay(visible: Boolean, cancelArmed: Boolean, dictation: Dictatio
         val level by dictation.level.collectAsState()
         val partial by dictation.partial.collectAsState()
         val swell by animateFloatAsState(level)
-        val tint by animateColorAsState(if (cancelArmed) Muted else Accent)
-        val core by animateColorAsState(if (cancelArmed) Color(0xFF555555) else Deep)
+        val colors = MiuixTheme.colorScheme
+        val tint by
+            animateColorAsState(if (cancelArmed) colors.onSurfaceVariantSummary else colors.primary)
+        val ink by animateColorAsState(if (cancelArmed) colors.surface else colors.onPrimary)
+        val core = lerp(tint, Color.Black, 0.25f)
         Box(Modifier.fillMaxSize()) {
             Canvas(Modifier.fillMaxSize()) {
                 val radius = size.width * (0.62f + 0.08f * swell)
@@ -73,7 +73,7 @@ fun DictationOverlay(visible: Boolean, cancelArmed: Boolean, dictation: Dictatio
                     Text(
                         partial,
                         Modifier.padding(bottom = 24.dp),
-                        color = Color.White,
+                        color = ink,
                         style = MiuixTheme.textStyles.title4,
                         textAlign = TextAlign.Center,
                         maxLines = 4,
@@ -82,12 +82,12 @@ fun DictationOverlay(visible: Boolean, cancelArmed: Boolean, dictation: Dictatio
                 }
                 Text(
                     if (cancelArmed) "Release to Cancel" else "Release to Send",
-                    color = Color.White.copy(alpha = 0.85f),
+                    color = ink.copy(alpha = 0.85f),
                     style = MiuixTheme.textStyles.body2,
                 )
                 Text(
                     "Slide upwards to cancel",
-                    color = Color.White.copy(alpha = 0.85f),
+                    color = ink.copy(alpha = 0.85f),
                     style = MiuixTheme.textStyles.body2,
                 )
             }

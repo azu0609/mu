@@ -42,7 +42,7 @@ sealed interface Route : NavKey {
 // `invite` is a mu:// link the app was opened with, until `onInviteHandled`.
 @Composable
 fun App(core: Core, platform: Platform, invite: String?, onInviteHandled: () -> Unit) {
-    MuTheme {
+    MuTheme(platform.wallpaperColors) {
         val scope = rememberCoroutineScope()
         val mu = remember { Mu(core, platform, scope) }
         val lifecycle = LocalLifecycleOwner.current.lifecycle

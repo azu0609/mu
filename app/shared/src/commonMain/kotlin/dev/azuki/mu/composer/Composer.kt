@@ -58,7 +58,6 @@ import dev.azuki.mu.api.MuException
 import dev.azuki.mu.api.Resolved
 import dev.azuki.mu.baseName
 import dev.azuki.mu.chat.Destination
-import dev.azuki.mu.design.Accent
 import dev.azuki.mu.design.Glyphs
 import dev.azuki.mu.design.Mono
 import dev.azuki.mu.design.Pictograms
@@ -401,7 +400,7 @@ private fun Input(
             if (mono) KeyboardOptions(autoCorrectEnabled = false) else KeyboardOptions.Default,
         textStyle = style.copy(color = MiuixTheme.colorScheme.onSurface),
         lineLimits = TextFieldLineLimits.MultiLine(1, 6),
-        cursorBrush = SolidColor(Accent),
+        cursorBrush = SolidColor(MiuixTheme.colorScheme.primary),
         outputTransformation = outputTransformation,
         decorator = { inner ->
             Box {
@@ -451,7 +450,9 @@ private fun RoundAction(
     IconButton(
         onClick = onClick,
         enabled = enabled && !busy,
-        backgroundColor = if (enabled) Accent else MiuixTheme.colorScheme.disabledPrimaryButton,
+        backgroundColor =
+            if (enabled) MiuixTheme.colorScheme.primary
+            else MiuixTheme.colorScheme.disabledPrimaryButton,
         minWidth = 36.dp,
         minHeight = 36.dp,
     ) {
@@ -463,9 +464,8 @@ private fun RoundAction(
                 contentDescription,
                 Modifier.size(20.dp),
                 tint =
-                    MiuixTheme.colorScheme.onPrimary.let {
-                        if (enabled) it else it.copy(alpha = 0.5f)
-                    },
+                    if (enabled) MiuixTheme.colorScheme.onPrimary
+                    else MiuixTheme.colorScheme.surface,
             )
         }
     }
@@ -488,7 +488,12 @@ private fun Suggestions(items: List<Suggestion>, onPick: (Int) -> Unit) {
                         .padding(horizontal = 16.dp, vertical = 11.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(item.icon, null, Modifier.size(22.dp), tint = Accent)
+                    Icon(
+                        item.icon,
+                        null,
+                        Modifier.size(22.dp),
+                        tint = MiuixTheme.colorScheme.primary,
+                    )
                     Text(
                         item.title,
                         Modifier.padding(start = 10.dp),

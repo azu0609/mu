@@ -49,6 +49,8 @@ class AndroidPlatform(private val activity: ComponentActivity) : Platform {
             override fun set(key: String, value: String?) = shared.edit { putString(key, value) }
         }
 
+    override val wallpaperColors = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+
     private val permission = Asking(activity, ActivityResultContracts.RequestPermission())
 
     override val dictation: Dictation =

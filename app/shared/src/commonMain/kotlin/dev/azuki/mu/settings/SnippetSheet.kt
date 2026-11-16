@@ -16,7 +16,6 @@ import dev.azuki.mu.Mu
 import dev.azuki.mu.api.MuException
 import dev.azuki.mu.api.Snippet
 import dev.azuki.mu.design.CircleButton
-import dev.azuki.mu.design.Danger
 import dev.azuki.mu.design.Mono
 import dev.azuki.mu.design.Note
 import dev.azuki.mu.design.PictogramBadge
@@ -60,7 +59,7 @@ fun SnippetSheet(
                 CircleButton(
                     Solar.TrashBinTrashBoldDuotone,
                     "Delete",
-                    tint = Danger,
+                    tint = MiuixTheme.colorScheme.error,
                     onClick = {
                         scope.launch {
                             try {

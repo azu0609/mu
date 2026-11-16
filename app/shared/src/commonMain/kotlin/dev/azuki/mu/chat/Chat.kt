@@ -56,9 +56,7 @@ import dev.azuki.mu.Mu
 import dev.azuki.mu.api.Block
 import dev.azuki.mu.api.BlockKind
 import dev.azuki.mu.api.ToolStatus
-import dev.azuki.mu.design.Accent
 import dev.azuki.mu.design.CircleButton
-import dev.azuki.mu.design.Danger
 import dev.azuki.mu.design.Glyphs
 import dev.azuki.mu.design.Markdown
 import dev.azuki.mu.design.Mono
@@ -199,7 +197,7 @@ private fun UserBubble(text: String) {
             text,
             Modifier.padding(start = 48.dp)
                 .clip(RoundedCornerShape(22.dp))
-                .background(Accent)
+                .background(MiuixTheme.colorScheme.primary)
                 .padding(horizontal = 16.dp, vertical = 11.dp),
             color = MiuixTheme.colorScheme.onPrimary,
             style = MiuixTheme.textStyles.body1,
@@ -373,7 +371,12 @@ private fun CallView(block: Block, open: Boolean, onToggle: () -> Unit) {
             .padding(horizontal = 14.dp, vertical = 10.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Solar.FileTerminalBoldDuotone, null, Modifier.size(18.dp), tint = Accent)
+            Icon(
+                Solar.FileTerminalBoldDuotone,
+                null,
+                Modifier.size(18.dp),
+                tint = MiuixTheme.colorScheme.primary,
+            )
             Text(
                 block.text,
                 Modifier.weight(1f).padding(horizontal = 8.dp),
@@ -389,7 +392,12 @@ private fun CallView(block: Block, open: Boolean, onToggle: () -> Unit) {
                 null -> Unit
                 else ->
                     ending(status)?.let {
-                        Text(it, color = Danger, fontSize = 11.sp, fontFamily = Mono)
+                        Text(
+                            it,
+                            color = MiuixTheme.colorScheme.error,
+                            fontSize = 11.sp,
+                            fontFamily = Mono,
+                        )
                     }
             }
         }
@@ -421,7 +429,12 @@ private fun ShellCard(block: Block) {
                     fontWeight = FontWeight.Medium,
                 )
                 block.tool?.status?.let(::ending)?.let {
-                    Text(it, color = Danger, fontSize = 11.sp, fontFamily = Mono)
+                    Text(
+                        it,
+                        color = MiuixTheme.colorScheme.error,
+                        fontSize = 11.sp,
+                        fontFamily = Mono,
+                    )
                 }
             }
             if (output.isNotEmpty()) {
@@ -448,9 +461,13 @@ private fun NoticeView(block: Block) {
                 Solar.DangerTriangleBoldDuotone,
                 null,
                 Modifier.padding(top = 1.dp, end = 8.dp).size(18.dp),
-                tint = Danger,
+                tint = MiuixTheme.colorScheme.error,
             )
-            Text(block.text, color = Danger, style = MiuixTheme.textStyles.body2)
+            Text(
+                block.text,
+                color = MiuixTheme.colorScheme.error,
+                style = MiuixTheme.textStyles.body2,
+            )
         }
     } else {
         Text(

@@ -18,7 +18,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import dev.azuki.mu.design.Accent
 import dev.azuki.mu.design.Pictograms
 import dev.azuki.mu.design.Sheet
 import dev.azuki.mu.design.SheetColumn
@@ -67,7 +66,8 @@ fun IconPicker(
                                 pictogram.vector,
                                 null,
                                 Modifier.size(36.dp),
-                                tint = if (snippet) Accent else pictogram.tint,
+                                tint =
+                                    if (snippet) MiuixTheme.colorScheme.primary else pictogram.tint,
                             )
                         }
                     }

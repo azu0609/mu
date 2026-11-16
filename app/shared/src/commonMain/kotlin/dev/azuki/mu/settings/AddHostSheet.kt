@@ -20,7 +20,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.azuki.mu.Mu
 import dev.azuki.mu.api.MuException
-import dev.azuki.mu.design.Accent
 import dev.azuki.mu.design.BackButton
 import dev.azuki.mu.design.Mono
 import dev.azuki.mu.design.Note
@@ -159,5 +158,5 @@ private fun Requirements() {
 
 @Composable
 private fun HelpIcon(icon: ImageVector) {
-    Icon(icon, null, Modifier.size(24.dp), tint = Accent)
+    Icon(icon, null, Modifier.size(24.dp), tint = MiuixTheme.colorScheme.primary)
 }

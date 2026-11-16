@@ -22,7 +22,6 @@ import dev.azuki.mu.Mu
 import dev.azuki.mu.api.Directory
 import dev.azuki.mu.api.EntryKind
 import dev.azuki.mu.api.MuException
-import dev.azuki.mu.design.Accent
 import dev.azuki.mu.design.BackButton
 import dev.azuki.mu.design.Note
 import dev.azuki.mu.design.PrimaryButton
@@ -38,6 +37,7 @@ import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.InfiniteProgressIndicator
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.theme.LocalDismissState
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
 
 @Composable
@@ -146,5 +146,5 @@ fun ProjectPicker(
 
 @Composable
 private fun EntryIcon(icon: ImageVector) {
-    Icon(icon, null, Modifier.size(24.dp), tint = Accent)
+    Icon(icon, null, Modifier.size(24.dp), tint = MiuixTheme.colorScheme.primary)
 }
