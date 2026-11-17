@@ -1,5 +1,6 @@
 mod agent;
 mod api;
+mod bridge;
 mod config;
 mod devices;
 mod directory;
@@ -18,7 +19,7 @@ mod skills;
 mod store;
 mod stream;
 mod summary;
-pub mod tools;
+mod tools;
 mod upload;
 
 pub use listen::{listen_address, serve, serve_stream, socket_path};

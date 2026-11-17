@@ -60,6 +60,7 @@ import dev.azuki.mu.api.Status
 import dev.azuki.mu.design.CircleButton
 import dev.azuki.mu.design.Dropdown
 import dev.azuki.mu.design.Floating
+import dev.azuki.mu.design.Glyphs
 import dev.azuki.mu.design.SmallIconButton
 import dev.azuki.mu.design.Solar
 import dev.azuki.mu.design.Spinning
@@ -145,7 +146,7 @@ fun Sidebar(
             }
             hosts.forEach { host ->
                 val live = mu.live[host.id]
-                val sessions = live?.sessions.orEmpty().filter(filter.keep)
+                val sessions = nested(live?.sessions.orEmpty().filter(filter.keep))
                 item(key = "header.${host.id}") {
                     HostHeader(
                         mu = mu,
@@ -178,10 +179,11 @@ fun Sidebar(
                     else ->
                         itemsIndexed(
                             sessions,
-                            key = { _, session -> "${host.id}/${session.id}" },
-                        ) { index, session ->
+                            key = { _, (session, _) -> "${host.id}/${session.id}" },
+                        ) { index, (session, depth) ->
                             SessionRow(
                                 session = session,
+                                depth = depth,
                                 home = live?.profile?.home,
                                 first = index == 0,
                                 last = index == sessions.lastIndex,
@@ -299,9 +301,25 @@ private fun HostHeader(
     }
 }
 
+// Each session, then the ones it spawned beneath it, with how deep each sits. One whose parent
+// isn't
+// listed, as when filtered out, stands on its own.
+private fun nested(sessions: List<SessionSummary>): List<Pair<SessionSummary, Int>> {
+    val listed = sessions.mapTo(HashSet()) { it.id }
+    val spawned = sessions.groupBy { session -> session.parent?.takeIf { it in listed } }
+    val nested = mutableListOf<Pair<SessionSummary, Int>>()
+    fun visit(session: SessionSummary, depth: Int) {
+        nested += session to depth
+        spawned[session.id].orEmpty().forEach { visit(it, depth + 1) }
+    }
+    spawned[null].orEmpty().forEach { visit(it, 0) }
+    return nested
+}
+
 @Composable
 private fun SessionRow(
     session: SessionSummary,
+    depth: Int,
     home: String?,
     first: Boolean,
     last: Boolean,
@@ -319,8 +337,27 @@ private fun SessionRow(
         )
     BasicComponent(
         modifier = modifier.clip(shape).background(MiuixTheme.colorScheme.surfaceContainer),
+        insideMargin =
+            PaddingValues(
+                start = 16.dp + 20.dp * (depth - 1).coerceIn(0, 3),
+                top = 16.dp,
+                end = 16.dp,
+                bottom = 16.dp,
+            ),
         onClick = onClick,
         holdDownState = current,
+        startAction =
+            if (depth == 0) null
+            else {
+                {
+                    Icon(
+                        Glyphs.Spawned,
+                        "Subagent",
+                        Modifier.size(18.dp),
+                        tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    )
+                }
+            },
         endActions = { StatusIcon(session.status, session.unread, Modifier.size(22.dp)) },
     ) {
         Text(

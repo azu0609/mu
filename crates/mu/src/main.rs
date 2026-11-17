@@ -1,9 +1,18 @@
-use mu_tui::Endpoint;
-use std::{env, os::unix::net::UnixStream, path::PathBuf, thread};
+mod commands;
+mod devices;
+
+use mu_client::{Client, Endpoint};
+use std::{
+    env,
+    ffi::{OsStr, OsString},
+    os::unix::net::UnixStream,
+    path::Path,
+    process, thread,
+};
 
 fn private() -> mu_host::Result<()> {
     let (client, server) = UnixStream::pair()?;
-    let host = thread::spawn(move || mu_host::serve_stream(server));
+    let host = thread::spawn(move || mu_host::serve_stream(server, commands::names()));
     let result = mu_tui::run(Endpoint::Stream(client));
     let _ = host.join();
     result
@@ -13,26 +22,50 @@ fn shared() -> Endpoint {
     Endpoint::Socket(mu_host::socket_path())
 }
 
+async fn connect(endpoint: Endpoint) -> mu_host::Result<Client> {
+    let place = match &endpoint {
+        Endpoint::Socket(path) => format!(" at {}", path.display()),
+        Endpoint::Stream(_) => String::new(),
+        Endpoint::Remote(remote) => format!(" at {}", remote.address),
+    };
+    Client::connect(endpoint).await.map_err(|e| format!("Cannot reach the mu host{place}: {e}").into())
+}
+
+fn block_on(future: impl Future<Output = mu_host::Result<()>>) -> mu_host::Result<()> {
+    tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(future)
+}
+
+fn command(name: &OsStr, args: &[OsString]) -> Option<mu_host::Result<()>> {
+    let command = commands::find(Path::new(name).file_name()?.to_str()?)?;
+    let args: Option<Vec<_>> = args.iter().map(|arg| arg.to_str().map(str::to_owned)).collect();
+    Some(args.ok_or_else(|| "Arguments must be UTF-8".into()).and_then(|args| command(&args)))
+}
+
 fn main() -> mu_host::Result<()> {
-    let args: Vec<_> = env::args_os().skip(1).collect();
+    let mut args = env::args_os();
+    let name = args.next().unwrap_or_default();
+    let args: Vec<_> = args.collect();
+    if let Some(result) = command(&name, &args) {
+        if let Err(e) = result {
+            eprintln!("{e}");
+            process::exit(1);
+        }
+        return Ok(());
+    }
     match args.first().and_then(|arg| arg.to_str()) {
         None => match env::var_os("MU_SOCKET").filter(|path| !path.is_empty()) {
             Some(socket) => mu_tui::run(Endpoint::Socket(socket.into())),
             None => private(),
         },
-        Some("serve") if args.len() == 1 => mu_host::serve(&mu_host::socket_path(), mu_host::listen_address()?),
+        Some("serve") if args.len() == 1 => {
+            mu_host::serve(&mu_host::socket_path(), mu_host::listen_address()?, commands::names())
+        }
         Some("pair") if args.len() <= 2 && args.iter().all(|arg| arg.to_str().is_some()) => {
-            mu_tui::pair(shared(), args.get(1).and_then(|arg| arg.to_str()))
+            block_on(devices::pair(shared(), args.get(1).and_then(|arg| arg.to_str())))
         }
-        Some("devices") if args.len() == 1 => mu_tui::devices(shared()),
+        Some("devices") if args.len() == 1 => block_on(devices::devices(shared())),
         Some("unpair") if args.len() == 2 && args[1].to_str().is_some() => {
-            mu_tui::unpair(shared(), args[1].to_str().unwrap_or_default())
-        }
-        Some("--view-image") => {
-            if args.len() != 2 {
-                return Err("Usage: view_image /path/to/image".into());
-            }
-            mu_host::tools::view_image(&PathBuf::from(&args[1]))
+            block_on(devices::unpair(shared(), args[1].to_str().unwrap_or_default()))
         }
         Some(_) => {
             println!(

@@ -99,6 +99,9 @@ fn admit(host: &Host, peer: Peer, request: &Request<Incoming>) -> Rpc<()> {
     if [wire::CreateInvite::PATH, wire::ListDevices::PATH, wire::Unpair::PATH].contains(&path) {
         return Err(Failure(StatusCode::FORBIDDEN, "Only local clients can manage devices".into()));
     }
+    if [wire::RunSession::PATH, wire::ViewImage::PATH].contains(&path) {
+        return Err(Failure(StatusCode::FORBIDDEN, "Only commands in the host's bash can make this call".into()));
+    }
     Ok(())
 }
 
@@ -130,19 +133,8 @@ pub async fn handle(host: Arc<Host>, peer: Peer, request: Request<Incoming>) -> 
         wire::Subscribe::PATH => streamed(host, body, stream::subscribe).await,
         wire::Shell::PATH => streamed(host, body, stream::shell).await,
         wire::CreateSession::PATH => call(host, body, |host, call| host.create(call)).await,
-        wire::SendMessage::PATH => {
-            call(host, body, |host, call: wire::SendMessage| {
-                host.agent(&call.session_id)?.send(call.text, call.skill.as_deref()).map_err(failed)
-            })
-            .await
-        }
-        wire::Stop::PATH => {
-            call(host, body, |host, call: wire::Stop| {
-                host.agent(&call.session_id)?.stop();
-                Ok(())
-            })
-            .await
-        }
+        wire::SendMessage::PATH => call(host, body, |host, call| host.send(call)).await,
+        wire::Stop::PATH => call(host, body, |host, call| host.stop(call)).await,
         wire::MarkRead::PATH => {
             call(host, body, |host, call: wire::MarkRead| host.agent(&call.session_id)?.mark_read().map_err(internal))
                 .await
@@ -219,6 +211,11 @@ pub async fn handle(host: Arc<Host>, peer: Peer, request: Request<Incoming>) -> 
         wire::CreateInvite::PATH => call(host, body, |host, wire::CreateInvite {}| host.invite()).await,
         wire::ListDevices::PATH => call(host, body, |host, wire::ListDevices {}| Ok(host.devices()?.list())).await,
         wire::Unpair::PATH => call(host, body, |host, call| host.unpair(call)).await,
+        wire::ListSessions::PATH => call(host, body, |host, wire::ListSessions {}| host.sessions()).await,
+        wire::RunSession::PATH => call(host, body, |host, call: wire::RunSession| host.bridge.session(&call.run)).await,
+        wire::ViewImage::PATH => {
+            call(host, body, |host, call: wire::ViewImage| host.bridge.view_image(&call.run, &call.path)).await
+        }
         _ => failure(Failure(StatusCode::NOT_FOUND, format!("No call at {path}"))),
     }
 }

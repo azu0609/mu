@@ -1,5 +1,7 @@
 use crate::{
-    Result, config,
+    Result,
+    bridge::Bridge,
+    config,
     items::block_from_item,
     process,
     session::{Entry, Usage},
@@ -35,17 +37,20 @@ pub struct Request {
     pub effort: Option<String>,
     pub input: Vec<Value>,
     pub cwd: PathBuf,
+    pub bridge: Arc<Bridge>,
+    pub session: String,
     pub previous_usage: Usage,
 }
 
 impl Request {
     pub fn body(&self) -> Value {
+        let description = format!("Special bash commands: {}", self.bridge.commands().join(", "));
         let mut body = json!({
             "model": self.model, "instructions": self.instructions, "input": self.input,
             "stream": true, "store": false, "include": ["reasoning.encrypted_content"],
             "reasoning": {"summary": "auto"},
             "parallel_tool_calls": true,
-            "tools": [{"type":"function", "name":"bash", "description":"Special bash commands: view_image",
+            "tools": [{"type":"function", "name":"bash", "description":description,
                 "parameters":{"type":"object", "properties":{"command":{"type":"string"}, "timeoutMs":{"type":"integer"}}, "required":["command"], "additionalProperties":false}, "strict":false}]
         });
         if let Some(effort) = &self.effort {
@@ -282,6 +287,7 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, emit: Emit) -> Result<Ste
                 let mut block = block_from_item(call, false).unwrap();
                 let cwd = &request.cwd;
                 let cancel = &cancel;
+                let run = request.bridge.open(Some(request.session.clone()));
                 scope.spawn(move || {
                     block.tool.as_mut().unwrap().status = ToolStatus::Running;
                     emit(LiveEvent::Set { index: slot, block: block.clone() });
@@ -289,7 +295,7 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, emit: Emit) -> Result<Ste
                     let result = if call["name"] != "bash" {
                         Err("Unknown tool (only bash is available)".into())
                     } else {
-                        tools::bash(call["arguments"].as_str().unwrap_or(""), cwd, cancel, |output| {
+                        tools::bash(call["arguments"].as_str().unwrap_or(""), cwd, &run, cancel, |output| {
                             tool.output = output.clone();
                             emit(LiveEvent::Output { index: slot, output });
                         })

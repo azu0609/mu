@@ -117,7 +117,7 @@ class ChatState(private val mu: Mu, val target: ChatTarget) : Destination {
 
     suspend fun send(text: String, skill: String?) = connected().send(text, skill)
 
-    override suspend fun stop() = connected().stop()
+    override suspend fun stop(children: Boolean) = connected().stop(children)
 
     suspend fun appendShell(run: String) = connected().appendShell(run)
 

@@ -253,8 +253,8 @@ private fun PromptInput(
             Spacer(Modifier.width(4.dp))
             when {
                 running && empty ->
-                    RoundAction(Glyphs.Stop, "Stop", enabled = true) {
-                        mu.launch { destination.stop() }
+                    StopButton(state.stopMenu) { children ->
+                        mu.launch { destination.stop(children) }
                     }
 
                 else ->

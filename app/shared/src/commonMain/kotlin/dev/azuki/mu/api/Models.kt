@@ -29,6 +29,8 @@ data class SessionSummary(
     val id: String,
     val title: String,
     val cwd: String,
+    // The session that spawned it, if any.
+    val parent: String?,
     val status: Status,
     val error: String?,
     val unread: Boolean,
@@ -81,6 +83,8 @@ data class Model(val name: String, val effort: String?, val context: Long? = nul
 
 enum class BlockKind {
     User,
+    // From another session, which the block's `from` names.
+    AgentMessage,
     Agent,
     Thought,
     Call,
@@ -89,7 +93,16 @@ enum class BlockKind {
     Warning,
 }
 
-data class Block(val kind: BlockKind, val text: String, val tool: Tool?, val span: Span?)
+data class Block(
+    val kind: BlockKind,
+    val text: String,
+    val tool: Tool?,
+    val span: Span?,
+    val from: Sender? = null,
+)
+
+// A session as it was when it sent a message.
+data class Sender(val session: String, val title: String)
 
 // Milliseconds since the Unix epoch.
 data class Span(val started: Long, val finished: Long)

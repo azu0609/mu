@@ -1,5 +1,5 @@
 use crate::{Result, config, input::Attachment, instructions, items::block_from_item, skills::Skill};
-use mu_wire::{Block, Kind, Model, Span, Status, Tool, ToolOutput, ToolStatus};
+use mu_wire::{Block, Kind, Model, Sender, Span, Status, Tool, ToolOutput, ToolStatus};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
@@ -35,6 +35,7 @@ impl Usage {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Entry {
     Item { item: Value },
+    AgentMessage { from: Sender, text: String },
     Attachment { label: String, path: PathBuf, text: String },
     ImageAttachment { path: PathBuf, image: Value },
     Notice { text: String },
@@ -46,6 +47,11 @@ impl Entry {
     fn input(&self) -> Option<Value> {
         Some(match self {
             Self::Item { item } => item.clone(),
+            Self::AgentMessage { from, text } => {
+                let (session, title) = (attribute(&from.session), attribute(&from.title));
+                let text = format!("<agent-message session=\"{session}\" title=\"{title}\">\n{text}\n</agent-message>");
+                json!({"role":"user", "content":text})
+            }
             Self::Attachment { label, path, text } => {
                 json!({"role":"user", "content":format!("{label}: {}\n{text}", path.display())})
             }
@@ -122,6 +128,10 @@ impl Node {
     }
 }
 
+fn attribute(value: &str) -> String {
+    value.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;")
+}
+
 fn tool_item(tool: &Tool) -> Value {
     json!({"type":"function_call_output", "call_id":tool.call_id, "output":tool_text(tool.status, &tool.output)})
 }
@@ -148,6 +158,8 @@ pub struct Header {
     pub id: String,
     pub title: String,
     pub cwd: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<String>,
     pub instructions: String,
     #[serde(flatten)]
     model: Model,
@@ -178,13 +190,14 @@ fn write_line(writer: &mut impl Write, value: &impl Serialize) -> Result<()> {
 }
 
 impl Session {
-    pub fn new(cwd: PathBuf, model: Model, skills: &[Skill]) -> Self {
+    pub fn new(cwd: PathBuf, parent: Option<String>, model: Model, skills: &[Skill]) -> Self {
         let header = Header {
             version: 1,
             id: crate::unique_id(),
             title: String::new(),
             instructions: instructions::build(&cwd, skills),
             cwd,
+            parent,
             model,
         };
         Self { header, records: vec![], file: None, saved: 0, offset: 0 }
@@ -297,11 +310,14 @@ impl Session {
             .unwrap_or(Status::Idle)
     }
 
-    pub fn user(&mut self, text: String, attachments: Vec<Attachment>) {
+    pub fn user(&mut self, text: String, from: Option<Sender>, attachments: Vec<Attachment>) {
         if self.file.is_none() && self.nodes().next().is_none() {
             self.header.title = text.lines().next().unwrap_or("").chars().take(60).collect();
         }
-        let mut entries = vec![Entry::Item { item: json!({"role":"user", "content":text}) }];
+        let mut entries = vec![match from {
+            Some(from) => Entry::AgentMessage { from, text },
+            None => Entry::Item { item: json!({"role":"user", "content":text}) },
+        }];
         entries.extend(attachments.into_iter().map(Into::into));
         let now = crate::now();
         self.push(entries, None, Span { started: now, finished: now }, None);
@@ -341,6 +357,9 @@ impl Session {
                 for entry in self.records[node.start..].iter().filter_map(Record::entry) {
                     match entry {
                         Entry::Item { item } => node.blocks.extend(block_from_item(item, false)),
+                        Entry::AgentMessage { from, text } => {
+                            node.blocks.push(Block { from: Some(from.clone()), ..Block::new(Kind::AgentMessage, text) })
+                        }
                         Entry::Attachment { label, path, .. } => {
                             node.blocks.push(Block::new(Kind::Notice, format!("{label}: {}", path.display())))
                         }
@@ -479,7 +498,9 @@ impl Session {
                     let blocks = &self.node(i).blocks;
                     blocks
                         .iter()
-                        .find(|b| matches!(b.kind, Kind::User | Kind::Agent | Kind::Call | Kind::Shell))
+                        .find(|b| {
+                            matches!(b.kind, Kind::User | Kind::AgentMessage | Kind::Agent | Kind::Call | Kind::Shell)
+                        })
                         .or_else(|| blocks.iter().find(|b| b.kind == Kind::Warning))
                         .map(|b| {
                             format!(

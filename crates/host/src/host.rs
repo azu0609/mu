@@ -1,7 +1,9 @@
 use crate::{
     Result,
     agent::{self, Agent},
-    api, config,
+    api,
+    bridge::Bridge,
+    config,
     devices::Devices,
     input, net,
     profile::Profile,
@@ -12,7 +14,7 @@ use crate::{
 use hyper::StatusCode;
 use mu_wire::{self as wire, Status, WatchEvent};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -69,13 +71,14 @@ pub struct Host {
     runs: Mutex<VecDeque<(String, tools::Run)>>,
     pub devices: Option<Devices>,
     network: Option<Network>,
+    pub bridge: Arc<Bridge>,
     models: Mutex<Option<Vec<wire::ModelInfo>>>,
     // The files under the last directory an @mention looked in.
     mentions: Mutex<Option<(PathBuf, Arc<Vec<String>>)>>,
 }
 
 impl Host {
-    pub fn new(devices: Option<Devices>, network: Option<Network>) -> Result<Arc<Self>> {
+    pub fn new(devices: Option<Devices>, network: Option<Network>, bridge: Arc<Bridge>) -> Result<Arc<Self>> {
         let name = net::hostname();
         let profile = Profile::load(config::dir().join("host.json"), name.clone())?;
         Ok(Arc::new(Self {
@@ -86,6 +89,7 @@ impl Host {
             runs: Mutex::default(),
             devices,
             network,
+            bridge,
             models: Mutex::default(),
             mentions: Mutex::default(),
         }))
@@ -149,7 +153,7 @@ impl Host {
         if let Some(agent) = agents.get(id) {
             return Ok(agent.clone());
         }
-        let agent = Agent::load(id, self.changed())
+        let agent = Agent::load(id, self.changed(), self.bridge.clone())
             .map_err(|e| Failure(StatusCode::NOT_FOUND, format!("Session {id}: {e}")))?;
         agents.insert(id.into(), agent.clone());
         Ok(agent)
@@ -163,7 +167,7 @@ impl Host {
         self.agents.lock().unwrap().retain(|_, agent| !agent.disposable());
     }
 
-    fn sessions(&self) -> Rpc<Vec<wire::SessionSummary>> {
+    pub fn sessions(&self) -> Rpc<Vec<wire::SessionSummary>> {
         self.sweep();
         let loaded: HashMap<_, _> =
             self.agents.lock().unwrap().iter().map(|(id, agent)| (id.clone(), agent.status())).collect();
@@ -188,13 +192,56 @@ impl Host {
 
     pub fn create(&self, call: wire::CreateSession) -> Rpc<String> {
         directory(&call.cwd)?;
-        let model = self.resolve(call.model);
+        let parent = call.parent.as_deref().map(|id| self.agent(id)).transpose()?;
+        let model = match &parent {
+            Some(parent) if call.model.name.is_empty() => {
+                let model = parent.model();
+                wire::Model { effort: call.model.effort.filter(|effort| !effort.is_empty()).or(model.effort), ..model }
+            }
+            _ => self.resolve(call.model),
+        };
         agent::check(&model).map_err(failed)?;
-        let agent = Agent::new(call.cwd, model, self.changed());
-        agent.send(call.text, call.skill.as_deref()).map_err(failed)?;
+        let from = call.parent.as_deref().map(|id| self.sender(id)).transpose()?;
+        let agent = Agent::new(call.cwd, call.parent, model, self.changed(), self.bridge.clone());
+        agent.send(call.text, call.skill.as_deref(), from).map_err(failed)?;
         let id = agent.id();
         self.agents.lock().unwrap().insert(id.clone(), agent);
         Ok(id)
+    }
+
+    fn sender(&self, id: &str) -> Rpc<wire::Sender> {
+        Ok(wire::Sender { session: id.into(), title: self.agent(id)?.title() })
+    }
+
+    pub fn send(&self, call: wire::SendMessage) -> Rpc<()> {
+        let agent = self.agent(&call.session_id)?;
+        let from = call.from.as_deref().map(|id| self.sender(id)).transpose()?;
+        agent.send(call.text, call.skill.as_deref(), from).map_err(failed)
+    }
+
+    pub fn stop(&self, call: wire::Stop) -> Rpc<()> {
+        let agent = self.agent(&call.session_id)?;
+        agent.stop();
+        if !call.children {
+            return Ok(());
+        }
+        // Only loaded sessions can be running, so the rest need no looking at.
+        let agents = self.agents.lock().unwrap();
+        let mut stopped = HashSet::from([call.session_id]);
+        loop {
+            let found: Vec<_> = agents
+                .iter()
+                .filter(|(id, agent)| !stopped.contains(*id) && agent.parent().is_some_and(|p| stopped.contains(&p)))
+                .map(|(id, agent)| (id.clone(), agent))
+                .collect();
+            if found.is_empty() {
+                return Ok(());
+            }
+            for (id, agent) in found {
+                agent.stop();
+                stopped.insert(id);
+            }
+        }
     }
 
     pub fn list_models(&self) -> Rpc<Vec<wire::ModelInfo>> {
@@ -289,5 +336,6 @@ fn summarize(summary: Summary, loaded: Option<Status>) -> wire::SessionSummary {
         id: summary.id,
         title: summary.title,
         cwd: summary.cwd,
+        parent: summary.parent,
     }
 }

@@ -1,5 +1,7 @@
 use crate::{
-    Result, config,
+    Result,
+    bridge::Bridge,
+    config,
     devices::Devices,
     host::{Host, Network},
     net,
@@ -17,6 +19,7 @@ use std::{
         net::UnixStream as StdStream,
     },
     path::{Path, PathBuf},
+    pin::pin,
     sync::Arc,
     time::Duration,
 };
@@ -28,13 +31,37 @@ use tokio::{
 };
 use tokio_rustls::TlsAcceptor;
 
-pub fn socket_path() -> PathBuf {
-    if let Some(path) = env::var_os("MU_SOCKET").filter(|path| !path.is_empty()) {
-        return path.into();
-    }
+fn runtime_dir() -> PathBuf {
     match env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
-        Some(dir) => PathBuf::from(dir).join("mu.sock"),
-        None => config::state_dir().join("mu.sock"),
+        Some(dir) => dir.into(),
+        None => config::state_dir(),
+    }
+}
+
+pub fn socket_path() -> PathBuf {
+    match env::var_os("MU_SOCKET").filter(|path| !path.is_empty()) {
+        Some(path) => path.into(),
+        None => runtime_dir().join("mu.sock"),
+    }
+}
+
+fn bind(socket: &Path) -> Result<UnixListener> {
+    if let Some(dir) = socket.parent() {
+        fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
+    }
+    let _ = fs::remove_file(socket);
+    let listener = UnixListener::bind(socket)?;
+    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
+    Ok(listener)
+}
+
+async fn local(host: &Arc<Host>, accepted: std::io::Result<(UnixStream, tokio::net::unix::SocketAddr)>) {
+    match accepted {
+        Ok((stream, _)) => {
+            let host = host.clone();
+            tokio::spawn(async move { connection(&host, Peer::Local, stream).await });
+        }
+        Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
     }
 }
 
@@ -81,23 +108,52 @@ async fn shutdown(host: &Host) {
     }
 }
 
-pub fn serve(socket: &Path, address: Option<SocketAddr>) -> Result<()> {
-    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
-    runtime.block_on(listen(socket, address))
+// What only this process uses: its special commands' links, and a private host's socket.
+struct Own(PathBuf);
+
+impl Own {
+    fn new() -> Self {
+        let dir = runtime_dir().join(format!("mu-{}", std::process::id()));
+        // Left by a crashed process that had this pid.
+        let _ = fs::remove_dir_all(&dir);
+        Self(dir)
+    }
 }
 
-pub fn serve_stream(stream: StdStream) -> Result<()> {
+impl Drop for Own {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+// `commands` are the special commands the host's bash runs get: names this binary answers to.
+pub fn serve(socket: &Path, address: Option<SocketAddr>, commands: Vec<&'static str>) -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
+    runtime.block_on(listen(socket, address, commands))
+}
+
+// The terminal's private host. Only its own bash runs' commands use its socket.
+pub fn serve_stream(stream: StdStream, commands: Vec<&'static str>) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build()?;
     runtime.block_on(async {
         stream.set_nonblocking(true)?;
-        let host = Host::new(None, None)?;
-        connection(&host, Peer::Local, UnixStream::from_std(stream)?).await;
+        let own = Own::new();
+        let socket = own.0.join("mu.sock");
+        let listener = bind(&socket)?;
+        let host = Host::new(None, None, Bridge::new(&socket, &own.0, commands)?)?;
+        let mut terminal = pin!(connection(&host, Peer::Local, UnixStream::from_std(stream)?));
+        loop {
+            tokio::select! {
+                () = &mut terminal => break,
+                accepted = listener.accept() => local(&host, accepted).await,
+            }
+        }
         shutdown(&host).await;
         Ok(())
     })
 }
 
-async fn listen(socket: &Path, address: Option<SocketAddr>) -> Result<()> {
+async fn listen(socket: &Path, address: Option<SocketAddr>, commands: Vec<&'static str>) -> Result<()> {
     if let Some(dir) = socket.parent() {
         fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
     }
@@ -111,9 +167,7 @@ async fn listen(socket: &Path, address: Option<SocketAddr>) -> Result<()> {
         }
         Err(fs::TryLockError::Error(e)) => return Err(e.into()),
     }
-    let _ = fs::remove_file(socket);
-    let listener = UnixListener::bind(socket)?;
-    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
+    let listener = bind(socket)?;
 
     let devices = Devices::load(config::state_dir().join("devices.json"))?;
     let (network, tcp) = match address {
@@ -126,18 +180,13 @@ async fn listen(socket: &Path, address: Option<SocketAddr>) -> Result<()> {
         }
         None => (None, None),
     };
-    let host = Host::new(Some(devices), network)?;
+    let own = Own::new();
+    let host = Host::new(Some(devices), network, Bridge::new(socket, &own.0, commands)?)?;
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
     loop {
         tokio::select! {
-            accepted = listener.accept() => match accepted {
-                Ok((stream, _)) => {
-                    let host = host.clone();
-                    tokio::spawn(async move { connection(&host, Peer::Local, stream).await });
-                }
-                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
-            },
+            accepted = listener.accept() => local(&host, accepted).await,
             accepted = accept(&tcp) => match accepted {
                 Ok(stream) => {
                     let host = host.clone();

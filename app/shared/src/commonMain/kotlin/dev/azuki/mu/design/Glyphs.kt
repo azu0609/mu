@@ -26,6 +26,13 @@ object Glyphs {
         }
     }
 
+    val Spawned: ImageVector by lazy {
+        icon("Spawned") {
+            stroke("M5 5.5V10.5C5 12.157 6.343 13.5 8 13.5H18.5", width = 2f, roundJoin = true)
+            stroke("M14.5 9.5L18.5 13.5L14.5 17.5", width = 2f, roundJoin = true)
+        }
+    }
+
     val Stop: ImageVector by lazy {
         icon("Stop") {
             fill(

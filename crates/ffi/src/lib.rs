@@ -231,7 +231,7 @@ impl Remote {
         text: String,
         skill: Option<String>,
     ) -> Result<String, MuError> {
-        self.call(CreateSession { cwd, model, text, skill }).await
+        self.call(CreateSession { cwd, model, text, skill, parent: None }).await
     }
 
     pub async fn list_models(&self) -> Result<Vec<ModelInfo>, MuError> {
@@ -394,7 +394,7 @@ impl Session {
 #[uniffi::export]
 impl Session {
     pub async fn send(&self, text: String, skill: Option<String>) -> Result<(), MuError> {
-        self.call(SendMessage { session_id: self.id.clone(), text, skill }).await
+        self.call(SendMessage { session_id: self.id.clone(), text, skill, from: None }).await
     }
 
     pub async fn append_shell(&self, run: String) -> Result<(), MuError> {
@@ -405,8 +405,9 @@ impl Session {
         self.call(SetModel { session_id: self.id.clone(), model }).await
     }
 
-    pub async fn stop(&self) -> Result<(), MuError> {
-        self.call(Stop { session_id: self.id.clone() }).await
+    // `children` stops the sessions it parents too, and theirs.
+    pub async fn stop(&self, children: bool) -> Result<(), MuError> {
+        self.call(Stop { session_id: self.id.clone(), children }).await
     }
 
     pub async fn mark_read(&self) -> Result<(), MuError> {

@@ -1,10 +1,14 @@
 use crate::{
-    Result, api, input, now,
+    Result, api,
+    bridge::Bridge,
+    input, now,
     session::{End, Entry, Record, Session},
     skills::{self, Skill},
     tools,
 };
-use mu_wire::{Block, Event, Kind, Live, LiveEvent, Model, Resume, Snapshot, Span, State, Stats, Status, TreeEntry};
+use mu_wire::{
+    Block, Event, Kind, Live, LiveEvent, Model, Resume, Sender, Snapshot, Span, State, Stats, Status, TreeEntry,
+};
 use std::{
     mem,
     path::PathBuf,
@@ -31,6 +35,7 @@ struct Inner {
     sinks: Vec<(u64, Sink)>,
     next_sink: u64,
     changed: Changed,
+    bridge: Arc<Bridge>,
 }
 
 pub struct Agent {
@@ -119,14 +124,14 @@ impl Inner {
 
     fn drain_queue(&mut self) {
         for message in mem::take(&mut self.queued) {
-            self.session.user(message.text, message.attachments);
+            self.session.user(message.text, message.from, message.attachments);
             self.commit();
         }
     }
 }
 
 impl Agent {
-    fn wrap(session: Session, skills: Vec<Skill>, changed: Changed) -> Arc<Self> {
+    fn wrap(session: Session, skills: Vec<Skill>, changed: Changed, bridge: Arc<Bridge>) -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(Inner {
                 skills,
@@ -138,20 +143,21 @@ impl Agent {
                 sinks: vec![],
                 next_sink: 0,
                 changed,
+                bridge,
             }),
         })
     }
 
-    pub fn new(cwd: PathBuf, model: Model, changed: Changed) -> Arc<Self> {
+    pub fn new(cwd: PathBuf, parent: Option<String>, model: Model, changed: Changed, bridge: Arc<Bridge>) -> Arc<Self> {
         let skills = skills::skills(&cwd);
-        let session = Session::new(cwd, model, &skills);
-        Self::wrap(session, skills, changed)
+        let session = Session::new(cwd, parent, model, &skills);
+        Self::wrap(session, skills, changed, bridge)
     }
 
-    pub fn load(id: &str, changed: Changed) -> Result<Arc<Self>> {
+    pub fn load(id: &str, changed: Changed, bridge: Arc<Bridge>) -> Result<Arc<Self>> {
         let session = Session::load(id)?;
         let skills = skills::skills(&session.header().cwd);
-        Ok(Self::wrap(session, skills, changed))
+        Ok(Self::wrap(session, skills, changed, bridge))
     }
 
     fn inner(&self) -> MutexGuard<'_, Inner> {
@@ -164,6 +170,18 @@ impl Agent {
 
     pub fn status(&self) -> Status {
         self.inner().status
+    }
+
+    pub fn title(&self) -> String {
+        self.inner().session.header().title.clone()
+    }
+
+    pub fn parent(&self) -> Option<String> {
+        self.inner().session.header().parent.clone()
+    }
+
+    pub fn model(&self) -> Model {
+        self.inner().session.model().clone()
     }
 
     pub fn disposable(&self) -> bool {
@@ -185,7 +203,7 @@ impl Agent {
         self.inner().sinks.retain(|(sink, _)| *sink != id);
     }
 
-    pub fn send(self: &Arc<Self>, text: String, skill: Option<&str>) -> Result<()> {
+    pub fn send(self: &Arc<Self>, text: String, skill: Option<&str>, from: Option<Sender>) -> Result<()> {
         if text.trim().is_empty() {
             return Err("Empty message".into());
         }
@@ -205,7 +223,7 @@ impl Agent {
             };
             (inner.session.header().cwd.clone(), skill)
         };
-        let message = input::prepare(text, &cwd, skill.as_ref())?;
+        let message = input::Message { from, ..input::prepare(text, &cwd, skill.as_ref())? };
         let mut inner = self.inner();
         inner.queued.push(message);
         if inner.cancel.is_none() {
@@ -227,6 +245,8 @@ impl Agent {
             effort: inner.session.model().effort.clone(),
             input: inner.session.input(),
             cwd: inner.session.header().cwd.clone(),
+            bridge: inner.bridge.clone(),
+            session: inner.session.header().id.clone(),
             previous_usage: inner.session.usage(),
         };
         let cancel = Arc::new(AtomicBool::new(false));

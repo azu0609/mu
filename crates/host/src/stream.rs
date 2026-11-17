@@ -140,7 +140,7 @@ pub fn shell(host: &Arc<Host>, call: wire::Shell) -> Rpc<Stream> {
     let cancel = Arc::new(AtomicBool::new(false));
     let (host, stop) = (host.clone(), cancel.clone());
     thread::spawn(move || {
-        let run = tools::user(command, call.cwd, &cancel, |output| {
+        let run = tools::user(command, call.cwd, &host.bridge.open(None), &cancel, |output| {
             if let Some(line) = line(&ShellEvent::Output(output)) {
                 let _ = tx.try_send(line);
             }

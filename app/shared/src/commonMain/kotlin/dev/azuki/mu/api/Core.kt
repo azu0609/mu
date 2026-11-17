@@ -69,7 +69,8 @@ interface Session : AutoCloseable {
 
     suspend fun setModel(model: Model)
 
-    suspend fun stop()
+    // `children` stops the sessions it parents too, and theirs.
+    suspend fun stop(children: Boolean)
 
     suspend fun markRead()
 

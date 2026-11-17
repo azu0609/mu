@@ -1,5 +1,5 @@
 use crate::{Result, image, process, read_limited, session::Entry, skills::Skill};
-use mu_wire::{self as wire, Attached, MentionEntry, Resolved, mentions};
+use mu_wire::{self as wire, Attached, MentionEntry, Resolved, Sender, mentions};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -14,6 +14,8 @@ use std::{
 pub struct Message {
     pub text: String,
     pub attachments: Vec<Attachment>,
+    // The session it comes from, when not from the user.
+    pub from: Option<Sender>,
 }
 
 // A file as it was when the message mentioning it was sent.
@@ -63,7 +65,7 @@ fn read_attachment(path: PathBuf) -> Result<Attachment> {
 
 pub fn prepare(text: String, cwd: &Path, skill: Option<&Skill>) -> Result<Message> {
     let attachments = gather(&text, cwd, skill)?.attachments;
-    Ok(Message { text, attachments })
+    Ok(Message { text, attachments, from: None })
 }
 
 pub fn resolve(text: &str, cwd: &Path, skill: Option<&Skill>) -> Result<Vec<Resolved>> {

@@ -371,6 +371,16 @@ fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
             lines.push(Line::new("", GRAY));
             return lines;
         }
+        (Kind::AgentMessage, _) => {
+            let from =
+                block.from.as_ref().map_or_else(String::new, |from| format!("{} · {}", from.title, from.session));
+            let mut lines = vec![Line::new(format!("‹ {from}"), Color::Magenta)];
+            for line in wrap(&clean(&block.text), width.saturating_sub(2)) {
+                lines.push(Line::new(format!("  {line}"), Color::Reset));
+            }
+            lines.push(Line::new("", GRAY));
+            return lines;
+        }
         (Kind::User, _) => ("› ", ACCENT, usize::MAX),
         (Kind::Agent, _) => ("  ", Color::Reset, usize::MAX),
         (Kind::Thought, _) => ("  ", GRAY, 2),

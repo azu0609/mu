@@ -180,6 +180,8 @@ fun Chat(
             items(entries.asReversed(), key = { it.key }) { entry ->
                 when (entry) {
                     is Entry.User -> UserBubble(entry.text)
+                    is Entry.AgentMessage ->
+                        AgentMessageBubble(entry) { session -> mu.open(chat.target.host, session) }
                     is Entry.Agent -> Markdown(entry.text)
                     is Entry.Work -> WorkView(entry, expanded)
                     is Entry.Shell -> ShellCard(entry.block)
@@ -202,6 +204,36 @@ private fun UserBubble(text: String) {
             color = MiuixTheme.colorScheme.onPrimary,
             style = MiuixTheme.textStyles.body1,
         )
+    }
+}
+
+// Across from the user's own messages. A tap opens the session that sent it.
+@Composable
+private fun AgentMessageBubble(entry: Entry.AgentMessage, onOpen: (session: String) -> Unit) {
+    val from = entry.from
+    Column(
+        Modifier.padding(end = 48.dp)
+            .clip(RoundedCornerShape(22.dp))
+            .background(MiuixTheme.colorScheme.surfaceContainer)
+            .then(if (from != null) Modifier.clickable { onOpen(from.session) } else Modifier)
+            .padding(horizontal = 16.dp, vertical = 11.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                Glyphs.Spawned,
+                null,
+                Modifier.padding(end = 6.dp).size(14.dp),
+                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            )
+            Text(
+                from?.title?.ifBlank { null } ?: "Another session",
+                style = MiuixTheme.textStyles.footnote1,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        Markdown(entry.text, Modifier.padding(top = 4.dp))
     }
 }
 
@@ -313,7 +345,8 @@ private fun WorkView(work: Entry.Work, expanded: SnapshotStateMap<String, Boolea
                         BlockKind.Shell -> ShellCard(block)
                         BlockKind.Notice,
                         BlockKind.Warning -> NoticeView(block)
-                        BlockKind.User -> Unit
+                        BlockKind.User,
+                        BlockKind.AgentMessage -> Unit
                     }
                 }
             }

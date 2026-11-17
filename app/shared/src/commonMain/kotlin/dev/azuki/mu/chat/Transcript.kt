@@ -2,11 +2,14 @@ package dev.azuki.mu.chat
 
 import dev.azuki.mu.api.Block
 import dev.azuki.mu.api.BlockKind
+import dev.azuki.mu.api.Sender
 
 sealed interface Entry {
     val key: String
 
     data class User(override val key: String, val text: String) : Entry
+
+    data class AgentMessage(override val key: String, val text: String, val from: Sender?) : Entry
 
     // All a turn did before its final response, folded behind "Worked for…".
     data class Work(
@@ -48,6 +51,7 @@ fun entries(blocks: List<Block>, notice: Block?, live: List<Block>, running: Boo
             BlockKind.Notice,
             BlockKind.Warning -> entries += Entry.Notice(step.key, block)
             BlockKind.User,
+            BlockKind.AgentMessage,
             BlockKind.Thought,
             BlockKind.Call -> Unit
         }
@@ -81,9 +85,12 @@ fun entries(blocks: List<Block>, notice: Block?, live: List<Block>, running: Boo
     }
 
     for (step in all) {
-        if (step.block.kind == BlockKind.User) {
+        val block = step.block
+        if (block.kind == BlockKind.User || block.kind == BlockKind.AgentMessage) {
             flush(last = false)
-            entries += Entry.User(step.key, step.block.text)
+            entries +=
+                if (block.kind == BlockKind.User) Entry.User(step.key, block.text)
+                else Entry.AgentMessage(step.key, block.text, block.from)
             turnKey = step.key
             sent = step.block.span?.started
         } else {

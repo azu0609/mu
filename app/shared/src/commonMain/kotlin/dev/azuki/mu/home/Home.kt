@@ -32,6 +32,7 @@ import dev.azuki.mu.chat.Chat
 import dev.azuki.mu.composer.Composer
 import dev.azuki.mu.composer.ComposerState
 import dev.azuki.mu.composer.DictationOverlay
+import dev.azuki.mu.composer.StopOverlay
 import dev.azuki.mu.design.Drawer
 import dev.azuki.mu.design.Presented
 import dev.azuki.mu.design.rememberDrawerState
@@ -74,11 +75,11 @@ fun Home(
     LaunchedEffect(mu.destination.host) { mu.destination.host?.let { mu.loadModels(it) } }
     var composerHeight by remember { mutableIntStateOf(0) }
 
-    val dictationBlur by animateDpAsState(if (composer.dictating) 24.dp else 0.dp)
+    val blur by animateDpAsState(if (composer.dictating || composer.stopMenu.open) 24.dp else 0.dp)
     Box(Modifier.fillMaxSize()) {
         Drawer(
             state = drawer,
-            blur = { dictationBlur },
+            blur = { blur },
             sidebar = { modifier ->
                 Sidebar(
                     mu = mu,
@@ -136,6 +137,7 @@ fun Home(
         }
 
         DictationOverlay(composer.dictating, composer.cancelArmed, mu.platform.dictation)
+        StopOverlay(composer.stopMenu)
     }
 
     AddHostSheet(

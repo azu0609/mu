@@ -1,5 +1,4 @@
 mod commands;
-mod devices;
 mod input;
 mod markdown;
 mod remote;
@@ -9,11 +8,11 @@ mod ui;
 use crossterm::event::{
     self, Event as Input, KeyCode as Key, KeyEvent, KeyEventKind, KeyModifiers as Mod, MouseEventKind,
 };
-pub use devices::{devices, pair, unpair};
 pub use mu_client::Endpoint;
 use mu_client::{
     AppendShell, Block, Change, Checkout, CompleteMention, CreateSession, Event, GetTree, HostView, Kind, ListSkills,
-    Model, RecallQueued, SendMessage, SetModel, ShellEvent, Stop, Tool, ToolOutput, ToolStatus, View, counts,
+    Model, RecallQueued, SendMessage, SessionSummary, SetModel, ShellEvent, Stop, Tool, ToolOutput, ToolStatus, View,
+    counts,
 };
 use remote::{Incoming, Remote};
 use std::{
@@ -37,6 +36,9 @@ struct Picker {
 }
 
 const SESSIONS: &str = "resume session";
+
+// How soon a second Esc must follow to stop the session's subagents too.
+const ESCAPE_AGAIN: Duration = Duration::from_secs(1);
 
 struct Shell {
     seq: u64,
@@ -101,6 +103,8 @@ struct App {
     scroll_layout: Option<ui::ScrollAnchor>,
     transcript_static: Option<ui::CachedLines>,
     quitting: bool,
+    // When an Esc stopped a session that has subagents.
+    escaped: Option<Instant>,
 }
 
 impl App {
@@ -311,15 +315,37 @@ impl App {
     fn quit(&mut self) {
         self.quitting = true;
         if let Ok(id) = self.session() {
-            let _ = self.remote.call(Stop { session_id: id.into() });
+            let _ = self.remote.call(Stop { session_id: id.into(), children: false });
         }
     }
 
     fn stop(&mut self) {
         if self.view.running()
-            && let Err(e) = self.remote.call(Stop { session_id: self.view.id.clone() })
+            && let Err(e) = self.remote.call(Stop { session_id: self.view.id.clone(), children: false })
         {
             self.warn(e.to_string());
+        }
+    }
+
+    fn escape(&mut self) {
+        if self.draft.is_some() {
+            return;
+        }
+        let id = self.view.id.clone();
+        if self.escaped.take().is_some_and(|at| at.elapsed() < ESCAPE_AGAIN) {
+            match self.remote.call(Stop { session_id: id, children: true }) {
+                Ok(()) => self.notice("Stopped its subagents too."),
+                Err(e) => self.warn(e.to_string()),
+            }
+            return;
+        }
+        if !self.view.running() {
+            return;
+        }
+        self.stop();
+        if self.host.sessions.iter().any(|session| session.parent.as_ref() == Some(&id)) {
+            self.escaped = Some(Instant::now());
+            self.notice("Esc again to stop its subagents too.");
         }
     }
 
@@ -445,12 +471,13 @@ impl App {
         match &self.draft {
             Some(draft) => {
                 let model = draft.model.clone().ok_or("Pick a model first: /model <model> [effort|-] [context]")?;
-                let id = self.remote.call(CreateSession { cwd: self.view.cwd.clone(), model, text, skill })?;
+                let id =
+                    self.remote.call(CreateSession { cwd: self.view.cwd.clone(), model, text, skill, parent: None })?;
                 self.editor.clear();
                 self.attach(&id)
             }
             None => {
-                self.remote.call(SendMessage { session_id: self.view.id.clone(), text, skill })?;
+                self.remote.call(SendMessage { session_id: self.view.id.clone(), text, skill, from: None })?;
                 self.editor.clear();
                 Ok(())
             }
@@ -635,7 +662,7 @@ impl App {
             }
             Key::Char('d') if ctrl && self.editor.chars.is_empty() => self.quit(),
             Key::Esc if self.shell.is_some() => self.cancel_shell(),
-            Key::Esc => self.stop(),
+            Key::Esc => self.escape(),
             Key::PageUp => self.scroll_up(10),
             Key::PageDown => self.scroll_down(10),
             Key::Enter if key.modifiers.contains(Mod::SHIFT) => self.editor.insert("\n"),
@@ -732,21 +759,31 @@ fn copy(text: &str) -> Result<()> {
     Ok(())
 }
 
+// Each session, then the ones it spawned beneath it.
 fn session_entries(host: &HostView) -> Vec<(Target, String)> {
-    host.sessions
+    let sessions = &host.sessions;
+    let mut stack: Vec<(&SessionSummary, usize)> = sessions
         .iter()
-        .map(|session| {
-            let label = format!(
-                "{}{}{}  {}  [{}]",
-                ui::marker(session.status),
-                if session.unread { "• " } else { "" },
-                session.id,
-                session.title,
-                session.cwd.display()
-            );
-            (Target::Session(session.id.clone()), label)
-        })
-        .collect()
+        .rev()
+        .filter(|s| s.parent.as_ref().is_none_or(|parent| sessions.iter().all(|other| other.id != *parent)))
+        .map(|session| (session, 0))
+        .collect();
+    let mut entries = vec![];
+    while let Some((session, depth)) = stack.pop() {
+        let label = format!(
+            "{}{}{}{}  {}  [{}]",
+            if depth == 0 { String::new() } else { format!("{}└ ", "  ".repeat(depth - 1)) },
+            ui::marker(session.status),
+            if session.unread { "• " } else { "" },
+            session.id,
+            session.title,
+            session.cwd.display()
+        );
+        entries.push((Target::Session(session.id.clone()), label));
+        let spawned = sessions.iter().rev().filter(|s| s.parent.as_ref() == Some(&session.id));
+        stack.extend(spawned.map(|child| (child, depth + 1)));
+    }
+    entries
 }
 
 fn var(name: &str) -> Option<String> {
@@ -779,6 +816,7 @@ pub fn run(endpoint: Endpoint) -> Result<()> {
         scroll_layout: None,
         transcript_static: None,
         quitting: false,
+        escaped: None,
     };
     app.start_draft(env::current_dir()?, model);
     app.run()

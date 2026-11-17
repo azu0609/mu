@@ -23,7 +23,7 @@ sealed interface Destination {
 
     fun use(model: String?, effort: String?)
 
-    suspend fun stop()
+    suspend fun stop(children: Boolean)
 }
 
 class Draft(private val mu: Mu) : Destination {
@@ -63,7 +63,7 @@ class Draft(private val mu: Mu) : Destination {
         }
     }
 
-    override suspend fun stop() = Unit
+    override suspend fun stop(children: Boolean) = Unit
 
     fun set(host: String?, cwd: String?) {
         if (host != this.host) {

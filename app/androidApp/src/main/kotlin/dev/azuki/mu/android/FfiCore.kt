@@ -18,6 +18,7 @@ import dev.azuki.mu.api.ModelInfo
 import dev.azuki.mu.api.MuException
 import dev.azuki.mu.api.Remote
 import dev.azuki.mu.api.Resolved
+import dev.azuki.mu.api.Sender
 import dev.azuki.mu.api.Session
 import dev.azuki.mu.api.SessionState
 import dev.azuki.mu.api.SessionSummary
@@ -112,7 +113,7 @@ private class FfiRemote(private val remote: dev.azuki.mu.core.Remote) : Remote {
 
             override suspend fun setModel(model: Model) = mapped { handle.setModel(model.toFfi()) }
 
-            override suspend fun stop() = mapped { handle.stop() }
+            override suspend fun stop(children: Boolean) = mapped { handle.stop(children) }
 
             override suspend fun markRead() = mapped { handle.markRead() }
 
@@ -261,6 +262,7 @@ private fun dev.azuki.mu.core.HostUpdate.toModel(): HostUpdate =
                         it.id,
                         it.title,
                         it.cwd,
+                        it.parent,
                         it.status.toModel(),
                         it.error,
                         it.unread,
@@ -317,6 +319,7 @@ private fun dev.azuki.mu.wire.Block.toModel() =
     Block(
         when (kind) {
             Kind.USER -> BlockKind.User
+            Kind.AGENT_MESSAGE -> BlockKind.AgentMessage
             Kind.AGENT -> BlockKind.Agent
             Kind.THOUGHT -> BlockKind.Thought
             Kind.CALL -> BlockKind.Call
@@ -327,6 +330,7 @@ private fun dev.azuki.mu.wire.Block.toModel() =
         text,
         tool?.let { tool(it.status, it.output) },
         span?.let { Span(it.started.toLong(), it.finished.toLong()) },
+        from?.let { Sender(it.session, it.title) },
     )
 
 private fun tool(status: dev.azuki.mu.wire.ToolStatus, output: dev.azuki.mu.wire.ToolOutput) =

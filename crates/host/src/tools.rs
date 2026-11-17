@@ -1,12 +1,12 @@
-use crate::{Result, image, now, process, unique_id};
+use crate::{Result, bridge, now, process, unique_id};
 use mu_wire::{Span, ToolOutput, ToolStatus};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{
     collections::VecDeque,
     env, fs,
     io::{BufWriter, Write},
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     process::Command,
     sync::{Arc, atomic::AtomicBool},
@@ -93,8 +93,11 @@ impl Capture {
     }
 }
 
-const PREAMBLE: &str = r#"export -n MU_COMMAND
+// The special commands go first on PATH after direnv, which rebuilds PATH from what it saw before
+// loading, or unloads an environment the host inherited.
+const PREAMBLE: &str = r#"export -n MU_COMMAND MU_BIN
 command -v direnv >/dev/null && eval "$(DIRENV_LOG_FORMAT= direnv export bash)"
+PATH="$MU_BIN:$PATH"
 eval "$MU_COMMAND""#;
 
 #[derive(Deserialize)]
@@ -105,30 +108,10 @@ struct Args {
     timeout_ms: Option<u64>,
 }
 
-struct Temp(PathBuf);
-
-impl Drop for Temp {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
-pub fn view_image(path: &Path) -> Result<()> {
-    let manifest = env::var_os("MU_IMAGES").ok_or("view_image is only available inside mu's bash tool")?;
-    let path = path.canonicalize()?;
-    if fs::metadata(&path)?.len() > image::LIMIT {
-        return Err("Image exceeds 20 MiB".into());
-    }
-    let mut line = serde_json::to_vec(&path)?;
-    line.push(b'\n');
-    fs::OpenOptions::new().create(true).append(true).open(manifest)?.write_all(&line)?;
-    println!("Image queued: {}", path.display());
-    Ok(())
-}
-
 pub fn bash(
     arguments: &str,
     cwd: &Path,
+    run: &bridge::Run,
     cancel: &Arc<AtomicBool>,
     progress: impl FnMut(ToolOutput),
 ) -> Result<BashResult> {
@@ -137,7 +120,7 @@ pub fn bash(
     if timeout == 0 {
         return Err("timeoutMs must be positive".into());
     }
-    run(&args.command, cwd, Some(timeout), false, cancel, progress)
+    execute(&args.command, cwd, Some(timeout), run, false, cancel, progress)
 }
 
 pub struct Run {
@@ -149,10 +132,16 @@ pub struct Run {
     pub images: Vec<Value>,
 }
 
-pub fn user(command: String, cwd: PathBuf, cancel: &Arc<AtomicBool>, mut progress: impl FnMut(ToolOutput)) -> Run {
+pub fn user(
+    command: String,
+    cwd: PathBuf,
+    run: &bridge::Run,
+    cancel: &Arc<AtomicBool>,
+    mut progress: impl FnMut(ToolOutput),
+) -> Run {
     let started = now();
     let mut shown = ToolOutput::default();
-    let result = run(&command, &cwd, None, true, cancel, |output| {
+    let result = execute(&command, &cwd, None, run, true, cancel, |output| {
         shown = output.clone();
         progress(output);
     });
@@ -166,33 +155,21 @@ pub fn user(command: String, cwd: PathBuf, cancel: &Arc<AtomicBool>, mut progres
     Run { command, cwd, span: Span { started, finished: now() }, status, output, images }
 }
 
-fn run(
+fn execute(
     command: &str,
     cwd: &Path,
     timeout: Option<u64>,
+    run: &bridge::Run,
     user: bool,
     cancel: &Arc<AtomicBool>,
     mut progress: impl FnMut(ToolOutput),
 ) -> Result<BashResult> {
-    let dir = Temp(env::temp_dir().join(format!("mu-{}", unique_id())));
-    fs::create_dir(&dir.0)?;
-    fs::set_permissions(&dir.0, fs::Permissions::from_mode(0o700))?;
-    let bridge = dir.0.join("view_image");
-    fs::write(&bridge, "#!/bin/sh\nexec \"$MU_EXE\" --view-image \"$@\"\n")?;
-    fs::set_permissions(&bridge, fs::Permissions::from_mode(0o700))?;
-    let manifest = dir.0.join("images");
-    let path = format!("{}:{}", dir.0.display(), env::var("PATH").unwrap_or_default());
     let mut capture = Capture::default();
     let mut updated = Instant::now();
     let mut published = 0;
     let mut bash = Command::new("bash");
     // Keep the command out of argv so `pkill -f` and friends can't match their own shell.
-    bash.args(["-c", PREAMBLE])
-        .current_dir(cwd)
-        .env("MU_COMMAND", command)
-        .env("PATH", path)
-        .env("MU_EXE", env::current_exe()?)
-        .env("MU_IMAGES", &manifest);
+    bash.args(["-c", PREAMBLE]).current_dir(cwd).env("MU_COMMAND", command).envs(run.env());
     match user {
         true => bash.env("MU_USER_TRIGGERED", "1"),
         false => bash.env_remove("MU_USER_TRIGGERED"),
@@ -209,7 +186,7 @@ fn run(
             Ok(())
         });
     let flushed = capture.flush();
-    let mut output = capture.preview();
+    let output = capture.preview();
     progress(output.clone());
     flushed.map_err(|e| format!("Cannot flush output log: {e}"))?;
     let exit = exit?;
@@ -220,22 +197,5 @@ fn run(
     } else {
         ToolStatus::Exited(exit.code)
     };
-    let mut images = vec![];
-    if let Ok(file) = fs::File::open(manifest) {
-        use std::io::{BufRead, BufReader, Read};
-        for line in BufReader::new(file.take(64 * 1024)).lines().take(8) {
-            let result = (|| -> Result<(PathBuf, Value)> {
-                let path: PathBuf = serde_json::from_str(&line?)?;
-                let value = image::read(&path)?;
-                Ok((path, value))
-            })();
-            match result {
-                Ok((path, value)) => {
-                    images.push(json!({"role":"user", "content":[{"type":"input_text", "text":format!("view_image: {}", path.display())}, value]}));
-                }
-                Err(e) => output.text.push_str(&format!("\n[view_image: {e}]")),
-            }
-        }
-    }
-    Ok(BashResult { output, status, images })
+    Ok(BashResult { output, status, images: run.images() })
 }

@@ -45,6 +45,7 @@ class ComposerState(private val mu: Mu, private val scope: CoroutineScope) {
     var run by mutableStateOf<ShellRun?>(null)
     var dictating by mutableStateOf(false)
     var cancelArmed by mutableStateOf(false)
+    val stopMenu = StopMenu()
 
     fun useKeyboard(on: Boolean) {
         keyboard = on

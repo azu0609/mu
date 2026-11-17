@@ -13,7 +13,7 @@ uniffi::custom_type!(PathBuf, String, {
 });
 
 // Bump on any change an older peer cannot read; peers refuse a mismatch.
-pub const PROTOCOL: u32 = 8;
+pub const PROTOCOL: u32 = 10;
 
 pub trait Call: Serialize + DeserializeOwned {
     const PATH: &'static str;
@@ -48,6 +48,8 @@ pub enum Status {
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum Kind {
     User,
+    // From another session, which `from` names.
+    AgentMessage,
     Agent,
     Thought,
     Call,
@@ -65,12 +67,22 @@ pub struct Block {
     pub tool: Option<Tool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub span: Option<Span>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from: Option<Sender>,
 }
 
 impl Block {
     pub fn new(kind: Kind, text: impl Into<String>) -> Self {
-        Self { kind, text: text.into(), tool: None, span: None }
+        Self { kind, text: text.into(), tool: None, span: None, from: None }
     }
+}
+
+// A session as it was when it sent a message.
+#[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct Sender {
+    pub session: String,
+    pub title: String,
 }
 
 // Milliseconds since the Unix epoch.
@@ -257,6 +269,7 @@ pub struct SessionSummary {
     pub id: String,
     pub title: String,
     pub cwd: PathBuf,
+    pub parent: Option<String>,
     pub status: Status,
     pub error: Option<String>,
     pub unread: bool,
@@ -490,9 +503,14 @@ macro_rules! calls {
 
 calls! {
     Hello {} => "/hello" -> HostInfo;
-    CreateSession { cwd: PathBuf, model: Model, text: String, skill: Option<String> } => "/create_session" -> String;
-    SendMessage { session_id: String, text: String, skill: Option<String> } => "/send_message" -> ();
-    Stop { session_id: String } => "/stop" -> ();
+    // Without a model name, a session with a parent takes the parent's model, and an effort given still applies.
+    CreateSession { cwd: PathBuf, model: Model, text: String, skill: Option<String>, parent: Option<String> }
+        => "/create_session" -> String;
+    // `from` is the session sending it, which the message then says.
+    SendMessage { session_id: String, text: String, skill: Option<String>, from: Option<String> }
+        => "/send_message" -> ();
+    // `children` stops the sessions it parents too, and theirs.
+    Stop { session_id: String, children: bool } => "/stop" -> ();
     MarkRead { session_id: String } => "/mark_read" -> ();
     // False when the message at `index` is no longer `text`, having been sent.
     RecallQueued { session_id: String, index: usize, text: String } => "/recall_queued" -> bool;
@@ -521,6 +539,10 @@ calls! {
     CreateInvite {} => "/create_invite" -> Invitation;
     ListDevices {} => "/list_devices" -> Vec<Device>;
     Unpair { device_id: String } => "/unpair" -> ();
+    ListSessions {} => "/list_sessions" -> Vec<SessionSummary>;
+    // From the special commands in a bash run, which `run` is the token of. Local clients only.
+    RunSession { run: String } => "/run_session" -> Option<String>;
+    ViewImage { run: String, path: PathBuf } => "/view_image" -> ();
 }
 
 #[derive(Serialize, Deserialize)]

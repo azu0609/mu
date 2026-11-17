@@ -595,8 +595,11 @@ dependencies = [
 name = "mu"
 version = "0.1.0"
 dependencies = [
+ "mu-client",
  "mu-host",
  "mu-tui",
+ "qrcode",
+ "tokio",
 ]
 
 [[package]]
@@ -653,7 +656,6 @@ dependencies = [
  "crossterm",
  "mu-client",
  "pulldown-cmark",
- "qrcode",
  "tokio",
  "unicode-width",
 ]
