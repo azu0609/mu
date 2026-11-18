@@ -5,7 +5,7 @@ use crate::{
     tools,
 };
 use hyper::body::{Body, Bytes, Frame};
-use mu_wire::{self as wire, Block, Event, ShellEvent, WatchEvent};
+use mu_wire::{self as wire, Event, Node, ShellEvent, WatchEvent};
 use serde::Serialize;
 use std::{
     convert::Infallible,
@@ -55,26 +55,31 @@ fn line(value: &impl Serialize) -> Option<Bytes> {
 // chunks: no line grows with the session.
 fn lines(event: &Event) -> Option<Vec<Bytes>> {
     const CHUNK: usize = 256 * 1024;
-    let size = |block: &Block| block.text.len() + block.tool.as_ref().map_or(0, |tool| tool.output.text.len());
-    let Event::Commit { blocks } = event else {
+    let size = |node: &Node| -> usize {
+        node.blocks
+            .iter()
+            .map(|block| block.text.len() + block.tool.as_ref().map_or(0, |tool| tool.output.text.len()))
+            .sum()
+    };
+    let Event::Commit { nodes } = event else {
         return Some(vec![line(event)?]);
     };
-    if blocks.iter().map(size).sum::<usize>() < CHUNK {
+    if nodes.iter().map(size).sum::<usize>() < CHUNK {
         return Some(vec![line(event)?]);
     }
     let mut lines = vec![];
     let mut chunk = vec![];
     let mut chunk_size = 0;
-    for block in blocks {
-        chunk_size += size(block);
-        chunk.push(block.clone());
+    for node in nodes {
+        chunk_size += size(node);
+        chunk.push(node.clone());
         if chunk_size >= CHUNK {
-            lines.push(line(&Event::Commit { blocks: mem::take(&mut chunk) })?);
+            lines.push(line(&Event::Commit { nodes: mem::take(&mut chunk) })?);
             chunk_size = 0;
         }
     }
     if !chunk.is_empty() {
-        lines.push(line(&Event::Commit { blocks: chunk })?);
+        lines.push(line(&Event::Commit { nodes: chunk })?);
     }
     Some(lines)
 }

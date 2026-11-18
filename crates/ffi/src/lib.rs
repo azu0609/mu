@@ -1,11 +1,11 @@
 // Listeners are called on the core's own threads; hop to the UI's before
 // touching its state.
 use mu_client::{
-    AppendShell, Block, Call, Change, Client, CompleteMention, CreateSession, DeleteSessions, DeleteSnippet, Deleted,
-    Directory, Endpoint, HostView, Invite, ListDirectory, ListModels, ListSkills, MarkRead, Mention, Model, ModelInfo,
-    Profile, RecallQueued, ResolveMentions, Resolved, Resume as Resumed, SaveSnippet, SendMessage, SessionSummary,
-    SetDescription, SetIcon, SetModel, ShellEvent, Skill, State, Stop, ToolOutput, ToolStatus, Touched, Update, View,
-    Written,
+    AppendShell, Block, Call, Change, Checkout, Client, CompleteMention, CreateSession, DeleteSessions, DeleteSnippet,
+    Deleted, Directory, Edit, Endpoint, GetTree, HostView, Invite, Kind, ListDirectory, ListModels, ListSkills,
+    MarkRead, Mention, Model, ModelInfo, Profile, RecallQueued, ResolveMentions, Resolved, Resume as Resumed,
+    SaveSnippet, SendMessage, SessionSummary, SetDescription, SetIcon, SetModel, ShellEvent, Skill, State, Stop,
+    SwitchBranch, ToolOutput, ToolStatus, Touched, Update, View, Written,
     hosts::{Hosts, Paired},
 };
 use std::{
@@ -403,7 +403,16 @@ fn translate(view: &View, change: Change) -> Option<SessionUpdate> {
             skills: view.skills.clone(),
         },
         Change::State { started } => SessionUpdate::State { state: view.state.clone(), started },
-        Change::Committed { from } => SessionUpdate::Committed { blocks: view.blocks[from..].to_vec() },
+        Change::Committed { from } => SessionUpdate::Committed {
+            nodes: view.path[from..]
+                .iter()
+                .map(|node| Node {
+                    id: node.id as u64,
+                    siblings: node.siblings.iter().map(|&id| id as u64).collect(),
+                    blocks: view.blocks[node.blocks.clone()].to_vec(),
+                })
+                .collect(),
+        },
         Change::Live(Touched::Block(index)) => {
             SessionUpdate::Live { index: index as u32, block: view.live.blocks.get(index)?.clone() }
         }
@@ -457,6 +466,32 @@ impl Session {
     pub async fn recall_queued(&self, index: u32, text: String) -> Result<bool, MuError> {
         self.call(RecallQueued { session_id: self.id.clone(), index: index as usize, text }).await
     }
+
+    pub async fn tree(&self) -> Result<Vec<TreeEntry>, MuError> {
+        let entries = self.call(GetTree { session_id: self.id.clone() }).await?;
+        Ok(entries
+            .into_iter()
+            .map(|entry| TreeEntry {
+                node: entry.node as u64,
+                parent: entry.parent.map(|parent| parent as u64),
+                kind: entry.kind,
+                text: entry.text,
+                current: entry.current,
+            })
+            .collect())
+    }
+
+    pub async fn checkout(&self, node: Option<u64>) -> Result<(), MuError> {
+        self.call(Checkout { session_id: self.id.clone(), node: node.map(|node| node as usize) }).await
+    }
+
+    pub async fn edit(&self, node: u64) -> Result<String, MuError> {
+        self.call(Edit { session_id: self.id.clone(), node: node as usize }).await
+    }
+
+    pub async fn switch_branch(&self, node: u64) -> Result<(), MuError> {
+        self.call(SwitchBranch { session_id: self.id.clone(), node: node as usize }).await
+    }
 }
 
 #[uniffi::export(with_foreign)]
@@ -489,6 +524,23 @@ pub trait SessionListener: Send + Sync {
 }
 
 #[derive(uniffi::Record)]
+pub struct Node {
+    pub id: u64,
+    // Itself included, oldest first.
+    pub siblings: Vec<u64>,
+    pub blocks: Vec<Block>,
+}
+
+#[derive(uniffi::Record)]
+pub struct TreeEntry {
+    pub node: u64,
+    pub parent: Option<u64>,
+    pub kind: Option<Kind>,
+    pub text: String,
+    pub current: bool,
+}
+
+#[derive(uniffi::Record)]
 pub struct Resume {
     pub epoch: u64,
     pub blocks: u32,
@@ -500,7 +552,7 @@ pub struct Resume {
 pub enum SessionUpdate {
     Reset { epoch: u64, keep: u32, cwd: PathBuf, state: State, skills: Vec<Skill> },
     State { state: State, started: bool },
-    Committed { blocks: Vec<Block> },
+    Committed { nodes: Vec<Node> },
     Live { index: u32, block: Block },
     LiveNotice { block: Block },
     Feedback { block: Block },

@@ -76,4 +76,13 @@ interface Session : AutoCloseable {
 
     // False when it was sent before it could be taken back.
     suspend fun recallQueued(index: Int, text: String): Boolean
+
+    suspend fun tree(): List<TreeEntry>
+
+    suspend fun checkout(node: Long?)
+
+    suspend fun edit(node: Long): String
+
+    // To where the conversation last was within the branch `node` starts.
+    suspend fun switchBranch(node: Long)
 }

@@ -30,7 +30,7 @@ use tokio::{
 use tokio_rustls::TlsConnector;
 
 pub use mu_wire::*;
-pub use view::{Change, HostView, View};
+pub use view::{Change, HostView, PathNode, View};
 
 // The host accepts calls up to 4 MiB, and a user message near that must still
 // fit when it comes back as an event.
@@ -342,9 +342,9 @@ impl Subscription<Event> {
         if let (Update::Event(event), Feed::Session { resume, .. }) = (&update, &mut self.feed) {
             match event {
                 Event::Snapshot(snapshot) => *resume = Some(Resume { epoch: snapshot.epoch, blocks: snapshot.keep }),
-                Event::Commit { blocks } => {
+                Event::Commit { nodes } => {
                     if let Some(resume) = resume {
-                        resume.blocks += blocks.len();
+                        resume.blocks += nodes.iter().map(|node| node.blocks.len()).sum::<usize>();
                     }
                 }
                 _ => (),

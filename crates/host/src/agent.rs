@@ -7,7 +7,7 @@ use crate::{
     tools,
 };
 use mu_wire::{
-    Block, Event, Kind, Live, LiveEvent, Model, Resume, Sender, Snapshot, Span, State, Stats, Status, TreeEntry,
+    Block, Event, Kind, Live, LiveEvent, Model, Node, Resume, Sender, Snapshot, Span, State, Stats, Status, TreeEntry,
 };
 use std::{
     mem,
@@ -75,12 +75,20 @@ impl Inner {
         }
     }
 
+    fn node(&self, (id, siblings): (usize, Vec<usize>)) -> Node {
+        Node { id, siblings, blocks: self.session.node(id).blocks.clone() }
+    }
+
     fn snapshot(&self, resume: Option<Resume>) -> Vec<Event> {
         let epoch = self.session.epoch();
-        let blocks: Vec<_> =
-            self.session.path().iter().flat_map(|&i| self.session.node(i).blocks.iter().cloned()).collect();
-        let keep =
-            resume.filter(|resume| resume.epoch == epoch && resume.blocks <= blocks.len()).map_or(0, |r| r.blocks);
+        let branches = self.session.branches();
+        let keep = resume.filter(|resume| resume.epoch == epoch).map_or(0, |resume| resume.blocks);
+        let (mut count, mut start) = (0, 0);
+        while count < branches.len() && start < keep {
+            start += self.session.node(branches[count].0).blocks.len();
+            count += 1;
+        }
+        let (count, keep) = if start == keep { (count, keep) } else { (0, 0) };
         let mut events = vec![Event::Snapshot(Box::new(Snapshot {
             id: self.session.header().id.clone(),
             cwd: self.session.header().cwd.clone(),
@@ -89,8 +97,10 @@ impl Inner {
             epoch,
             keep,
         }))];
-        if blocks.len() > keep {
-            events.push(Event::Commit { blocks: blocks[keep..].to_vec() });
+        if count < branches.len() {
+            events.push(Event::Commit {
+                nodes: branches.into_iter().skip(count).map(|branch| self.node(branch)).collect(),
+            });
         }
         events.extend(self.live.blocks.iter().cloned().map(|block| Event::Live(LiveEvent::Push(block))));
         events.extend(self.live.notice.clone().map(|block| Event::Live(LiveEvent::Notice(block))));
@@ -117,9 +127,26 @@ impl Inner {
     }
 
     fn commit(&mut self) {
-        let blocks = self.session.cursor().map(|i| self.session.node(i).blocks.clone()).unwrap_or_default();
+        let nodes = self.session.branches().pop().map(|branch| self.node(branch)).into_iter().collect();
         self.live.clear();
-        self.emit(Event::Commit { blocks });
+        self.emit(Event::Commit { nodes });
+    }
+
+    fn move_to(&mut self, cursor: Option<usize>) -> Result<()> {
+        if self.cancel.is_some() {
+            return Err("Stop the agent before moving in the conversation tree".into());
+        }
+        if self.session.cursor() != cursor {
+            self.session.record(Record::Cursor { node: cursor })?;
+            self.save();
+        }
+        self.live.clear();
+        self.queued.clear();
+        self.status = Status::Idle;
+        for event in self.snapshot(None) {
+            self.emit(event);
+        }
+        Ok(())
     }
 
     fn drain_queue(&mut self) {
@@ -377,36 +404,46 @@ impl Agent {
             .session
             .tree()
             .into_iter()
-            .map(|(node, label)| TreeEntry { node, label, current: node == cursor })
+            .map(|(node, label)| TreeEntry {
+                node,
+                parent: inner.session.node(node).parent,
+                kind: label.map(|block| block.kind),
+                text: label
+                    .and_then(|block| block.text.lines().find(|line| !line.trim().is_empty()))
+                    .unwrap_or("")
+                    .trim()
+                    .chars()
+                    .take(200)
+                    .collect(),
+                current: Some(node) == cursor,
+            })
             .collect()
     }
 
-    pub fn checkout(&self, node: Option<usize>) -> Result<Option<String>> {
+    pub fn checkout(&self, node: Option<usize>) -> Result<()> {
         let mut inner = self.inner();
-        if inner.cancel.is_some() {
-            return Err("Stop the agent before moving in the conversation tree".into());
-        }
         if node.is_some_and(|i| !inner.session.is_node(i)) {
             return Err("Invalid session node".into());
         }
-        let mut cursor = node;
-        let mut draft = None;
-        if let Some(node) = node.map(|i| inner.session.node(i))
-            && let Some(user) = node.blocks.iter().find(|block| block.kind == Kind::User)
-        {
-            cursor = node.parent;
-            draft = Some(user.text.clone());
+        inner.move_to(node)
+    }
+
+    pub fn edit(&self, node: usize) -> Result<String> {
+        let mut inner = self.inner();
+        let user = inner.session.is_node(node).then(|| inner.session.node(node)).and_then(|node| {
+            Some((node.parent, node.blocks.iter().find(|block| block.kind == Kind::User)?.text.clone()))
+        });
+        let (parent, text) = user.ok_or("Not a user message")?;
+        inner.move_to(parent)?;
+        Ok(text)
+    }
+
+    pub fn switch_branch(&self, node: usize) -> Result<()> {
+        let mut inner = self.inner();
+        if !inner.session.is_node(node) {
+            return Err("Invalid session node".into());
         }
-        if inner.session.cursor() != cursor {
-            inner.session.record(Record::Cursor { node: cursor })?;
-            inner.save();
-        }
-        inner.live.clear();
-        inner.queued.clear();
-        inner.status = Status::Idle;
-        for event in inner.snapshot(None) {
-            inner.emit(event);
-        }
-        Ok(draft)
+        let latest = inner.session.latest(node);
+        inner.move_to(Some(latest))
     }
 }

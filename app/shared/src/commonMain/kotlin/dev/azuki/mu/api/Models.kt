@@ -134,6 +134,17 @@ data class SessionState(
     val queued: List<String>,
 )
 
+// `siblings` includes itself, oldest first.
+data class Node(val id: Long, val siblings: List<Long>, val blocks: List<Block>)
+
+data class TreeEntry(
+    val node: Long,
+    val parent: Long?,
+    val kind: BlockKind?,
+    val text: String,
+    val current: Boolean,
+)
+
 data class Resume(val epoch: Long, val blocks: Int)
 
 // A reset clears everything but the first `keep` blocks of the transcript; the
@@ -149,7 +160,7 @@ sealed interface SessionUpdate {
 
     data class State(val state: SessionState, val started: Boolean) : SessionUpdate
 
-    data class Committed(val blocks: List<Block>) : SessionUpdate
+    data class Committed(val nodes: List<Node>) : SessionUpdate
 
     data class Live(val index: Int, val block: Block) : SessionUpdate
 

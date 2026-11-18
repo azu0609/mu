@@ -3,6 +3,7 @@ package dev.azuki.mu.chat
 import androidx.compose.runtime.Immutable
 import dev.azuki.mu.api.Block
 import dev.azuki.mu.api.BlockKind
+import dev.azuki.mu.api.Node
 import dev.azuki.mu.api.Sender
 
 // While a loop runs, each block is a row of its own, in order. Once it finishes, all but its final
@@ -46,15 +47,22 @@ sealed interface Row {
     @Immutable data class Notice(override val at: Int, val block: Block) : Row
 }
 
+@Immutable data class PathNode(val id: Long, val siblings: List<Long>, val blocks: IntRange)
+
 class Transcript {
     private val blocks = mutableListOf<Block>()
+    private val nodes = mutableListOf<PathNode>()
     private val settled = mutableListOf<Row>()
     private var last = 0
 
     val size
         get() = blocks.size
 
+    val path: List<PathNode>
+        get() = nodes.toList()
+
     fun reset(keep: Int) {
+        nodes.removeAll { it.blocks.first >= keep }
         if (keep >= blocks.size) return
         blocks.subList(keep, blocks.size).clear()
         settled.clear()
@@ -62,9 +70,13 @@ class Transcript {
         settle(0)
     }
 
-    fun commit(committed: List<Block>) {
+    fun commit(committed: List<Node>) {
         val from = blocks.size
-        blocks += committed
+        for (node in committed) {
+            val start = blocks.size
+            blocks += node.blocks
+            nodes += PathNode(node.id, node.siblings, start until blocks.size)
+        }
         settle(from)
     }
 

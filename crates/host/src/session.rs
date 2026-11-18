@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 use std::{
     fs,
     io::{self, BufRead, BufReader, BufWriter, Seek, SeekFrom, Write},
+    mem,
     os::unix::fs::OpenOptionsExt,
     path::PathBuf,
 };
@@ -477,67 +478,54 @@ impl Session {
         Ok(session)
     }
 
-    // Iterative DFS: very deep tool loops don't consume the stack.
-    pub fn tree(&self) -> Vec<(Option<usize>, String)> {
-        struct Frame {
-            node: Option<usize>,
-            line_prefix: String,
-            child_prefix: String,
-            depth: usize,
-        }
-
+    fn children(&self) -> Vec<Vec<usize>> {
         let mut children = vec![vec![]; self.records.len() + 1];
-        for (i, n) in self.nodes() {
-            children[n.parent.map_or(0, |p| p + 1)].push(i);
+        for (i, node) in self.nodes() {
+            children[node.parent.map_or(0, |p| p + 1)].push(i);
         }
+        children
+    }
+
+    pub fn branches(&self) -> Vec<(usize, Vec<usize>)> {
+        let mut children = self.children();
+        self.path()
+            .into_iter()
+            .map(|i| (i, mem::take(&mut children[self.node(i).parent.map_or(0, |p| p + 1)])))
+            .collect()
+    }
+
+    pub fn latest(&self, node: usize) -> usize {
+        let mut within = vec![false; self.records.len()];
+        within[node] = true;
+        for (i, n) in self.nodes().filter(|&(i, _)| i > node) {
+            within[i] = n.parent.is_some_and(|p| within[p]);
+        }
+        self.records
+            .iter()
+            .enumerate()
+            .rev()
+            .filter_map(|(i, r)| match r {
+                Record::Node(_) => Some(i),
+                Record::Cursor { node } => *node,
+                _ => None,
+            })
+            .find(|&i| within[i])
+            .unwrap_or(node)
+    }
+
+    // Iterative DFS: very deep tool loops don't consume the stack.
+    pub fn tree(&self) -> Vec<(usize, Option<&Block>)> {
+        let children = self.children();
         let mut result = vec![];
-        let mut stack = vec![Frame { node: None, line_prefix: String::new(), child_prefix: String::new(), depth: 0 }];
-        while let Some(Frame { node, line_prefix, child_prefix, depth }) = stack.pop() {
-            let label = node
-                .map(|i| {
-                    let blocks = &self.node(i).blocks;
-                    blocks
-                        .iter()
-                        .find(|b| {
-                            matches!(b.kind, Kind::User | Kind::AgentMessage | Kind::Agent | Kind::Call | Kind::Shell)
-                        })
-                        .or_else(|| blocks.iter().find(|b| b.kind == Kind::Warning))
-                        .map(|b| {
-                            format!(
-                                "{:?}: {}",
-                                b.kind,
-                                b.text.lines().next().unwrap_or("").chars().take(80).collect::<String>()
-                            )
-                        })
-                        .unwrap_or_else(|| "step".into())
-                })
-                .unwrap_or_else(|| "root".into());
-            result.push((node, format!("{line_prefix}{label}")));
-            let siblings = &children[node.map_or(0, |i| i + 1)];
-            for (position, &child) in siblings.iter().enumerate().rev() {
-                if siblings.len() > 1 {
-                    let last = position == siblings.len() - 1;
-                    let line = format!("{child_prefix}{}", if last { "└─ " } else { "├─ " });
-                    let next = if depth < 16 {
-                        format!("{child_prefix}{}", if last { "     " } else { "│    " })
-                    } else {
-                        child_prefix.clone()
-                    };
-                    stack.push(Frame {
-                        node: Some(child),
-                        line_prefix: line,
-                        child_prefix: next,
-                        depth: (depth + 1).min(16),
-                    });
-                } else {
-                    stack.push(Frame {
-                        node: Some(child),
-                        line_prefix: child_prefix.clone(),
-                        child_prefix: child_prefix.clone(),
-                        depth,
-                    });
-                }
-            }
+        let mut stack: Vec<_> = children[0].iter().rev().copied().collect();
+        while let Some(i) = stack.pop() {
+            let blocks = &self.node(i).blocks;
+            let label = blocks
+                .iter()
+                .find(|b| matches!(b.kind, Kind::User | Kind::AgentMessage | Kind::Agent | Kind::Call | Kind::Shell))
+                .or_else(|| blocks.iter().find(|b| b.kind == Kind::Warning));
+            result.push((i, label));
+            stack.extend(children[i + 1].iter().rev());
         }
         result
     }

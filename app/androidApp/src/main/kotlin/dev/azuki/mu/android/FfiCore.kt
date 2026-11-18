@@ -16,6 +16,7 @@ import dev.azuki.mu.api.MentionEntry
 import dev.azuki.mu.api.Model
 import dev.azuki.mu.api.ModelInfo
 import dev.azuki.mu.api.MuException
+import dev.azuki.mu.api.Node
 import dev.azuki.mu.api.Remote
 import dev.azuki.mu.api.Resolved
 import dev.azuki.mu.api.Resume
@@ -31,6 +32,7 @@ import dev.azuki.mu.api.Span
 import dev.azuki.mu.api.Status
 import dev.azuki.mu.api.Tool
 import dev.azuki.mu.api.ToolStatus
+import dev.azuki.mu.api.TreeEntry
 import dev.azuki.mu.api.Written
 import dev.azuki.mu.core.Core as Ffi
 import dev.azuki.mu.core.HostListener
@@ -121,6 +123,26 @@ private class FfiRemote(private val remote: dev.azuki.mu.core.Remote) : Remote {
 
             override suspend fun recallQueued(index: Int, text: String) = mapped {
                 handle.recallQueued(index.toUInt(), text)
+            }
+
+            override suspend fun tree() = mapped {
+                handle.tree().map {
+                    TreeEntry(
+                        it.node.toLong(),
+                        it.parent?.toLong(),
+                        it.kind?.toModel(),
+                        it.text,
+                        it.current,
+                    )
+                }
+            }
+
+            override suspend fun checkout(node: Long?) = mapped { handle.checkout(node?.toULong()) }
+
+            override suspend fun edit(node: Long) = mapped { handle.edit(node.toULong()) }
+
+            override suspend fun switchBranch(node: Long) = mapped {
+                handle.switchBranch(node.toULong())
             }
 
             override fun close() {
@@ -307,7 +329,15 @@ private fun dev.azuki.mu.core.SessionUpdate.toModel(): SessionUpdate =
             )
         is dev.azuki.mu.core.SessionUpdate.State -> SessionUpdate.State(state.toModel(), started)
         is dev.azuki.mu.core.SessionUpdate.Committed ->
-            SessionUpdate.Committed(blocks.map { it.toModel() })
+            SessionUpdate.Committed(
+                nodes.map { node ->
+                    Node(
+                        node.id.toLong(),
+                        node.siblings.map { it.toLong() },
+                        node.blocks.map { it.toModel() },
+                    )
+                }
+            )
         is dev.azuki.mu.core.SessionUpdate.Live ->
             SessionUpdate.Live(index.toInt(), block.toModel())
         is dev.azuki.mu.core.SessionUpdate.LiveNotice -> SessionUpdate.LiveNotice(block.toModel())
@@ -323,18 +353,21 @@ private fun dev.azuki.mu.core.ShellUpdate.toModel(): ShellUpdate =
         is dev.azuki.mu.core.ShellUpdate.Failed -> ShellUpdate.Failed(message)
     }
 
+private fun Kind.toModel() =
+    when (this) {
+        Kind.USER -> BlockKind.User
+        Kind.AGENT_MESSAGE -> BlockKind.AgentMessage
+        Kind.AGENT -> BlockKind.Agent
+        Kind.THOUGHT -> BlockKind.Thought
+        Kind.CALL -> BlockKind.Call
+        Kind.SHELL -> BlockKind.Shell
+        Kind.NOTICE -> BlockKind.Notice
+        Kind.WARNING -> BlockKind.Warning
+    }
+
 private fun dev.azuki.mu.wire.Block.toModel() =
     Block(
-        when (kind) {
-            Kind.USER -> BlockKind.User
-            Kind.AGENT_MESSAGE -> BlockKind.AgentMessage
-            Kind.AGENT -> BlockKind.Agent
-            Kind.THOUGHT -> BlockKind.Thought
-            Kind.CALL -> BlockKind.Call
-            Kind.SHELL -> BlockKind.Shell
-            Kind.NOTICE -> BlockKind.Notice
-            Kind.WARNING -> BlockKind.Warning
-        },
+        kind.toModel(),
         text,
         tool?.let { tool(it.status, it.output) },
         span?.let { Span(it.started.toLong(), it.finished.toLong()) },

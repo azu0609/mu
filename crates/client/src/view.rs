@@ -1,5 +1,5 @@
 use mu_wire::{Block, Event, Kind, Live, Profile, SessionSummary, Skill, State, Status, Touched, WatchEvent};
-use std::{mem, path::PathBuf};
+use std::{mem, ops::Range, path::PathBuf};
 
 #[derive(Default)]
 pub struct View {
@@ -9,7 +9,14 @@ pub struct View {
     pub state: State,
     pub skills: Vec<Skill>,
     pub blocks: Vec<Block>,
+    pub path: Vec<PathNode>,
     pub live: Live,
+}
+
+pub struct PathNode {
+    pub id: usize,
+    pub siblings: Vec<usize>,
+    pub blocks: Range<usize>,
 }
 
 pub enum Change {
@@ -34,6 +41,8 @@ impl View {
             Event::Snapshot(snapshot) => {
                 let mut blocks = mem::take(&mut self.blocks);
                 blocks.truncate(snapshot.keep);
+                let mut path = mem::take(&mut self.path);
+                path.retain(|node| node.blocks.start < snapshot.keep);
                 *self = Self {
                     id: snapshot.id,
                     cwd: snapshot.cwd,
@@ -41,6 +50,7 @@ impl View {
                     state: snapshot.state,
                     skills: snapshot.skills,
                     blocks,
+                    path,
                     live: Live::default(),
                 };
                 Change::Reset { keep: snapshot.keep }
@@ -50,9 +60,13 @@ impl View {
                 self.state = state;
                 Change::State { started: self.running() && !was_running }
             }
-            Event::Commit { blocks } => {
-                let from = self.blocks.len();
-                self.blocks.extend(blocks);
+            Event::Commit { nodes } => {
+                let from = self.path.len();
+                for node in nodes {
+                    let start = self.blocks.len();
+                    self.blocks.extend(node.blocks);
+                    self.path.push(PathNode { id: node.id, siblings: node.siblings, blocks: start..self.blocks.len() });
+                }
                 self.live.clear();
                 Change::Committed { from }
             }

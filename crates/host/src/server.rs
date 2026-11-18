@@ -160,6 +160,16 @@ pub async fn handle(host: Arc<Host>, peer: Peer, request: Request<Incoming>) -> 
             })
             .await
         }
+        wire::Edit::PATH => {
+            call(host, body, |host, call: wire::Edit| host.agent(&call.session_id)?.edit(call.node).map_err(failed))
+                .await
+        }
+        wire::SwitchBranch::PATH => {
+            call(host, body, |host, call: wire::SwitchBranch| {
+                host.agent(&call.session_id)?.switch_branch(call.node).map_err(failed)
+            })
+            .await
+        }
         wire::AppendShell::PATH => call(host, body, |host, call| host.append(call)).await,
         wire::DeleteSessions::PATH => call(host, body, |host, wire::DeleteSessions {}| host.delete_sessions()).await,
         wire::ListModels::PATH => call(host, body, |host, wire::ListModels {}| host.list_models()).await,

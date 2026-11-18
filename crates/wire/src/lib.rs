@@ -13,7 +13,7 @@ uniffi::custom_type!(PathBuf, String, {
 });
 
 // Bump on any change an older peer cannot read; peers refuse a mismatch.
-pub const PROTOCOL: u32 = 10;
+pub const PROTOCOL: u32 = 11;
 
 pub trait Call: Serialize + DeserializeOwned {
     const PATH: &'static str;
@@ -187,6 +187,14 @@ pub struct Snapshot {
     pub keep: usize,
 }
 
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Node {
+    pub id: usize,
+    // Itself included, oldest first.
+    pub siblings: Vec<usize>,
+    pub blocks: Vec<Block>,
+}
+
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub struct Resume {
     pub epoch: u64,
@@ -198,7 +206,7 @@ pub struct Resume {
 pub enum Event {
     Snapshot(Box<Snapshot>),
     State(State),
-    Commit { blocks: Vec<Block> },
+    Commit { nodes: Vec<Node> },
     Live(LiveEvent),
     Feedback(Block),
 }
@@ -343,8 +351,10 @@ pub enum EntryKind {
 
 #[derive(Serialize, Deserialize)]
 pub struct TreeEntry {
-    pub node: Option<usize>,
-    pub label: String,
+    pub node: usize,
+    pub parent: Option<usize>,
+    pub kind: Option<Kind>,
+    pub text: String,
     pub current: bool,
 }
 
@@ -517,7 +527,10 @@ calls! {
     SetModel { session_id: String, model: Model } => "/set_model" -> ();
     ListModels {} => "/list_models" -> Vec<ModelInfo>;
     GetTree { session_id: String } => "/get_tree" -> Vec<TreeEntry>;
-    Checkout { session_id: String, node: Option<usize> } => "/checkout" -> Option<String>;
+    Checkout { session_id: String, node: Option<usize> } => "/checkout" -> ();
+    // Back to before the user message `node`, whose text it answers.
+    Edit { session_id: String, node: usize } => "/edit" -> String;
+    SwitchBranch { session_id: String, node: usize } => "/switch_branch" -> ();
     CompleteMention { cwd: PathBuf, text: String, cursor: u32, refresh: bool }
         => "/complete_mention" -> Option<Mention>;
     AppendShell { session_id: String, run: String } => "/append_shell" -> ();

@@ -10,12 +10,13 @@ use crossterm::event::{
 };
 pub use mu_client::Endpoint;
 use mu_client::{
-    AppendShell, Block, Change, Checkout, CompleteMention, CreateSession, Event, GetTree, HostView, Kind, ListSkills,
-    Model, RecallQueued, SendMessage, SessionSummary, SetModel, ShellEvent, Stop, Tool, ToolOutput, ToolStatus, View,
-    counts,
+    AppendShell, Block, Change, Checkout, CompleteMention, CreateSession, Edit, Event, GetTree, HostView, Kind,
+    ListSkills, Model, RecallQueued, SendMessage, SessionSummary, SetModel, ShellEvent, Stop, Tool, ToolOutput,
+    ToolStatus, TreeEntry, View, counts,
 };
 use remote::{Incoming, Remote};
 use std::{
+    collections::HashMap,
     env,
     io::{self, Write},
     path::PathBuf,
@@ -26,6 +27,7 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>
 
 enum Target {
     Node(Option<usize>),
+    Edit(usize),
     Session(String),
 }
 
@@ -36,6 +38,47 @@ struct Picker {
 }
 
 const SESSIONS: &str = "resume session";
+
+fn tree(entries: &[TreeEntry]) -> Vec<(Target, String)> {
+    const DEPTH: usize = 16;
+    let mut siblings = HashMap::<Option<usize>, usize>::new();
+    for entry in entries {
+        *siblings.entry(entry.parent).or_default() += 1;
+    }
+    let mut seen = HashMap::<Option<usize>, usize>::new();
+    let mut prefixes = HashMap::<Option<usize>, (String, usize)>::new();
+    let current = entries.iter().any(|entry| entry.current);
+    let mut lines = vec![(Target::Node(None), format!("{}root", if current { "  " } else { "● " }))];
+    for entry in entries {
+        let (prefix, depth) = prefixes.get(&entry.parent).cloned().unwrap_or_default();
+        let count = siblings[&entry.parent];
+        let position = seen.entry(entry.parent).or_default();
+        *position += 1;
+        let (line, next) = if count > 1 {
+            let last = *position == count;
+            let line = format!("{prefix}{}", if last { "└─ " } else { "├─ " });
+            let next = if depth < DEPTH {
+                (format!("{prefix}{}", if last { "     " } else { "│    " }), depth + 1)
+            } else {
+                (prefix, depth)
+            };
+            (line, next)
+        } else {
+            (prefix.clone(), (prefix, depth))
+        };
+        prefixes.insert(Some(entry.node), next);
+        let label = match entry.kind {
+            Some(kind) => format!("{kind:?}: {}", entry.text),
+            None => "step".into(),
+        };
+        let target = match entry.kind {
+            Some(Kind::User) => Target::Edit(entry.node),
+            _ => Target::Node(Some(entry.node)),
+        };
+        lines.push((target, format!("{}{line}{label}", if entry.current { "● " } else { "  " })));
+    }
+    lines
+}
 
 // How soon a second Esc must follow to stop the session's subagents too.
 const ESCAPE_AGAIN: Duration = Duration::from_secs(1);
@@ -414,17 +457,8 @@ impl App {
             commands::BuiltinKind::New => self.start_draft(self.view.cwd.clone(), self.model().cloned()),
             commands::BuiltinKind::Tree => {
                 let entries = self.remote.call(GetTree { session_id: self.session()?.into() })?;
-                let selected = entries.iter().position(|entry| entry.current).unwrap_or(0);
-                let entries = entries
-                    .into_iter()
-                    .map(|entry| {
-                        (
-                            Target::Node(entry.node),
-                            format!("{}{}", if entry.current { "● " } else { "  " }, entry.label),
-                        )
-                    })
-                    .collect();
-                self.picker = Some(Picker { title: "conversation tree", entries, selected });
+                let selected = entries.iter().position(|entry| entry.current).map_or(0, |i| i + 1);
+                self.picker = Some(Picker { title: "conversation tree", entries: tree(&entries), selected });
             }
             commands::BuiltinKind::Resume => {
                 let entries = session_entries(&self.host);
@@ -547,11 +581,13 @@ impl App {
         if let Some((target, _)) = picker.entries.into_iter().nth(picker.selected) {
             match target {
                 Target::Node(node) => {
-                    let draft = self.remote.call(Checkout { session_id: self.view.id.clone(), node })?;
-                    if let Some(text) = draft {
-                        self.editor.clear();
-                        self.editor.insert(&text);
-                    }
+                    self.remote.call(Checkout { session_id: self.view.id.clone(), node })?;
+                    self.reset_view();
+                }
+                Target::Edit(node) => {
+                    let text = self.remote.call(Edit { session_id: self.view.id.clone(), node })?;
+                    self.editor.clear();
+                    self.editor.insert(&text);
                     self.reset_view();
                 }
                 Target::Session(id) => {

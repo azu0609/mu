@@ -40,6 +40,9 @@ class ChatState(private val mu: Mu, val target: ChatTarget) : Destination {
     var feedback by mutableStateOf(emptyList<Feedback>())
         private set
 
+    var path by mutableStateOf(emptyList<PathNode>())
+        private set
+
     var connected by mutableStateOf(false)
         private set
 
@@ -95,6 +98,7 @@ class ChatState(private val mu: Mu, val target: ChatTarget) : Destination {
                 is SessionUpdate.Reset -> {
                     epoch = update.epoch
                     transcript.reset(update.keep)
+                    path = transcript.path
                     live.clear()
                     notice = null
                     cwd = update.cwd
@@ -107,7 +111,8 @@ class ChatState(private val mu: Mu, val target: ChatTarget) : Destination {
                     if (update.started) feedback = emptyList()
                 }
                 is SessionUpdate.Committed -> {
-                    transcript.commit(update.blocks)
+                    transcript.commit(update.nodes)
+                    path = transcript.path
                     live.clear()
                     notice = null
                 }
@@ -134,6 +139,14 @@ class ChatState(private val mu: Mu, val target: ChatTarget) : Destination {
     suspend fun appendShell(run: String) = connected().appendShell(run)
 
     suspend fun recall(index: Int, text: String) = connected().recallQueued(index, text)
+
+    suspend fun tree() = connected().tree()
+
+    suspend fun checkout(node: Long?) = connected().checkout(node)
+
+    suspend fun edit(node: Long) = connected().edit(node)
+
+    suspend fun switchBranch(node: Long) = connected().switchBranch(node)
 
     // A session always runs some model, so there is no unpicking it.
     override fun use(model: String?, effort: String?) {
