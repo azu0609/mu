@@ -3,8 +3,9 @@
 use mu_client::{
     AppendShell, Block, Call, Change, Client, CompleteMention, CreateSession, DeleteSessions, DeleteSnippet, Deleted,
     Directory, Endpoint, HostView, Invite, ListDirectory, ListModels, ListSkills, MarkRead, Mention, Model, ModelInfo,
-    Profile, RecallQueued, ResolveMentions, Resolved, SaveSnippet, SendMessage, SessionSummary, SetDescription,
-    SetIcon, SetModel, ShellEvent, Skill, State, Stop, ToolOutput, ToolStatus, Touched, Update, View, Written,
+    Profile, RecallQueued, ResolveMentions, Resolved, Resume as Resumed, SaveSnippet, SendMessage, SessionSummary,
+    SetDescription, SetIcon, SetModel, ShellEvent, Skill, State, Stop, ToolOutput, ToolStatus, Touched, Update, View,
+    Written,
     hosts::{Hosts, Paired},
 };
 use std::{
@@ -12,7 +13,9 @@ use std::{
     fmt,
     future::Future,
     path::PathBuf,
+    pin::pin,
     sync::{Arc, Mutex},
+    task::{Context, Poll, Waker},
 };
 use tokio::{
     runtime::{Handle, Runtime},
@@ -327,27 +330,36 @@ impl Remote {
     pub async fn open_session(
         &self,
         session: String,
+        resume: Option<Resume>,
         listener: Arc<dyn SessionListener>,
     ) -> Result<Arc<Session>, MuError> {
         let (connect, id) = (self.connect()?, session.clone());
+        let resume = resume.map(|resume| Resumed { epoch: resume.epoch, blocks: resume.blocks as usize });
         let (client, mut subscription) = spawn(&self.shared.runtime, async move {
             let client = connect.await?;
-            let subscription = client.subscribe(&id).await?;
+            let subscription = client.subscribe(&id, resume).await?;
             Ok((client, subscription))
         })
         .await?;
         let task = self.shared.runtime.spawn(async move {
             let mut view = View::default();
             loop {
-                let update = match subscription.next().await {
-                    Update::Event(event) => {
-                        let change = view.apply(event);
-                        translate(&view, change)
+                let mut batch = vec![];
+                let mut next = Some(subscription.next().await);
+                while let Some(update) = next {
+                    match update {
+                        Update::Event(event) => {
+                            let change = view.apply(event);
+                            if let Some(update) = translate(&view, change) {
+                                coalesce(&mut batch, update);
+                            }
+                        }
+                        Update::Lost => batch.push(SessionUpdate::Lost),
                     }
-                    Update::Lost => Some(SessionUpdate::Lost),
-                };
-                if let Some(update) = update {
-                    listener.on_update(update);
+                    next = ready(subscription.next());
+                }
+                if !batch.is_empty() {
+                    listener.on_update(batch);
                 }
             }
         });
@@ -355,9 +367,36 @@ impl Remote {
     }
 }
 
+fn ready<F: Future>(future: F) -> Option<F::Output> {
+    match pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
+        Poll::Ready(output) => Some(output),
+        Poll::Pending => None,
+    }
+}
+
+fn coalesce(batch: &mut Vec<SessionUpdate>, update: SessionUpdate) {
+    if let SessionUpdate::Live { index, .. } = &update {
+        for earlier in batch.iter_mut().rev() {
+            match earlier {
+                SessionUpdate::Live { index: other, .. } if other == index => {
+                    *earlier = update;
+                    return;
+                }
+                SessionUpdate::Live { .. }
+                | SessionUpdate::LiveNotice { .. }
+                | SessionUpdate::State { .. }
+                | SessionUpdate::Feedback { .. } => (),
+                SessionUpdate::Reset { .. } | SessionUpdate::Committed { .. } | SessionUpdate::Lost => break,
+            }
+        }
+    }
+    batch.push(update);
+}
+
 fn translate(view: &View, change: Change) -> Option<SessionUpdate> {
     Some(match change {
         Change::Reset { keep } => SessionUpdate::Reset {
+            epoch: view.epoch,
             keep: keep as u32,
             cwd: view.cwd.clone(),
             state: view.state.clone(),
@@ -446,14 +485,20 @@ pub enum ShellUpdate {
 
 #[uniffi::export(with_foreign)]
 pub trait SessionListener: Send + Sync {
-    fn on_update(&self, update: SessionUpdate);
+    fn on_update(&self, updates: Vec<SessionUpdate>);
+}
+
+#[derive(uniffi::Record)]
+pub struct Resume {
+    pub epoch: u64,
+    pub blocks: u32,
 }
 
 // A reset clears everything but the first `keep` blocks of the transcript; the
 // rest of it then arrives as ordinary commits.
 #[derive(uniffi::Enum)]
 pub enum SessionUpdate {
-    Reset { keep: u32, cwd: PathBuf, state: State, skills: Vec<Skill> },
+    Reset { epoch: u64, keep: u32, cwd: PathBuf, state: State, skills: Vec<Skill> },
     State { state: State, started: bool },
     Committed { blocks: Vec<Block> },
     Live { index: u32, block: Block },

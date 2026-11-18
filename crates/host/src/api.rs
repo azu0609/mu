@@ -268,14 +268,14 @@ pub fn step(request: Request, cancel: Arc<AtomicBool>, emit: Emit) -> Result<Ste
     let response = completed
         .ok_or_else(|| format!("Stream ended without response.completed: {}", String::from_utf8_lossy(&preview)))?;
     let usage = Usage::from_json(&response["usage"]);
-    if usage.cache_miss(request.previous_usage) {
-        emit(LiveEvent::Notice(Block::new(Kind::Warning, CACHE_MISS)));
-    }
     let output: Vec<Value> = response["output"].as_array().cloned().unwrap_or_else(|| items.into_values().collect());
     for (index, item) in output.iter().enumerate() {
         if let Some(block) = block_from_item(item, false) {
             live.upsert(index, block);
         }
+    }
+    if usage.cache_miss(request.previous_usage) {
+        emit(LiveEvent::Notice(Block::new(Kind::Warning, CACHE_MISS)));
     }
     let results = thread::scope(|scope| {
         let handles: Vec<_> = output

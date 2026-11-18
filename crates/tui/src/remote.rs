@@ -59,7 +59,7 @@ impl Remote {
     }
 
     pub fn attach(&mut self, id: &str) -> Result<()> {
-        let mut subscription = self.wait(self.client.subscribe(id))?;
+        let mut subscription = self.wait(self.client.subscribe(id, None))?;
         self.subscriptions += 1;
         let generation = self.subscriptions;
         let tx = self.tx.clone();

@@ -4,6 +4,8 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -12,20 +14,22 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
@@ -33,7 +37,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.snapshots.SnapshotStateMap
-import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -86,40 +89,31 @@ fun Chat(
     onRecall: (index: Int, text: String) -> Unit,
 ) {
     val expanded = remember(chat) { mutableStateMapOf<String, Boolean>() }
-    val entries by
-        remember(chat) {
-            derivedStateOf {
-                entries(chat.blocks.toList(), chat.liveNotice, chat.live.toList(), chat.running)
-            }
-        }
-    val state = chat.state
-    val list = rememberLazyListState()
+    val list = remember(chat) { LazyListState() }
     var follow by remember(chat) { mutableStateOf(true) }
     LaunchedEffect(sent) { follow = true }
     LaunchedEffect(list) {
         snapshotFlow { list.isScrollInProgress }
-            .collect { scrolling ->
-                if (!scrolling)
-                    follow =
-                        list.firstVisibleItemIndex == 0 && list.firstVisibleItemScrollOffset == 0
-            }
+            .collect { scrolling -> if (!scrolling) follow = !list.canScrollForward }
     }
-    val newest by
-        remember(chat) {
-            derivedStateOf(structuralEqualityPolicy()) {
-                listOf(
-                    entries.lastOrNull()?.key,
-                    entries.size,
-                    chat.feedback.size,
-                    chat.state?.queued?.size,
-                    chat.liveNotice != null,
-                )
-            }
-        }
-    // The list is reversed and holds its first visible item in place, so anything new would land
-    // below the fold. Pinning to the end in the same frame the items change keeps it in view.
-    key(newest) {
-        SideEffect { if (follow && !list.isScrollInProgress) list.requestScrollToItem(0) }
+    val onExpand = { follow = false }
+    val behind by remember(list) { derivedStateOf { list.canScrollForward } }
+
+    val state = chat.state
+    val rows = chat.rows
+    val feedback = chat.feedback
+    val queued = state?.queued.orEmpty()
+    val error = chat.error?.takeIf { !chat.connected }
+    val end = rows.size + feedback.size + queued.size + if (error != null) 1 else 0
+    val following = follow
+    SideEffect {
+        if (list.isScrollInProgress) return@SideEffect
+        if (following) return@SideEffect list.requestScrollToItem(end)
+        // A row folded away would leave the list wherever its index now points.
+        val first = list.layoutInfo.visibleItemsInfo.firstOrNull()?.key as? Int ?: return@SideEffect
+        if (rows.any { it.key == first }) return@SideEffect
+        val fold = rows.indexOfLast { it.at <= first }
+        if (fold >= 0) list.requestScrollToItem(fold)
     }
 
     Scaffold(
@@ -131,11 +125,16 @@ fun Chat(
                         !chat.connected ->
                             if (chat.error != null) "Reconnecting to ${mu.name(chat.host)}…"
                             else "Connecting…"
+
                         state == null -> ""
                         else ->
                             buildString {
                                 append(
-                                    "in ${mu.core.compact(state.uncachedInput)} (${mu.core.compact(state.input)}) / ${mu.core.compact(state.output)} out"
+                                    "in ${mu.core.compact(state.uncachedInput)} (${mu.core.compact(state.input)}) / ${
+                                        mu.core.compact(
+                                            state.output
+                                        )
+                                    } out"
                                 )
                                 val context = state.model.context
                                 if (context != null)
@@ -147,48 +146,62 @@ fun Chat(
             )
         }
     ) { padding ->
-        LazyColumn(
-            state = list,
-            reverseLayout = true,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding =
-                PaddingValues(
-                    top = padding.calculateTopPadding() + 8.dp,
-                    bottom = bottom + 16.dp,
-                    start = 16.dp,
-                    end = 16.dp,
-                ),
-            verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.Bottom),
-        ) {
-            val queued = state?.queued.orEmpty()
-            queued.asReversed().forEachIndexed { reversed, text ->
-                val index = queued.size - 1 - reversed
-                item(key = "queued.$index") {
-                    QueuedBubble(text, onRecall = { onRecall(index, text) })
-                }
-            }
-            chat.error
-                ?.takeIf { !chat.connected }
-                ?.let { error ->
-                    item(key = "error") {
-                        NoticeView(Block(BlockKind.Warning, error, null, null))
+        Box(Modifier.fillMaxSize()) {
+            LazyColumn(
+                state = list,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding =
+                    PaddingValues(
+                        top = padding.calculateTopPadding() + 8.dp,
+                        bottom = bottom,
+                        start = 16.dp,
+                        end = 16.dp,
+                    ),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                items(rows, key = { it.key }, contentType = { it::class }) { row ->
+                    RowView(row, expanded, onExpand) { session ->
+                        mu.open(chat.target.host, session)
                     }
                 }
-            chat.feedback.asReversed().forEachIndexed { index, block ->
-                item(key = "feedback.${chat.feedback.size - 1 - index}") { NoticeView(block) }
-            }
-            items(entries.asReversed(), key = { it.key }) { entry ->
-                when (entry) {
-                    is Entry.User -> UserBubble(entry.text)
-                    is Entry.AgentMessage ->
-                        AgentMessageBubble(entry) { session -> mu.open(chat.target.host, session) }
-                    is Entry.Agent -> Markdown(entry.text)
-                    is Entry.Work -> WorkView(entry, expanded)
-                    is Entry.Shell -> ShellCard(entry.block)
-                    is Entry.Notice -> NoticeView(entry.block)
+                items(feedback, key = { "feedback.${it.id}" }) { NoticeView(it.block) }
+                if (error != null) {
+                    item(key = "error") { NoticeView(Block(BlockKind.Warning, error, null, null)) }
                 }
+                itemsIndexed(queued, key = { index, _ -> "queued.$index" }) { index, text ->
+                    QueuedBubble(text, onRecall = { onRecall(index, text) })
+                }
+                item(key = "end") { Spacer(Modifier.height(2.dp)) }
+            }
+            AnimatedVisibility(
+                !follow && behind,
+                Modifier.align(Alignment.BottomCenter).padding(bottom = bottom + 12.dp),
+                enter = fadeIn() + scaleIn(),
+                exit = fadeOut() + scaleOut(),
+            ) {
+                CircleButton(Solar.AltArrowDownLinear, "Jump to the end", { follow = true })
             }
         }
+    }
+}
+
+@Composable
+private fun RowView(
+    row: Row,
+    expanded: SnapshotStateMap<String, Boolean>,
+    onExpand: () -> Unit,
+    onOpen: (session: String) -> Unit,
+) {
+    when (row) {
+        is Row.User -> UserBubble(row.text)
+        is Row.AgentMessage -> AgentMessageBubble(row, onOpen)
+        is Row.Agent -> Markdown(row.text)
+        is Row.Thought -> Step(row.block, row.at, expanded, onExpand)
+        is Row.Call -> Step(row.block, row.at, expanded, onExpand)
+        is Row.Work -> WorkView(row, expanded, onExpand)
+        is Row.Working -> WorkingView(row)
+        is Row.Shell -> ShellCard(row.block, onExpand)
+        is Row.Notice -> NoticeView(row.block)
     }
 }
 
@@ -207,10 +220,9 @@ private fun UserBubble(text: String) {
     }
 }
 
-// Across from the user's own messages. A tap opens the session that sent it.
 @Composable
-private fun AgentMessageBubble(entry: Entry.AgentMessage, onOpen: (session: String) -> Unit) {
-    val from = entry.from
+private fun AgentMessageBubble(row: Row.AgentMessage, onOpen: (session: String) -> Unit) {
+    val from = row.from
     Column(
         Modifier.padding(end = 48.dp)
             .clip(RoundedCornerShape(22.dp))
@@ -233,7 +245,7 @@ private fun AgentMessageBubble(entry: Entry.AgentMessage, onOpen: (session: Stri
                 overflow = TextOverflow.Ellipsis,
             )
         }
-        Markdown(entry.text, Modifier.padding(top = 4.dp))
+        Markdown(row.text, Modifier.padding(top = 4.dp))
     }
 }
 
@@ -276,53 +288,59 @@ private fun QueuedBubble(text: String, onRecall: () -> Unit) {
 }
 
 @Composable
-private fun WorkView(work: Entry.Work, expanded: SnapshotStateMap<String, Boolean>) {
+private fun WorkingView(row: Row.Working) {
     val now by
-        produceState(Clock.System.now().toEpochMilliseconds(), work.ongoing) {
-            while (work.ongoing) {
+        produceState(Clock.System.now().toEpochMilliseconds()) {
+            while (true) {
                 delay(1_000)
                 value = Clock.System.now().toEpochMilliseconds()
             }
         }
-    val label =
-        when {
-            work.ongoing && work.started != null -> "Working for ${duration(now - work.started)}"
-            work.ongoing -> "Working…"
-            work.started != null && work.finished != null ->
-                "Worked for ${duration(work.finished - work.started)}"
-            else -> "Worked"
-        }
+    Row(Modifier.padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Spinning(Solar.LoaderBold, Modifier.padding(end = 8.dp).size(16.dp))
+        Text(
+            row.started?.let { "Working for ${duration(now - it)}" } ?: "Working…",
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            style = MiuixTheme.textStyles.body2,
+        )
+    }
+}
+
+@Composable
+private fun WorkView(
+    work: Row.Work,
+    expanded: SnapshotStateMap<String, Boolean>,
+    onExpand: () -> Unit,
+) {
     val gray = MiuixTheme.colorScheme.onSurfaceVariantSummary
-    val steps = work.steps.filter { it.block.kind == BlockKind.Call || it.block.text.isNotBlank() }
+    val steps =
+        work.steps.withIndex().filter { (_, block) ->
+            block.kind == BlockKind.Call || block.text.isNotBlank()
+        }
     val open = expanded[work.key] == true
     Column {
         Row(
             Modifier.clip(RoundedCornerShape(8.dp))
-                .clickable(enabled = steps.isNotEmpty()) { expanded[work.key] = !open }
+                .clickable(enabled = steps.isNotEmpty()) {
+                    expanded[work.key] = !open
+                    if (!open) onExpand()
+                }
                 .padding(vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (work.ongoing) Spinning(Solar.LoaderBold, Modifier.padding(end = 8.dp).size(16.dp))
-            Text(label, color = gray, style = MiuixTheme.textStyles.body2)
+            Text(
+                if (work.started != null && work.finished != null)
+                    "Worked for ${duration(work.finished - work.started)}"
+                else "Worked",
+                color = gray,
+                style = MiuixTheme.textStyles.body2,
+            )
             if (steps.isNotEmpty()) {
                 Icon(
                     if (open) Solar.AltArrowUpLinear else Solar.AltArrowDownLinear,
                     null,
                     Modifier.padding(start = 6.dp).size(16.dp),
                     tint = gray,
-                )
-            }
-        }
-        if (work.ongoing && !open) {
-            steps.lastOrNull()?.let { last ->
-                Text(
-                    headline(last.block.text),
-                    Modifier.padding(top = 2.dp),
-                    color = gray,
-                    style = MiuixTheme.textStyles.footnote1,
-                    fontFamily = if (last.block.kind == BlockKind.Call) Mono else null,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
@@ -335,22 +353,34 @@ private fun WorkView(work: Entry.Work, expanded: SnapshotStateMap<String, Boolea
                 Modifier.padding(top = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                steps.forEach { step ->
-                    val block = step.block
-                    val toggle = { expanded[step.key] = expanded[step.key] != true }
-                    when (block.kind) {
-                        BlockKind.Thought -> ThoughtView(block, expanded[step.key] == true, toggle)
-                        BlockKind.Call -> CallView(block, expanded[step.key] == true, toggle)
-                        BlockKind.Agent -> Markdown(block.text, small = true)
-                        BlockKind.Shell -> ShellCard(block)
-                        BlockKind.Notice,
-                        BlockKind.Warning -> NoticeView(block)
-                        BlockKind.User,
-                        BlockKind.AgentMessage -> Unit
-                    }
-                }
+                steps.forEach { (index, block) -> Step(block, work.at + index, expanded, onExpand) }
             }
         }
+    }
+}
+
+@Composable
+private fun Step(
+    block: Block,
+    at: Int,
+    expanded: SnapshotStateMap<String, Boolean>,
+    onExpand: () -> Unit,
+) {
+    val key = "step.$at"
+    val open = expanded[key] == true
+    val toggle = {
+        expanded[key] = !open
+        if (!open) onExpand()
+    }
+    when (block.kind) {
+        BlockKind.Thought -> ThoughtView(block, open, toggle)
+        BlockKind.Call -> CallView(block, open, toggle)
+        BlockKind.Agent -> Markdown(block.text, small = true)
+        BlockKind.Shell -> ShellCard(block, onExpand)
+        BlockKind.Notice,
+        BlockKind.Warning -> NoticeView(block)
+        BlockKind.User,
+        BlockKind.AgentMessage -> Unit
     }
 }
 
@@ -422,6 +452,7 @@ private fun CallView(block: Block, open: Boolean, onToggle: () -> Unit) {
             when (val status = tool?.status) {
                 ToolStatus.Running,
                 ToolStatus.Pending -> Spinning(Solar.LoaderBold, Modifier.size(14.dp))
+
                 null -> Unit
                 else ->
                     ending(status)?.let {
@@ -448,10 +479,16 @@ private fun CallView(block: Block, open: Boolean, onToggle: () -> Unit) {
 }
 
 @Composable
-private fun ShellCard(block: Block) {
+private fun ShellCard(block: Block, onExpand: () -> Unit) {
     var open by remember { mutableStateOf(false) }
     val output = block.tool?.output.orEmpty().trimEnd()
-    Card(cornerRadius = 20.dp, onClick = { open = !open }) {
+    Card(
+        cornerRadius = 20.dp,
+        onClick = {
+            open = !open
+            if (open) onExpand()
+        },
+    ) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(

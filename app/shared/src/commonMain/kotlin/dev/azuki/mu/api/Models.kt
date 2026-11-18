@@ -134,10 +134,13 @@ data class SessionState(
     val queued: List<String>,
 )
 
+data class Resume(val epoch: Long, val blocks: Int)
+
 // A reset clears everything but the first `keep` blocks of the transcript; the
 // rest of it then arrives as ordinary commits.
 sealed interface SessionUpdate {
     data class Reset(
+        val epoch: Long,
         val keep: Int,
         val cwd: String,
         val state: SessionState,

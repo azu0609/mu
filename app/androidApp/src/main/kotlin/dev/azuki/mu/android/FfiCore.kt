@@ -18,6 +18,7 @@ import dev.azuki.mu.api.ModelInfo
 import dev.azuki.mu.api.MuException
 import dev.azuki.mu.api.Remote
 import dev.azuki.mu.api.Resolved
+import dev.azuki.mu.api.Resume
 import dev.azuki.mu.api.Sender
 import dev.azuki.mu.api.Session
 import dev.azuki.mu.api.SessionState
@@ -89,21 +90,22 @@ private class FfiRemote(private val remote: dev.azuki.mu.core.Remote) : Remote {
         skill: String?,
     ): String = mapped { remote.createSession(cwd, model.toFfi(), text, skill) }
 
-    override suspend fun openSession(session: String): Session {
+    override suspend fun openSession(session: String, resume: Resume?): Session {
         // None may be dropped: each update builds on the last.
-        val updates = Channel<SessionUpdate>(Channel.UNLIMITED)
+        val batches = Channel<List<SessionUpdate>>(Channel.UNLIMITED)
         val handle = mapped {
             remote.openSession(
                 session,
+                resume?.let { dev.azuki.mu.core.Resume(it.epoch.toULong(), it.blocks.toUInt()) },
                 object : SessionListener {
-                    override fun onUpdate(update: dev.azuki.mu.core.SessionUpdate) {
-                        updates.trySend(update.toModel())
+                    override fun onUpdate(updates: List<dev.azuki.mu.core.SessionUpdate>) {
+                        batches.trySend(updates.map { it.toModel() })
                     }
                 },
             )
         }
         return object : Session {
-            override val updates: Flow<SessionUpdate> = updates.receiveAsFlow()
+            override val updates: Flow<List<SessionUpdate>> = batches.receiveAsFlow()
 
             override suspend fun send(text: String, skill: String?) = mapped {
                 handle.send(text, skill)
@@ -123,7 +125,7 @@ private class FfiRemote(private val remote: dev.azuki.mu.core.Remote) : Remote {
 
             override fun close() {
                 handle.close()
-                updates.close()
+                batches.close()
             }
         }
     }
@@ -296,7 +298,13 @@ private fun dev.azuki.mu.wire.State.toModel() =
 private fun dev.azuki.mu.core.SessionUpdate.toModel(): SessionUpdate =
     when (this) {
         is dev.azuki.mu.core.SessionUpdate.Reset ->
-            SessionUpdate.Reset(keep.toInt(), cwd, state.toModel(), skills.map { it.toModel() })
+            SessionUpdate.Reset(
+                epoch.toLong(),
+                keep.toInt(),
+                cwd,
+                state.toModel(),
+                skills.map { it.toModel() },
+            )
         is dev.azuki.mu.core.SessionUpdate.State -> SessionUpdate.State(state.toModel(), started)
         is dev.azuki.mu.core.SessionUpdate.Committed ->
             SessionUpdate.Committed(blocks.map { it.toModel() })

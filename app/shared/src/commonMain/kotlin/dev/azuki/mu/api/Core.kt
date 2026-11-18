@@ -27,7 +27,7 @@ interface Remote {
     // Starts the session with its first message.
     suspend fun createSession(cwd: String, model: Model, text: String, skill: String?): String
 
-    suspend fun openSession(session: String): Session
+    suspend fun openSession(session: String, resume: Resume?): Session
 
     suspend fun deleteSessions(): Deleted
 
@@ -61,7 +61,7 @@ interface Remote {
 
 interface Session : AutoCloseable {
     // None may be dropped: each update builds on the last.
-    val updates: Flow<SessionUpdate>
+    val updates: Flow<List<SessionUpdate>>
 
     suspend fun send(text: String, skill: String?)
 

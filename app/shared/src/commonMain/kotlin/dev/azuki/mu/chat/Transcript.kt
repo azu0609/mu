@@ -1,102 +1,152 @@
 package dev.azuki.mu.chat
 
+import androidx.compose.runtime.Immutable
 import dev.azuki.mu.api.Block
 import dev.azuki.mu.api.BlockKind
 import dev.azuki.mu.api.Sender
 
-sealed interface Entry {
-    val key: String
+// While a loop runs, each block is a row of its own, in order. Once it finishes, all but its final
+// response folds into one row in their place.
+@Immutable
+sealed interface Row {
+    val at: Int
+    val key: Any
+        get() = at
 
-    data class User(override val key: String, val text: String) : Entry
+    @Immutable data class User(override val at: Int, val text: String) : Row
 
-    data class AgentMessage(override val key: String, val text: String, val from: Sender?) : Entry
+    @Immutable
+    data class AgentMessage(override val at: Int, val text: String, val from: Sender?) : Row
 
-    // All a turn did before its final response, folded behind "Worked for…".
+    @Immutable data class Agent(override val at: Int, val text: String) : Row
+
+    @Immutable data class Thought(override val at: Int, val block: Block) : Row
+
+    @Immutable data class Call(override val at: Int, val block: Block) : Row
+
+    @Immutable
     data class Work(
-        override val key: String,
-        val steps: List<Step>,
+        override val at: Int,
+        val steps: List<Block>,
         val started: Long?,
         val finished: Long?,
-        val ongoing: Boolean,
-    ) : Entry
+    ) : Row {
+        override val key
+            get() = "work.$at"
+    }
 
-    data class Agent(override val key: String, val text: String) : Entry
+    @Immutable
+    data class Working(override val at: Int, val started: Long?) : Row {
+        override val key
+            get() = "working"
+    }
 
-    data class Shell(override val key: String, val block: Block) : Entry
+    @Immutable data class Shell(override val at: Int, val block: Block) : Row
 
-    data class Notice(override val key: String, val block: Block) : Entry
+    @Immutable data class Notice(override val at: Int, val block: Block) : Row
 }
 
-data class Step(val key: String, val block: Block)
+class Transcript {
+    private val blocks = mutableListOf<Block>()
+    private val settled = mutableListOf<Row>()
+    private var last = 0
 
-// Turns the flat transcript into what the chat shows, in the TUI's order: what is committed, the
-// live notice, then what is live. `live` blocks are keyed by the index they get once committed,
-// so the list keeps their items across commits.
-fun entries(blocks: List<Block>, notice: Block?, live: List<Block>, running: Boolean): List<Entry> {
-    val all =
-        blocks.mapIndexed { i, block -> Step("c$i", block) } +
-            listOfNotNull(notice?.let { Step("notice", it) }) +
-            live.mapIndexed { i, block -> Step("c${blocks.size + i}", block) }
-    val entries = mutableListOf<Entry>()
-    var turn = mutableListOf<Step>()
-    var turnKey = "start"
-    var sent: Long? = null
+    val size
+        get() = blocks.size
 
-    fun show(step: Step) {
-        val block = step.block
-        when (block.kind) {
-            BlockKind.Agent ->
-                if (block.text.isNotBlank()) entries += Entry.Agent(step.key, block.text)
-            BlockKind.Shell -> entries += Entry.Shell(step.key, block)
-            BlockKind.Notice,
-            BlockKind.Warning -> entries += Entry.Notice(step.key, block)
-            BlockKind.User,
-            BlockKind.AgentMessage,
-            BlockKind.Thought,
-            BlockKind.Call -> Unit
-        }
+    fun reset(keep: Int) {
+        if (keep >= blocks.size) return
+        blocks.subList(keep, blocks.size).clear()
+        settled.clear()
+        last = 0
+        settle(0)
     }
 
-    fun flush(last: Boolean) {
-        val ongoing = last && running
-        // What came with the message, like its attachments, stays out of the fold.
-        val lead = turn.takeWhile {
-            it.block.kind == BlockKind.Notice || it.block.kind == BlockKind.Warning
-        }
-        val rest = turn.drop(lead.size)
-        val folded =
-            rest.indexOfLast {
-                it.block.kind == BlockKind.Thought || it.block.kind == BlockKind.Call
-            } + 1
-        lead.forEach(::show)
-        if (folded > 0 || ongoing) {
-            val spans = turn.mapNotNull { it.block.span }
-            entries +=
-                Entry.Work(
-                    key = "$turnKey.work",
-                    steps = rest.take(folded),
-                    started = spans.minOfOrNull { it.started } ?: sent,
-                    finished = spans.maxOfOrNull { it.finished },
-                    ongoing = ongoing,
-                )
-        }
-        rest.drop(folded).forEach(::show)
-        turn = mutableListOf()
+    fun commit(committed: List<Block>) {
+        val from = blocks.size
+        blocks += committed
+        settle(from)
     }
 
-    for (step in all) {
-        val block = step.block
-        if (block.kind == BlockKind.User || block.kind == BlockKind.AgentMessage) {
-            flush(last = false)
-            entries +=
-                if (block.kind == BlockKind.User) Entry.User(step.key, block.text)
-                else Entry.AgentMessage(step.key, block.text, block.from)
-            turnKey = step.key
-            sent = step.block.span?.started
-        } else {
-            turn += step
+    fun rows(live: List<Block>, running: Boolean): List<Row> {
+        val joined =
+            object : AbstractList<Block>() {
+                override val size = blocks.size + live.size
+
+                override fun get(index: Int) =
+                    if (index < blocks.size) blocks[index] else live[index - blocks.size]
+            }
+        val all = ArrayList<Row>(settled.size + 8)
+        all += settled
+        turn(joined, last, joined.size, running, all)
+        return all
+    }
+
+    private fun settle(from: Int) {
+        for (i in from until blocks.size) {
+            if (blocks[i].kind.opens && i > last) {
+                turn(blocks, last, i, false, settled)
+                last = i
+            }
         }
     }
-    flush(last = true)
-    return entries
+}
+
+private val BlockKind.opens
+    get() = this == BlockKind.User || this == BlockKind.AgentMessage
+
+private val BlockKind.notice
+    get() = this == BlockKind.Notice || this == BlockKind.Warning
+
+private fun turn(
+    blocks: List<Block>,
+    start: Int,
+    end: Int,
+    running: Boolean,
+    into: MutableList<Row>,
+) {
+    var i = start
+    val opening = blocks.getOrNull(start)?.takeIf { start < end && it.kind.opens }
+    if (opening != null) {
+        into +=
+            if (opening.kind == BlockKind.User) Row.User(i, opening.text)
+            else Row.AgentMessage(i, opening.text, opening.from)
+        i++
+    }
+    if (running) {
+        for (j in i until end) single(blocks[j], j, into)
+        into += Row.Working(end, opening?.span?.started)
+        return
+    }
+    while (i < end && blocks[i].kind.notice) {
+        into += Row.Notice(i, blocks[i])
+        i++
+    }
+    val rest = blocks.subList(i, end)
+    val folded = rest.indexOfLast { it.kind == BlockKind.Thought || it.kind == BlockKind.Call } + 1
+    if (folded > 0) {
+        val steps = rest.subList(0, folded).toList()
+        val spans = steps.mapNotNull { it.span }
+        into +=
+            Row.Work(
+                at = i,
+                steps = steps,
+                started = spans.minOfOrNull { it.started } ?: opening?.span?.started,
+                finished = spans.maxOfOrNull { it.finished },
+            )
+    }
+    for (j in i + folded until end) single(blocks[j], j, into)
+}
+
+private fun single(block: Block, at: Int, into: MutableList<Row>) {
+    when (block.kind) {
+        BlockKind.Agent -> if (block.text.isNotBlank()) into += Row.Agent(at, block.text)
+        BlockKind.Thought -> if (block.text.isNotBlank()) into += Row.Thought(at, block)
+        BlockKind.Call -> into += Row.Call(at, block)
+        BlockKind.Shell -> into += Row.Shell(at, block)
+        BlockKind.Notice,
+        BlockKind.Warning -> into += Row.Notice(at, block)
+        BlockKind.User,
+        BlockKind.AgentMessage -> Unit
+    }
 }

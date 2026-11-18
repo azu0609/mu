@@ -469,9 +469,9 @@ impl Transcript {
     fn dynamic_blocks<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = &'a Block> + 'a {
         app.view
             .live
-            .notice
+            .blocks
             .iter()
-            .chain(app.view.live.blocks.iter())
+            .chain(app.view.live.notice.iter())
             .chain(app.feedback.iter())
             .chain(app.shell.iter().map(|shell| &shell.block))
             .chain(self.pending.iter())

@@ -214,8 +214,8 @@ impl Client {
         Ok(ShellRun { lines: Lines { body, buf: vec![], scanned: 0 } })
     }
 
-    pub async fn subscribe(&self, id: &str) -> Result<Subscription> {
-        self.follow(Feed::Session { id: id.into(), resume: None }).await
+    pub async fn subscribe(&self, id: &str, resume: Option<Resume>) -> Result<Subscription> {
+        self.follow(Feed::Session { id: id.into(), resume }).await
     }
 
     pub async fn watch(&self) -> Result<Subscription<WatchEvent>> {

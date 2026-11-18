@@ -274,7 +274,7 @@ impl Agent {
         match result {
             Ok(mut step) => {
                 if step.usage.cache_miss(inner.session.usage()) {
-                    step.entries.insert(0, Entry::Notice { text: api::CACHE_MISS.into() });
+                    step.entries.push(Entry::Notice { text: api::CACHE_MISS.into() });
                 }
                 let again = !cancelled && (step.again || !inner.queued.is_empty());
                 let (end, status) = match (cancelled, again) {

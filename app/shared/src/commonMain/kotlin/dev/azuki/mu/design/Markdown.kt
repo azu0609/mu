@@ -16,6 +16,7 @@ import com.mikepenz.markdown.compose.Markdown
 import com.mikepenz.markdown.model.DefaultMarkdownColors
 import com.mikepenz.markdown.model.DefaultMarkdownTypography
 import com.mikepenz.markdown.model.markdownAlertColors
+import com.mikepenz.markdown.model.markdownAnimations
 import com.mikepenz.markdown.model.markdownPadding
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -71,6 +72,8 @@ fun Markdown(
             ),
         modifier = modifier.fillMaxWidth(),
         padding = markdownPadding(block = 4.dp),
+        animations = markdownAnimations(animateTextSize = { this }),
+        retainState = true,
         immediate = true,
     )
 }

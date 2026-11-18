@@ -5,6 +5,7 @@ use std::{mem, path::PathBuf};
 pub struct View {
     pub id: String,
     pub cwd: PathBuf,
+    pub epoch: u64,
     pub state: State,
     pub skills: Vec<Skill>,
     pub blocks: Vec<Block>,
@@ -36,6 +37,7 @@ impl View {
                 *self = Self {
                     id: snapshot.id,
                     cwd: snapshot.cwd,
+                    epoch: snapshot.epoch,
                     state: snapshot.state,
                     skills: snapshot.skills,
                     blocks,

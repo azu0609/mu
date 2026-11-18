@@ -135,7 +135,7 @@ class ComposerState(private val mu: Mu, private val scope: CoroutineScope) {
                         is ShellUpdate.Done -> {
                             run.output = update.tool.output
                             run.status = update.tool.status
-                            if (chat != null && chat.blocks.isNotEmpty() && !chat.running) {
+                            if (chat != null && chat.rows.isNotEmpty() && !chat.running) {
                                 try {
                                     chat.appendShell(update.run)
                                     if (this@ComposerState.run === run)
