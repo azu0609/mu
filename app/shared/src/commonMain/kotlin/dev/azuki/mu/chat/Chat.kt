@@ -34,6 +34,8 @@ import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.snapshots.SnapshotStateMap
@@ -48,11 +50,15 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.azuki.mu.Mu
@@ -66,14 +72,12 @@ import dev.azuki.mu.design.Mono
 import dev.azuki.mu.design.SmallIconButton
 import dev.azuki.mu.design.Solar
 import dev.azuki.mu.design.Spinning
-import dev.azuki.mu.design.TopBar
 import dev.azuki.mu.duration
 import dev.azuki.mu.ending
 import kotlin.time.Clock
 import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.Icon
-import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -81,13 +85,37 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 fun Chat(
     mu: Mu,
     chat: ChatState,
-    // How much of the bottom the composer covers.
-    bottom: Dp,
-    // Counts the messages sent, each one bringing the list back to its end.
+    padding: PaddingValues,
     sent: Int,
-    onMenu: () -> Unit,
     onRecall: (index: Int, text: String) -> Unit,
+    onNewSession: (speed: Float) -> Unit,
 ) {
+    val scope = rememberCoroutineScope()
+    val haptics = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    val release by rememberUpdatedState(onNewSession)
+    val pull =
+        remember(chat) {
+            with(density) {
+                PullToNew(
+                    scope,
+                    threshold = 120.dp.toPx(),
+                    travel = 360.dp.toPx(),
+                    speed = 1600.dp.toPx(),
+                    onArmed = { armed ->
+                        if (armed) {
+                            haptics.performHapticFeedback(
+                                HapticFeedbackType.GestureThresholdActivate
+                            )
+                        }
+                    },
+                    onRelease = { speed ->
+                        haptics.performHapticFeedback(HapticFeedbackType.Confirm)
+                        release(speed)
+                    },
+                )
+            }
+        }
     val expanded = remember(chat) { mutableStateMapOf<String, Boolean>() }
     val list = remember(chat) { LazyListState() }
     var follow by remember(chat) { mutableStateOf(true) }
@@ -116,72 +144,77 @@ fun Chat(
         if (fold >= 0) list.requestScrollToItem(fold)
     }
 
-    Scaffold(
-        topBar = {
-            TopBar(
-                title = state?.title?.ifBlank { null } ?: "New Session",
-                subtitle =
-                    when {
-                        !chat.connected ->
-                            if (chat.error != null) "Reconnecting to ${mu.name(chat.host)}…"
-                            else "Connecting…"
+    Box(Modifier.fillMaxSize()) {
+        LazyColumn(
+            state = list,
+            modifier =
+                Modifier.fillMaxSize().nestedScroll(pull).graphicsLayer {
+                    val gone = (pull.flight / pull.travel).coerceIn(0f, 1f)
+                    translationY = -(pull.offset + pull.flight)
+                    alpha = 1f - gone
+                    scaleX = 1f - 0.06f * gone
+                    scaleY = scaleX
+                },
+            contentPadding =
+                PaddingValues(
+                    top = padding.calculateTopPadding() + 8.dp,
+                    bottom = padding.calculateBottomPadding(),
+                    start = 16.dp,
+                    end = 16.dp,
+                ),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            items(rows, key = { it.key }, contentType = { it::class }) { row ->
+                RowView(row, expanded, onExpand) { session ->
+                    mu.open(chat.target.host, session)
+                }
+            }
+            items(feedback, key = { "feedback.${it.id}" }) { NoticeView(it.block) }
+            if (error != null) {
+                item(key = "error") { NoticeView(Block(BlockKind.Warning, error, null, null)) }
+            }
+            itemsIndexed(queued, key = { index, _ -> "queued.$index" }) { index, text ->
+                QueuedBubble(text, onRecall = { onRecall(index, text) })
+            }
+            item(key = "end") { Spacer(Modifier.height(2.dp)) }
+        }
+        PullIndicator(
+            pull,
+            Modifier.align(Alignment.BottomCenter)
+                .padding(bottom = padding.calculateBottomPadding() + 16.dp),
+        )
+        AnimatedVisibility(
+            !follow && behind,
+            Modifier.align(Alignment.BottomCenter)
+                .padding(bottom = padding.calculateBottomPadding() + 12.dp),
+            enter = fadeIn() + scaleIn(),
+            exit = fadeOut() + scaleOut(),
+        ) {
+            CircleButton(Solar.AltArrowDownLinear, "Jump to the end", { follow = true })
+        }
+    }
+}
 
-                        state == null -> ""
-                        else ->
-                            buildString {
-                                append(
-                                    "in ${mu.core.compact(state.uncachedInput)} (${mu.core.compact(state.input)}) / ${
-                                        mu.core.compact(
-                                            state.output
-                                        )
-                                    } out"
-                                )
-                                val context = state.model.context
-                                if (context != null)
-                                    append(" / ${state.contextUsed * 100 / context}% ctx")
-                                else append(" / ${mu.core.compact(state.contextUsed)} ctx")
-                            }
-                    },
-                navigation = { CircleButton(Solar.HamburgerMenuLineDuotone, "Sessions", onMenu) },
-            )
-        }
-    ) { padding ->
-        Box(Modifier.fillMaxSize()) {
-            LazyColumn(
-                state = list,
-                modifier = Modifier.fillMaxSize(),
-                contentPadding =
-                    PaddingValues(
-                        top = padding.calculateTopPadding() + 8.dp,
-                        bottom = bottom,
-                        start = 16.dp,
-                        end = 16.dp,
-                    ),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                items(rows, key = { it.key }, contentType = { it::class }) { row ->
-                    RowView(row, expanded, onExpand) { session ->
-                        mu.open(chat.target.host, session)
-                    }
-                }
-                items(feedback, key = { "feedback.${it.id}" }) { NoticeView(it.block) }
-                if (error != null) {
-                    item(key = "error") { NoticeView(Block(BlockKind.Warning, error, null, null)) }
-                }
-                itemsIndexed(queued, key = { index, _ -> "queued.$index" }) { index, text ->
-                    QueuedBubble(text, onRecall = { onRecall(index, text) })
-                }
-                item(key = "end") { Spacer(Modifier.height(2.dp)) }
+fun ChatState.title() = state?.title?.ifBlank { null } ?: "New Session"
+
+fun ChatState.subtitle(mu: Mu): String {
+    val state = state
+    return when {
+        !connected -> if (error != null) "Reconnecting to ${mu.name(host)}…" else "Connecting…"
+        state == null -> ""
+        else ->
+            buildString {
+                append(
+                    "in ${mu.core.compact(state.uncachedInput)} (${mu.core.compact(state.input)}) / ${
+                        mu.core.compact(
+                            state.output
+                        )
+                    } out"
+                )
+                val context = state.model.context
+                if (context != null) append(" / ${state.contextUsed * 100 / context}% ctx")
+                else append(" / ${mu.core.compact(state.contextUsed)} ctx")
             }
-            AnimatedVisibility(
-                !follow && behind,
-                Modifier.align(Alignment.BottomCenter).padding(bottom = bottom + 12.dp),
-                enter = fadeIn() + scaleIn(),
-                exit = fadeOut() + scaleOut(),
-            ) {
-                CircleButton(Solar.AltArrowDownLinear, "Jump to the end", { follow = true })
-            }
-        }
     }
 }
 
@@ -379,6 +412,7 @@ private fun Step(
         BlockKind.Shell -> ShellCard(block, onExpand)
         BlockKind.Notice,
         BlockKind.Warning -> NoticeView(block)
+
         BlockKind.User,
         BlockKind.AgentMessage -> Unit
     }

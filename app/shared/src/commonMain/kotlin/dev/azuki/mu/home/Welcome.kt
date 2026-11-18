@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -23,7 +22,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.azuki.mu.Mu
 import dev.azuki.mu.baseName
-import dev.azuki.mu.design.CircleButton
 import dev.azuki.mu.design.Dropdown
 import dev.azuki.mu.design.Floating
 import dev.azuki.mu.design.Mono
@@ -41,7 +39,6 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 @Composable
 fun Welcome(
     mu: Mu,
-    onMenu: () -> Unit,
     onAddHost: () -> Unit,
     onPickProject: () -> Unit,
 ) {
@@ -49,12 +46,6 @@ fun Welcome(
     val cwd = mu.draft.directory
 
     Box(Modifier.fillMaxSize()) {
-        CircleButton(
-            Solar.HamburgerMenuLineDuotone,
-            "Sessions",
-            onMenu,
-            Modifier.statusBarsPadding().padding(start = 16.dp, top = 8.dp),
-        )
         Column(Modifier.align(Alignment.CenterStart).padding(horizontal = 28.dp)) {
             Text("嗨!", style = MiuixTheme.textStyles.title1, fontWeight = FontWeight.Bold)
             Text(

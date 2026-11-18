@@ -66,7 +66,36 @@ fun TopBar(
 ) {
     val scrim = Modifier.scrim()
     if (collapsing != null) LargeBar(title, scrim, collapsing, navigation, actions)
-    else SmallBar(title, subtitle, scrim, navigation, actions)
+    else SmallBar({ Heading(title, subtitle) }, scrim, navigation, actions)
+}
+
+@Composable
+fun TopBar(
+    heading: @Composable () -> Unit,
+    navigation: @Composable () -> Unit = {},
+    actions: @Composable RowScope.() -> Unit = {},
+) = SmallBar(heading, Modifier.scrim(), navigation, actions)
+
+@Composable
+fun Heading(title: String, subtitle: String = "") {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            title,
+            fontSize = MiuixTheme.textStyles.title3.fontSize,
+            fontWeight = FontWeight.Medium,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (subtitle.isNotEmpty()) {
+            Text(
+                subtitle,
+                style = MiuixTheme.textStyles.body2,
+                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
 }
 
 @Composable
@@ -101,8 +130,7 @@ fun Modifier.scrim(top: Boolean = true, edgeToEdge: Boolean = false): Modifier {
 // miuix's own small bar centers just the title on the buttons, leaving a subtitle hanging below.
 @Composable
 private fun SmallBar(
-    title: String,
-    subtitle: String,
+    heading: @Composable () -> Unit,
     scrim: Modifier,
     navigation: @Composable () -> Unit,
     actions: @Composable RowScope.() -> Unit,
@@ -111,24 +139,7 @@ private fun SmallBar(
         content = {
             Box { navigation() }
             Row(verticalAlignment = Alignment.CenterVertically, content = actions)
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    title,
-                    fontSize = MiuixTheme.textStyles.title3.fontSize,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (subtitle.isNotEmpty()) {
-                    Text(
-                        subtitle,
-                        style = MiuixTheme.textStyles.body2,
-                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-            }
+            Box { heading() }
         },
         modifier =
             Modifier.fillMaxWidth()
