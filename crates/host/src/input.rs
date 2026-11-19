@@ -44,7 +44,7 @@ const TEXT_LIMIT: u64 = 1024 * 1024;
 const CONTEXT_LIMIT: usize = 4 * 1024 * 1024;
 const IMAGE_COUNT_LIMIT: usize = 8;
 
-pub fn text_content(bytes: Vec<u8>) -> Result<String> {
+fn text_content(bytes: Vec<u8>) -> Result<String> {
     if bytes.len() as u64 > TEXT_LIMIT {
         return Err("Text file exceeds 1 MiB".into());
     }

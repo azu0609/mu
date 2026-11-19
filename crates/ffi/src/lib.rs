@@ -299,7 +299,7 @@ impl Remote {
     }
 
     pub async fn upload(&self, name: String, data: Vec<u8>) -> Result<PathBuf, MuError> {
-        self.on(|client| async move { client.upload(&name, &data).await }).await
+        self.on(|client| async move { client.upload(&name, data).await }).await
     }
 
     pub async fn shell(

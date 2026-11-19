@@ -31,8 +31,6 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-// The host takes calls up to 4 MiB, which base64 leaves 3 of.
-private const val UPLOAD_LIMIT = 3 * 1024 * 1024
 private const val IMAGE_EDGE = 2048
 private val SENDABLE_IMAGES = setOf("image/png", "image/jpeg", "image/gif", "image/webp")
 
@@ -110,21 +108,18 @@ class AndroidPlatform(private val activity: ComponentActivity) : Platform {
         val bytes =
             resolver.openInputStream(uri)?.use { it.readBytes() }
                 ?: throw MuException("Cannot read $name")
-        if (
-            type.startsWith("image/") && (bytes.size > UPLOAD_LIMIT / 2 || type !in SENDABLE_IMAGES)
-        ) {
+        if (type.startsWith("image/") && type !in SENDABLE_IMAGES) {
             return Attachment(
                 name.substringBeforeLast('.') + ".jpg",
-                shrink(uri, bytes),
+                toJpeg(uri, bytes),
                 image = true,
             )
         }
-        if (bytes.size > UPLOAD_LIMIT) throw MuException("$name is over 3 MB")
         return Attachment(name, bytes, image = type.startsWith("image/"))
     }
 
-    // Big photos are smaller as a JPEG no larger than the model looks at anyway.
-    private fun shrink(uri: Uri, bytes: ByteArray): ByteArray {
+    // Converted to the most widely readable format, no larger than the model looks at anyway.
+    private fun toJpeg(uri: Uri, bytes: ByteArray): ByteArray {
         val bitmap =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                 ImageDecoder.decodeBitmap(

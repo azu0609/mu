@@ -13,7 +13,7 @@ uniffi::custom_type!(PathBuf, String, {
 });
 
 // Bump on any change an older peer cannot read; peers refuse a mismatch.
-pub const PROTOCOL: u32 = 11;
+pub const PROTOCOL: u32 = 12;
 
 pub trait Call: Serialize + DeserializeOwned {
     const PATH: &'static str;
@@ -499,6 +499,10 @@ impl FromStr for Invite {
     }
 }
 
+// Unlike the calls, its body is the file itself, named by a percent-encoded `?name=`.
+// The reply is the JSON path where the host keeps it, to @mention.
+pub const UPLOAD_PATH: &str = "/upload";
+
 macro_rules! calls {
     ($($name:ident { $($field:ident: $type:ty),* $(,)? } => $path:literal -> $reply:ty;)*) => {$(
         #[derive(Serialize, Deserialize)]
@@ -546,8 +550,6 @@ calls! {
         => "/resolve_mentions" -> Vec<Resolved>;
     // `path` must be an image; the reply is its data as base64.
     ReadImage { path: PathBuf } => "/read_image" -> String;
-    // `data` is base64; the reply is where the host keeps it, to @mention.
-    Upload { name: String, data: String } => "/upload" -> PathBuf;
     Pair { code: String, device: String } => "/pair" -> String;
     CreateInvite {} => "/create_invite" -> Invitation;
     ListDevices {} => "/list_devices" -> Vec<Device>;

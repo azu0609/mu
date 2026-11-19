@@ -113,6 +113,12 @@ pub async fn handle(host: Arc<Host>, peer: Peer, request: Request<Incoming>) -> 
         return failure(e);
     }
     let path = request.uri().path().to_owned();
+    if path == wire::UPLOAD_PATH {
+        return match upload::receive(request).await {
+            Ok(path) => reply(StatusCode::OK, &path),
+            Err(e) => failure(failed(e)),
+        };
+    }
     let body = match Limited::new(request.into_body(), 4 * 1024 * 1024).collect().await {
         Ok(body) => body.to_bytes(),
         Err(e) => return failure(Failure(StatusCode::PAYLOAD_TOO_LARGE, e.to_string())),
@@ -199,9 +205,6 @@ pub async fn handle(host: Arc<Host>, peer: Peer, request: Request<Incoming>) -> 
                 image::load(&call.path).map(|bytes| STANDARD.encode(bytes)).map_err(failed)
             })
             .await
-        }
-        wire::Upload::PATH => {
-            call(host, body, |_, call: wire::Upload| upload::save(&call.name, &call.data).map_err(failed)).await
         }
         wire::SetIcon::PATH => {
             call(host, body, |host, call: wire::SetIcon| host.edit(|profile| profile.set_icon(call.icon))).await

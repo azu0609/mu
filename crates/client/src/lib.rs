@@ -12,6 +12,7 @@ use hyper::{
     header::{self, HeaderValue},
 };
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
+use percent_encoding::{NON_ALPHANUMERIC, utf8_percent_encode};
 use rustls::pki_types::ServerName;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
@@ -204,8 +205,11 @@ impl Client {
         STANDARD.decode(data).map_err(|_| Error::Other("The host sent an image that is not base64".into()))
     }
 
-    pub async fn upload(&self, name: &str, bytes: &[u8]) -> Result<PathBuf> {
-        self.call(Upload { name: name.into(), data: STANDARD.encode(bytes) }).await
+    pub async fn upload(&self, name: &str, data: Vec<u8>) -> Result<PathBuf> {
+        let path = format!("{UPLOAD_PATH}?name={}", utf8_percent_encode(name, NON_ALPHANUMERIC));
+        let sender = &mut self.sender().await?;
+        let body = send(sender, self.0.authorization.as_ref(), &path, data.into(), "application/octet-stream").await?;
+        Ok(serde_json::from_slice(&read(body).await?)?)
     }
 
     pub async fn shell(&self, cwd: &Path, command: String) -> Result<ShellRun> {
@@ -267,10 +271,20 @@ async fn post(
     path: &str,
     body: &impl Serialize,
 ) -> Result<Incoming> {
-    let mut request = Request::new(Full::new(serde_json::to_vec(body)?.into()));
+    send(sender, authorization, path, serde_json::to_vec(body)?.into(), "application/json").await
+}
+
+async fn send(
+    sender: &mut SendRequest<Full<Bytes>>,
+    authorization: Option<&HeaderValue>,
+    path: &str,
+    body: Bytes,
+    content_type: &'static str,
+) -> Result<Incoming> {
+    let mut request = Request::new(Full::new(body));
     *request.method_mut() = hyper::Method::POST;
     *request.uri_mut() = format!("http://localhost{path}").parse().map_err(|_| "Invalid call path")?;
-    request.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    request.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
     if let Some(authorization) = authorization {
         request.headers_mut().insert(header::AUTHORIZATION, authorization.clone());
     }

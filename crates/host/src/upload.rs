@@ -1,25 +1,49 @@
-use crate::{Result, config, home, image, input};
-use base64::{Engine, engine::general_purpose::STANDARD};
+use crate::{Result, config, home};
+use http_body_util::BodyExt;
+use hyper::{Request, body::Incoming};
+use percent_encoding::percent_decode_str;
 use std::{
     fs,
-    io::{ErrorKind, Write},
+    io::ErrorKind,
     os::unix::fs::{DirBuilderExt, OpenOptionsExt},
     path::{Path, PathBuf},
     time::{Duration, SystemTime},
 };
+use tokio::io::AsyncWriteExt;
 
 // Messages snapshot what they mention, so an upload only has to outlive the send.
 const KEEP: Duration = Duration::from_secs(24 * 60 * 60);
 
-pub fn save(name: &str, data: &str) -> Result<PathBuf> {
-    let bytes = STANDARD.decode(data).map_err(|_| "An upload's data must be base64")?;
-    if image::mime(&bytes).is_some() {
-        if bytes.len() as u64 > image::LIMIT {
-            return Err(format!("{name}: Image exceeds 20 MiB").into());
+pub async fn receive(request: Request<Incoming>) -> Result<PathBuf> {
+    let name = request
+        .uri()
+        .query()
+        .and_then(|query| query.split('&').find_map(|pair| pair.strip_prefix("name=")))
+        .map(|name| percent_decode_str(name).decode_utf8_lossy().into_owned())
+        .unwrap_or_default();
+    let (path, file) = tokio::task::spawn_blocking(move || create(&name)).await??;
+    let mut file = tokio::fs::File::from_std(file);
+    let mut body = request.into_body();
+    let written: Result<()> = async {
+        while let Some(frame) = body.frame().await {
+            if let Ok(data) = frame?.into_data() {
+                file.write_all(&data).await?;
+            }
         }
-    } else {
-        input::text_content(bytes.clone()).map_err(|e| format!("{name}: {e}"))?;
+        Ok(file.sync_all().await?)
     }
+    .await;
+    if let Err(e) = written {
+        let _ = tokio::fs::remove_file(&path).await;
+        return Err(e);
+    }
+    Ok(match path.strip_prefix(home()) {
+        Ok(rest) => Path::new("~").join(rest),
+        Err(_) => path,
+    })
+}
+
+fn create(name: &str) -> Result<(PathBuf, fs::File)> {
     let name: String =
         name.chars().map(|c| if c.is_ascii_alphanumeric() || "._-".contains(c) { c } else { '_' }).take(64).collect();
     let name = match name.trim_start_matches('.') {
@@ -37,16 +61,10 @@ pub fn save(name: &str, data: &str) -> Result<PathBuf> {
     loop {
         n += 1;
         let path = dir.join(if n == 1 { name.to_string() } else { format!("{stem}-{n}{extension}") });
-        let mut file = match fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path) {
+        match fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path) {
             Err(e) if e.kind() == ErrorKind::AlreadyExists => continue,
-            file => file?,
-        };
-        file.write_all(&bytes)?;
-        file.sync_all()?;
-        return Ok(match path.strip_prefix(home()) {
-            Ok(rest) => Path::new("~").join(rest),
-            Err(_) => path,
-        });
+            file => return Ok((path, file?)),
+        }
     }
 }
 
