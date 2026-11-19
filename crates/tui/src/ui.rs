@@ -506,11 +506,11 @@ fn placeholder(app: &App) -> &'static str {
     if app.shell.is_some() {
         "Esc stops the command"
     } else if app.view.running() {
-        "Queue a message · Esc to interrupt"
+        "Steer · Esc to interrupt"
     } else if app.model().is_none() {
         "Pick a model with /model to start"
     } else {
-        "Message mu · / commands & skills · @ files · ! run for the agent, !! just for you · Ctrl+G editor"
+        "/ commands & skills · @ files · ! run for the agent, !! just for you · Ctrl+G editor"
     }
 }
 
