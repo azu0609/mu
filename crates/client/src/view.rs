@@ -14,8 +14,8 @@ pub struct View {
 }
 
 pub struct PathNode {
-    pub id: usize,
-    pub siblings: Vec<usize>,
+    pub id: u64,
+    pub siblings: Vec<u64>,
     pub blocks: Range<usize>,
 }
 
@@ -39,10 +39,11 @@ impl View {
     pub fn apply(&mut self, event: Event) -> Change {
         match event {
             Event::Snapshot(snapshot) => {
+                let keep = snapshot.keep as usize;
                 let mut blocks = mem::take(&mut self.blocks);
-                blocks.truncate(snapshot.keep);
+                blocks.truncate(keep);
                 let mut path = mem::take(&mut self.path);
-                path.retain(|node| node.blocks.start < snapshot.keep);
+                path.retain(|node| node.blocks.start < keep);
                 *self = Self {
                     id: snapshot.id,
                     cwd: snapshot.cwd,
@@ -53,7 +54,7 @@ impl View {
                     path,
                     live: Live::default(),
                 };
-                Change::Reset { keep: snapshot.keep }
+                Change::Reset { keep }
             }
             Event::State(state) => {
                 let was_running = self.running();

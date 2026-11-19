@@ -2,10 +2,10 @@
 // touching its state.
 use mu_client::{
     AppendShell, Block, Call, Change, Checkout, Client, CompleteMention, CreateSession, DeleteSessions, DeleteSnippet,
-    Deleted, Directory, Edit, Endpoint, GetTree, HostView, Invite, Kind, ListDirectory, ListModels, ListSkills,
-    MarkRead, Mention, Model, ModelInfo, Profile, RecallQueued, ResolveMentions, Resolved, Resume as Resumed,
-    SaveSnippet, SendMessage, SessionSummary, SetDescription, SetIcon, SetModel, ShellEvent, Skill, State, Stop,
-    SwitchBranch, ToolOutput, ToolStatus, Touched, Update, View, Written,
+    Deleted, Directory, Edit, Endpoint, GetTree, HostView, Invite, ListDirectory, ListModels, ListSkills, MarkRead,
+    Mention, Model, ModelInfo, Node, Profile, RecallQueued, ResolveMentions, Resolved, Resume, SaveSnippet,
+    SendMessage, SessionSummary, SetDescription, SetIcon, SetModel, ShellEvent, Skill, State, Stop, SwitchBranch,
+    ToolOutput, ToolStatus, Touched, TreeEntry, Update, View, Written,
     hosts::{Hosts, Paired},
 };
 use std::{
@@ -13,9 +13,7 @@ use std::{
     fmt,
     future::Future,
     path::PathBuf,
-    pin::pin,
     sync::{Arc, Mutex},
-    task::{Context, Poll, Waker},
 };
 use tokio::{
     runtime::{Handle, Runtime},
@@ -284,7 +282,7 @@ impl Remote {
         &self,
         cwd: PathBuf,
         text: String,
-        cursor: u32,
+        cursor: u64,
         refresh: bool,
     ) -> Result<Option<Mention>, MuError> {
         self.call(CompleteMention { cwd, text, cursor, refresh }).await
@@ -339,7 +337,6 @@ impl Remote {
         listener: Arc<dyn SessionListener>,
     ) -> Result<Arc<Session>, MuError> {
         let client = self.client()?;
-        let resume = resume.map(|resume| Resumed { epoch: resume.epoch, blocks: resume.blocks as usize });
         let mut subscription = client.subscribe(&session, resume);
         let task = self.shared.runtime.spawn(async move {
             let mut view = View::default();
@@ -356,7 +353,7 @@ impl Remote {
                         }
                         Update::Lost(error) => batch.push(SessionUpdate::Lost { reason: error.into() }),
                     }
-                    next = ready(subscription.next());
+                    next = subscription.try_next();
                 }
                 if !batch.is_empty() {
                     listener.on_update(batch);
@@ -364,13 +361,6 @@ impl Remote {
             }
         });
         Ok(Arc::new(Session { id: session, client, runtime: self.shared.runtime.clone(), _task: Task(task) }))
-    }
-}
-
-fn ready<F: Future>(future: F) -> Option<F::Output> {
-    match pin!(future).poll(&mut Context::from_waker(Waker::noop())) {
-        Poll::Ready(output) => Some(output),
-        Poll::Pending => None,
     }
 }
 
@@ -397,7 +387,7 @@ fn translate(view: &View, change: Change) -> Option<SessionUpdate> {
     Some(match change {
         Change::Reset { keep } => SessionUpdate::Reset {
             epoch: view.epoch,
-            keep: keep as u32,
+            keep: keep as u64,
             cwd: view.cwd.clone(),
             state: view.state.clone(),
             skills: view.skills.clone(),
@@ -407,14 +397,14 @@ fn translate(view: &View, change: Change) -> Option<SessionUpdate> {
             nodes: view.path[from..]
                 .iter()
                 .map(|node| Node {
-                    id: node.id as u64,
-                    siblings: node.siblings.iter().map(|&id| id as u64).collect(),
+                    id: node.id,
+                    siblings: node.siblings.clone(),
                     blocks: view.blocks[node.blocks.clone()].to_vec(),
                 })
                 .collect(),
         },
         Change::Live(Touched::Block(index)) => {
-            SessionUpdate::Live { index: index as u32, block: view.live.blocks.get(index)?.clone() }
+            SessionUpdate::Live { index: index as u64, block: view.live.blocks.get(index)?.clone() }
         }
         Change::Live(Touched::Notice) => SessionUpdate::LiveNotice { block: view.live.notice.clone()? },
         Change::Feedback(block) => SessionUpdate::Feedback { block },
@@ -463,34 +453,24 @@ impl Session {
     }
 
     // False when the message at `index` is no longer `text`, having been sent.
-    pub async fn recall_queued(&self, index: u32, text: String) -> Result<bool, MuError> {
-        self.call(RecallQueued { session_id: self.id.clone(), index: index as usize, text }).await
+    pub async fn recall_queued(&self, index: u64, text: String) -> Result<bool, MuError> {
+        self.call(RecallQueued { session_id: self.id.clone(), index, text }).await
     }
 
     pub async fn tree(&self) -> Result<Vec<TreeEntry>, MuError> {
-        let entries = self.call(GetTree { session_id: self.id.clone() }).await?;
-        Ok(entries
-            .into_iter()
-            .map(|entry| TreeEntry {
-                node: entry.node as u64,
-                parent: entry.parent.map(|parent| parent as u64),
-                kind: entry.kind,
-                text: entry.text,
-                current: entry.current,
-            })
-            .collect())
+        self.call(GetTree { session_id: self.id.clone() }).await
     }
 
     pub async fn checkout(&self, node: Option<u64>) -> Result<(), MuError> {
-        self.call(Checkout { session_id: self.id.clone(), node: node.map(|node| node as usize) }).await
+        self.call(Checkout { session_id: self.id.clone(), node }).await
     }
 
     pub async fn edit(&self, node: u64) -> Result<String, MuError> {
-        self.call(Edit { session_id: self.id.clone(), node: node as usize }).await
+        self.call(Edit { session_id: self.id.clone(), node }).await
     }
 
     pub async fn switch_branch(&self, node: u64) -> Result<(), MuError> {
-        self.call(SwitchBranch { session_id: self.id.clone(), node: node as usize }).await
+        self.call(SwitchBranch { session_id: self.id.clone(), node }).await
     }
 }
 
@@ -536,37 +516,14 @@ pub trait SessionListener: Send + Sync {
     fn on_update(&self, updates: Vec<SessionUpdate>);
 }
 
-#[derive(uniffi::Record)]
-pub struct Node {
-    pub id: u64,
-    // Itself included, oldest first.
-    pub siblings: Vec<u64>,
-    pub blocks: Vec<Block>,
-}
-
-#[derive(uniffi::Record)]
-pub struct TreeEntry {
-    pub node: u64,
-    pub parent: Option<u64>,
-    pub kind: Option<Kind>,
-    pub text: String,
-    pub current: bool,
-}
-
-#[derive(uniffi::Record)]
-pub struct Resume {
-    pub epoch: u64,
-    pub blocks: u32,
-}
-
 // A reset clears everything but the first `keep` blocks of the transcript; the
 // rest of it then arrives as ordinary commits.
 #[derive(uniffi::Enum)]
 pub enum SessionUpdate {
-    Reset { epoch: u64, keep: u32, cwd: PathBuf, state: State, skills: Vec<Skill> },
+    Reset { epoch: u64, keep: u64, cwd: PathBuf, state: State, skills: Vec<Skill> },
     State { state: State, started: bool },
     Committed { nodes: Vec<Node> },
-    Live { index: u32, block: Block },
+    Live { index: u64, block: Block },
     LiveNotice { block: Block },
     Feedback { block: Block },
     Lost { reason: Reason },

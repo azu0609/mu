@@ -76,13 +76,14 @@ impl Inner {
     }
 
     fn node(&self, (id, siblings): (usize, Vec<usize>)) -> Node {
-        Node { id, siblings, blocks: self.session.node(id).blocks.clone() }
+        let blocks = self.session.node(id).blocks.clone();
+        Node { id: id as u64, siblings: siblings.into_iter().map(|id| id as u64).collect(), blocks }
     }
 
     fn snapshot(&self, resume: Option<Resume>) -> Vec<Event> {
         let epoch = self.session.epoch();
         let branches = self.session.branches();
-        let keep = resume.filter(|resume| resume.epoch == epoch).map_or(0, |resume| resume.blocks);
+        let keep = resume.filter(|resume| resume.epoch == epoch).map_or(0, |resume| resume.blocks as usize);
         let (mut count, mut start) = (0, 0);
         while count < branches.len() && start < keep {
             start += self.session.node(branches[count].0).blocks.len();
@@ -95,7 +96,7 @@ impl Inner {
             state: self.state(),
             skills: self.skills.iter().map(Into::into).collect(),
             epoch,
-            keep,
+            keep: keep as u64,
         }))];
         if count < branches.len() {
             events.push(Event::Commit {
@@ -373,7 +374,8 @@ impl Agent {
     }
 
     // Only while the message at `index` is still `text`: the queue may have been sent, and refilled, since the client saw it.
-    pub fn recall(&self, index: usize, text: &str) -> bool {
+    pub fn recall(&self, index: u64, text: &str) -> bool {
+        let Ok(index) = usize::try_from(index) else { return false };
         let mut inner = self.inner();
         if inner.queued.get(index).is_none_or(|message| message.text != text) {
             return false;
@@ -405,8 +407,8 @@ impl Agent {
             .tree()
             .into_iter()
             .map(|(node, label)| TreeEntry {
-                node,
-                parent: inner.session.node(node).parent,
+                node: node as u64,
+                parent: inner.session.node(node).parent.map(|parent| parent as u64),
                 kind: label.map(|block| block.kind),
                 text: label
                     .and_then(|block| block.text.lines().find(|line| !line.trim().is_empty()))
@@ -420,17 +422,15 @@ impl Agent {
             .collect()
     }
 
-    pub fn checkout(&self, node: Option<usize>) -> Result<()> {
+    pub fn checkout(&self, node: Option<u64>) -> Result<()> {
         let mut inner = self.inner();
-        if node.is_some_and(|i| !inner.session.is_node(i)) {
-            return Err("Invalid session node".into());
-        }
+        let node = node.map(|node| inner.session.node_index(node).ok_or("Invalid session node")).transpose()?;
         inner.move_to(node)
     }
 
-    pub fn edit(&self, node: usize) -> Result<String> {
+    pub fn edit(&self, node: u64) -> Result<String> {
         let mut inner = self.inner();
-        let user = inner.session.is_node(node).then(|| inner.session.node(node)).and_then(|node| {
+        let user = inner.session.node_index(node).map(|node| inner.session.node(node)).and_then(|node| {
             Some((node.parent, node.blocks.iter().find(|block| block.kind == Kind::User)?.text.clone()))
         });
         let (parent, text) = user.ok_or("Not a user message")?;
@@ -438,11 +438,9 @@ impl Agent {
         Ok(text)
     }
 
-    pub fn switch_branch(&self, node: usize) -> Result<()> {
+    pub fn switch_branch(&self, node: u64) -> Result<()> {
         let mut inner = self.inner();
-        if !inner.session.is_node(node) {
-            return Err("Invalid session node".into());
-        }
+        let node = inner.session.node_index(node).ok_or("Invalid session node")?;
         let latest = inner.session.latest(node);
         inner.move_to(Some(latest))
     }

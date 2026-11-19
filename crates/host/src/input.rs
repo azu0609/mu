@@ -77,7 +77,7 @@ pub fn resolve(text: &str, cwd: &Path, skill: Option<&Skill>) -> Result<Vec<Reso
                 path,
                 file: file.clone(),
                 kind: Attached::Text {
-                    lines: text.lines().count() as u32,
+                    lines: text.lines().count() as u64,
                     head: text.lines().take(8).map(|line| line.chars().take(40).collect::<String>() + "\n").collect(),
                 },
             },
@@ -178,7 +178,7 @@ fn file_entry(name: String) -> MentionEntry {
     MentionEntry { text: format!("@{token}{}", if directory { "" } else { " " }), label: name }
 }
 
-pub fn mention_at(text: &str, cursor: u32) -> Option<(Range<u32>, String)> {
+pub fn mention_at(text: &str, cursor: u64) -> Option<(Range<u64>, String)> {
     let prefix: String = text.chars().take(cursor as usize).collect();
     let mention = mentions(&prefix).pop()?;
     if mention.end != cursor || (mention.quoted && mention.closed) {
@@ -192,7 +192,7 @@ pub fn is_path(query: &str) -> bool {
     ["/", "~/", "./", "../"].iter().any(|p| query.starts_with(p))
 }
 
-pub fn complete(range: Range<u32>, query: String, cwd: &Path, files: &[String]) -> wire::Mention {
+pub fn complete(range: Range<u64>, query: String, cwd: &Path, files: &[String]) -> wire::Mention {
     let mut matches = if is_path(&query) {
         let (parent, leaf) = query.rsplit_once('/').unwrap_or(("", &query));
         let parent = format!("{parent}/");

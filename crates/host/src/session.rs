@@ -232,8 +232,9 @@ impl Session {
             .flatten()
     }
 
-    pub fn is_node(&self, i: usize) -> bool {
-        matches!(self.records.get(i), Some(Record::Node(_)))
+    pub fn node_index(&self, id: u64) -> Option<usize> {
+        let i = usize::try_from(id).ok()?;
+        matches!(self.records.get(i), Some(Record::Node(_))).then_some(i)
     }
 
     pub fn persisted(&self) -> bool {

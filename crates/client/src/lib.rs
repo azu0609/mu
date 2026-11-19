@@ -20,7 +20,7 @@ use std::{
     marker::PhantomData,
     os::unix::net::UnixStream as StdStream,
     path::{Path, PathBuf},
-    pin::Pin,
+    pin::{Pin, pin},
     sync::{
         self, Arc,
         atomic::{AtomicBool, Ordering},
@@ -511,12 +511,13 @@ pub struct Subscription<T = Event> {
     feed: Feed,
     lines: Option<Lines>,
     failures: u32,
+    unpaired: bool,
     event: PhantomData<T>,
 }
 
 impl<T: DeserializeOwned> Subscription<T> {
     fn new(client: &Client, feed: Feed) -> Self {
-        Self { client: client.clone(), feed, lines: None, failures: 0, event: PhantomData }
+        Self { client: client.clone(), feed, lines: None, failures: 0, unpaired: false, event: PhantomData }
     }
 
     pub async fn open(&mut self) -> Result<()> {
@@ -526,12 +527,17 @@ impl<T: DeserializeOwned> Subscription<T> {
         Ok(())
     }
 
+    // Only pairing again lets an unpaired device back in, which makes a new subscription.
     async fn pull(&mut self) -> Update<T> {
+        if self.unpaired {
+            return std::future::pending().await;
+        }
         if self.lines.is_none() {
             if self.failures > 0 {
                 self.client.settle(backoff(self.failures)).await;
             }
             if let Err(error) = self.open().await {
+                self.unpaired = matches!(error, Error::Unpaired(_));
                 self.failures += 1;
                 return Update::Lost(error);
             }
@@ -554,18 +560,32 @@ impl<T: DeserializeOwned> Subscription<T> {
 impl Subscription<Event> {
     pub async fn next(&mut self) -> Update {
         let update = self.pull().await;
+        self.track(&update);
+        update
+    }
+
+    // What already arrived on the open stream; it never waits, nor reconnects.
+    pub fn try_next(&mut self) -> Option<Update> {
+        self.lines.as_ref()?;
+        let Poll::Ready(update) = pin!(self.pull()).poll(&mut Context::from_waker(Waker::noop())) else {
+            return None;
+        };
+        self.track(&update);
+        Some(update)
+    }
+
+    fn track(&mut self, update: &Update) {
         if let (Update::Event(event), Feed::Session { resume, .. }) = (&update, &mut self.feed) {
             match event {
                 Event::Snapshot(snapshot) => *resume = Some(Resume { epoch: snapshot.epoch, blocks: snapshot.keep }),
                 Event::Commit { nodes } => {
                     if let Some(resume) = resume {
-                        resume.blocks += nodes.iter().map(|node| node.blocks.len()).sum::<usize>();
+                        resume.blocks += nodes.iter().map(|node| node.blocks.len() as u64).sum::<u64>();
                     }
                 }
                 _ => (),
             }
         }
-        update
     }
 }
 

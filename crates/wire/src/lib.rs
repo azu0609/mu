@@ -184,21 +184,23 @@ pub struct Snapshot {
     pub state: State,
     pub skills: Vec<Skill>,
     pub epoch: u64,
-    pub keep: usize,
+    pub keep: u64,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Node {
-    pub id: usize,
+    pub id: u64,
     // Itself included, oldest first.
-    pub siblings: Vec<usize>,
+    pub siblings: Vec<u64>,
     pub blocks: Vec<Block>,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Resume {
     pub epoch: u64,
-    pub blocks: usize,
+    pub blocks: u64,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -350,9 +352,10 @@ pub enum EntryKind {
 }
 
 #[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct TreeEntry {
-    pub node: usize,
-    pub parent: Option<usize>,
+    pub node: u64,
+    pub parent: Option<u64>,
     pub kind: Option<Kind>,
     pub text: String,
     pub current: bool,
@@ -362,8 +365,8 @@ pub struct TreeEntry {
 #[derive(Serialize, Deserialize)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Mention {
-    pub start: u32,
-    pub end: u32,
+    pub start: u64,
+    pub end: u64,
     pub query: String,
     pub exact_file: bool,
     pub entries: Vec<MentionEntry>,
@@ -379,8 +382,8 @@ pub struct MentionEntry {
 // An @mention as written in a message, `path` unescaped. Unclosed ones are still being typed.
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 pub struct Written {
-    pub start: u32,
-    pub end: u32,
+    pub start: u64,
+    pub end: u64,
     pub path: String,
     pub quoted: bool,
     pub closed: bool,
@@ -419,7 +422,7 @@ pub fn mentions(text: &str) -> Vec<Written> {
             path.push(chars[i]);
             i += 1;
         }
-        found.push(Written { start: start as u32, end: i as u32, path, quoted, closed });
+        found.push(Written { start: start as u64, end: i as u64, path, quoted, closed });
     }
     found
 }
@@ -437,7 +440,7 @@ pub struct Resolved {
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum Attached {
     Image,
-    Text { lines: u32, head: String },
+    Text { lines: u64, head: String },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -527,15 +530,15 @@ calls! {
     Stop { session_id: String, children: bool } => "/stop" -> ();
     MarkRead { session_id: String } => "/mark_read" -> ();
     // False when the message at `index` is no longer `text`, having been sent.
-    RecallQueued { session_id: String, index: usize, text: String } => "/recall_queued" -> bool;
+    RecallQueued { session_id: String, index: u64, text: String } => "/recall_queued" -> bool;
     SetModel { session_id: String, model: Model } => "/set_model" -> ();
     ListModels {} => "/list_models" -> Vec<ModelInfo>;
     GetTree { session_id: String } => "/get_tree" -> Vec<TreeEntry>;
-    Checkout { session_id: String, node: Option<usize> } => "/checkout" -> ();
+    Checkout { session_id: String, node: Option<u64> } => "/checkout" -> ();
     // Back to before the user message `node`, whose text it answers.
-    Edit { session_id: String, node: usize } => "/edit" -> String;
-    SwitchBranch { session_id: String, node: usize } => "/switch_branch" -> ();
-    CompleteMention { cwd: PathBuf, text: String, cursor: u32, refresh: bool }
+    Edit { session_id: String, node: u64 } => "/edit" -> String;
+    SwitchBranch { session_id: String, node: u64 } => "/switch_branch" -> ();
+    CompleteMention { cwd: PathBuf, text: String, cursor: u64, refresh: bool }
         => "/complete_mention" -> Option<Mention>;
     AppendShell { session_id: String, run: String } => "/append_shell" -> ();
     DeleteSessions {} => "/delete_sessions" -> Deleted;

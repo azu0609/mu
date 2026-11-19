@@ -98,7 +98,7 @@ private class FfiRemote(private val remote: dev.azuki.mu.core.Remote) : Remote {
         val handle = mapped {
             remote.openSession(
                 session,
-                resume?.let { dev.azuki.mu.core.Resume(it.epoch.toULong(), it.blocks.toUInt()) },
+                resume?.let { dev.azuki.mu.wire.Resume(it.epoch.toULong(), it.blocks.toULong()) },
                 object : SessionListener {
                     override fun onUpdate(updates: List<dev.azuki.mu.core.SessionUpdate>) {
                         batches.trySend(updates.map { it.toModel() })
@@ -122,7 +122,7 @@ private class FfiRemote(private val remote: dev.azuki.mu.core.Remote) : Remote {
             override suspend fun markRead() = mapped { handle.markRead() }
 
             override suspend fun recallQueued(index: Int, text: String) = mapped {
-                handle.recallQueued(index.toUInt(), text)
+                handle.recallQueued(index.toULong(), text)
             }
 
             override suspend fun tree() = mapped {
@@ -202,7 +202,7 @@ private class FfiRemote(private val remote: dev.azuki.mu.core.Remote) : Remote {
         cursor: Int,
         refresh: Boolean,
     ): Mention? = mapped {
-        remote.completeMention(cwd, text, cursor.toUInt(), refresh)?.let { mention ->
+        remote.completeMention(cwd, text, cursor.toULong(), refresh)?.let { mention ->
             Mention(
                 mention.start.toInt(),
                 mention.end.toInt(),

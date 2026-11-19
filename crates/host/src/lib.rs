@@ -27,6 +27,7 @@ use std::{
     env, fs,
     io::Read,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -42,7 +43,9 @@ fn now() -> u64 {
 }
 
 fn unique_id() -> String {
-    format!("{}-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos(), std::process::id())
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+    format!("{nanos}-{}-{}", std::process::id(), SEQ.fetch_add(1, Ordering::Relaxed))
 }
 
 fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>> {

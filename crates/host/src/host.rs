@@ -203,9 +203,12 @@ impl Host {
         agent::check(&model).map_err(failed)?;
         let from = call.parent.as_deref().map(|id| self.sender(id)).transpose()?;
         let agent = Agent::new(call.cwd, call.parent, model, self.changed(), self.bridge.clone());
-        agent.send(call.text, call.skill.as_deref(), from).map_err(failed)?;
         let id = agent.id();
-        self.agents.lock().unwrap().insert(id.clone(), agent);
+        self.agents.lock().unwrap().insert(id.clone(), agent.clone());
+        if let Err(e) = agent.send(call.text, call.skill.as_deref(), from) {
+            self.agents.lock().unwrap().remove(&id);
+            return Err(failed(e));
+        }
         Ok(id)
     }
 

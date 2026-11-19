@@ -26,8 +26,8 @@ use std::{
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 enum Target {
-    Node(Option<usize>),
-    Edit(usize),
+    Node(Option<u64>),
+    Edit(u64),
     Session(String),
 }
 
@@ -41,12 +41,12 @@ const SESSIONS: &str = "resume session";
 
 fn tree(entries: &[TreeEntry]) -> Vec<(Target, String)> {
     const DEPTH: usize = 16;
-    let mut siblings = HashMap::<Option<usize>, usize>::new();
+    let mut siblings = HashMap::<Option<u64>, usize>::new();
     for entry in entries {
         *siblings.entry(entry.parent).or_default() += 1;
     }
-    let mut seen = HashMap::<Option<usize>, usize>::new();
-    let mut prefixes = HashMap::<Option<usize>, (String, usize)>::new();
+    let mut seen = HashMap::<Option<u64>, usize>::new();
+    let mut prefixes = HashMap::<Option<u64>, (String, usize)>::new();
     let current = entries.iter().any(|entry| entry.current);
     let mut lines = vec![(Target::Node(None), format!("{}root", if current { "  " } else { "● " }))];
     for entry in entries {
@@ -421,7 +421,7 @@ impl App {
         };
         let recall = RecallQueued {
             session_id: self.view.id.clone(),
-            index: self.view.state.queued.len() - 1,
+            index: self.view.state.queued.len() as u64 - 1,
             text: text.clone(),
         };
         match self.remote.call(recall) {
@@ -569,7 +569,7 @@ impl App {
         let call = CompleteMention {
             cwd: self.view.cwd.clone(),
             text: text.clone(),
-            cursor: cursor as u32,
+            cursor: cursor as u64,
             refresh: !self.mention.open,
         };
         self.remote.complete(self.mention.seq, call);
