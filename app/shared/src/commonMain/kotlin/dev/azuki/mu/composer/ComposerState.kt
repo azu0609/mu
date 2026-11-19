@@ -85,6 +85,11 @@ class ComposerState(private val mu: Mu, private val scope: CoroutineScope) {
     // False when there is no host to send to yet.
     fun submit(submission: Submission): Boolean {
         val host = mu.destination.host ?: return false
+        if (!mu.destination.ready) {
+            if (submission is Submission.Prompt) restore(submission.text)
+            mu.toast("Not connected to ${mu.name(host)}")
+            return true
+        }
         when (submission) {
             is Submission.Command -> runShell(host, submission.command)
             is Submission.Prompt -> scope.launch { send(host, submission) }

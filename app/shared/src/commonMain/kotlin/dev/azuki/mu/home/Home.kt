@@ -44,9 +44,13 @@ fun Home(
     if (chat != null) {
         LaunchedEffect(chat) { lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { chat.run() } }
     } else {
-        LaunchedEffect(mu.draft.host, mu.draft.directory) { mu.draft.loadSkills() }
+        LaunchedEffect(mu.draft.host, mu.draft.directory, mu.draft.ready) {
+            if (mu.draft.ready) mu.draft.loadSkills()
+        }
     }
-    LaunchedEffect(mu.destination.host) { mu.destination.host?.let { mu.loadModels(it) } }
+    val host = mu.destination.host
+    val online = mu.online(host)
+    LaunchedEffect(host, online) { if (host != null && online) mu.loadModels(host) }
 
     val blur by animateDpAsState(if (composer.dictating || composer.stopMenu.open) 24.dp else 0.dp)
     Box(Modifier.fillMaxSize()) {
@@ -80,7 +84,7 @@ fun Home(
                 composer,
                 onMenu = drawer::open,
                 onAddHost = { addingHost = true },
-                onPickProject = { mu.draft.host?.let(picking::present) },
+                onPickProject = { mu.draft.host?.takeIf(mu::online)?.let(picking::present) },
             )
         }
 

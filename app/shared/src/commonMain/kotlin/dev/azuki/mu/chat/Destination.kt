@@ -17,6 +17,8 @@ sealed interface Destination {
     val skills: List<Skill>
     val running: Boolean
 
+    val ready: Boolean
+
     // Where @mentions resolve, once known.
     val directory: String?
         get() = cwd
@@ -50,6 +52,9 @@ class Draft(private val mu: Mu) : Destination {
         private set
 
     override val running = false
+
+    override val ready
+        get() = mu.online(host)
 
     override val directory
         get() = cwd ?: host?.let(mu::home)

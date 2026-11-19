@@ -111,13 +111,23 @@ fun SmallIconButton(
     contentDescription: String?,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
-    IconButton(onClick = onClick, modifier = modifier, minWidth = 32.dp, minHeight = 32.dp) {
+    IconButton(
+        onClick = onClick,
+        modifier = modifier,
+        enabled = enabled,
+        minWidth = 32.dp,
+        minHeight = 32.dp,
+    ) {
         Icon(
             icon,
             contentDescription,
             Modifier.size(18.dp),
-            tint = MiuixTheme.colorScheme.onBackgroundVariant,
+            tint =
+                MiuixTheme.colorScheme.onBackgroundVariant.let {
+                    if (enabled) it else it.copy(alpha = 0.4f)
+                },
         )
     }
 }

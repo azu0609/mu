@@ -3,6 +3,8 @@
 
     <!-- Hosts are reached over the network: LAN, Tailscale, WireGuard or similar. -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Reconnecting as soon as the network changes. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- Scanning invites. -->
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- Dictation. -->

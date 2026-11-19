@@ -85,11 +85,12 @@ internal fun AttachButton(state: ComposerState, mu: Mu, destination: Destination
             Solar.AddCircleBoldDuotone,
             if (open) "Close" else "Attach",
             Modifier.graphicsLayer { rotationZ = turn },
+            enabled = destination.ready,
         ) {
             open = !open
         }
         WindowListPopup(
-            show = open,
+            show = open && destination.ready,
             alignment = PopupPositionProvider.Align.Start,
             onDismissRequest = { open = false },
         ) {

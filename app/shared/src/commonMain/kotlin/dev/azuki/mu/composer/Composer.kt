@@ -101,8 +101,9 @@ fun Composer(
         remember(state) {
             {
                 val trimmed = state.field.text.toString().trim()
+                val unreachable = mu.destination.let { it.host != null && !it.ready }
                 when {
-                    state.busy || state.uploading > 0 -> Unit
+                    state.busy || state.uploading > 0 || unreachable -> Unit
                     state.shell ->
                         if (trimmed.isNotEmpty()) {
                             state.field.clearText()
@@ -183,7 +184,7 @@ fun Composer(
                 state.shell ->
                     ShellInput(
                         state,
-                        canRun = destination.host != null,
+                        canRun = destination.ready,
                         hasSnippets = snippets.isNotEmpty(),
                         onSubmit = submit,
                     )
@@ -261,7 +262,7 @@ private fun PromptInput(
                     RoundAction(
                         Glyphs.Send,
                         "Send",
-                        enabled = !empty && destination.host != null,
+                        enabled = !empty && destination.ready,
                         busy = state.busy || state.uploading > 0,
                         onClick = onSubmit,
                     )

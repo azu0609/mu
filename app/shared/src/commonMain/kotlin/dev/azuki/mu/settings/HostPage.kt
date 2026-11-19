@@ -44,6 +44,7 @@ import dev.azuki.mu.design.Solar
 import dev.azuki.mu.design.TopBar
 import dev.azuki.mu.design.icon
 import dev.azuki.mu.label
+import dev.azuki.mu.reason
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.BasicComponentDefaults
 import top.yukonga.miuix.kmp.basic.Card
@@ -152,7 +153,10 @@ fun HostPage(mu: Mu, id: String, onBack: () -> Unit) {
                         },
                     )
                     if (live != null && live.connection != Connection.Online) {
-                        BasicComponent(title = live.connection.label(), summary = live.error)
+                        BasicComponent(
+                            title = live.connection.label(),
+                            summary = live.connection.reason,
+                        )
                     }
                 }
             }

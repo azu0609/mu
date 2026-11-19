@@ -92,7 +92,7 @@ private class FfiRemote(private val remote: dev.azuki.mu.core.Remote) : Remote {
         skill: String?,
     ): String = mapped { remote.createSession(cwd, model.toFfi(), text, skill) }
 
-    override suspend fun openSession(session: String, resume: Resume?): Session {
+    override fun openSession(session: String, resume: Resume?): Session {
         // None may be dropped: each update builds on the last.
         val batches = Channel<List<SessionUpdate>>(Channel.UNLIMITED)
         val handle = mapped {
@@ -294,7 +294,7 @@ private fun dev.azuki.mu.core.HostUpdate.toModel(): HostUpdate =
                     )
                 },
             )
-        dev.azuki.mu.core.HostUpdate.Lost -> HostUpdate.Lost
+        is dev.azuki.mu.core.HostUpdate.Lost -> HostUpdate.Lost(reason.message, reason.unpaired)
     }
 
 private fun dev.azuki.mu.wire.Status.toModel() =
@@ -342,7 +342,7 @@ private fun dev.azuki.mu.core.SessionUpdate.toModel(): SessionUpdate =
             SessionUpdate.Live(index.toInt(), block.toModel())
         is dev.azuki.mu.core.SessionUpdate.LiveNotice -> SessionUpdate.LiveNotice(block.toModel())
         is dev.azuki.mu.core.SessionUpdate.Feedback -> SessionUpdate.Feedback(block.toModel())
-        dev.azuki.mu.core.SessionUpdate.Lost -> SessionUpdate.Lost
+        is dev.azuki.mu.core.SessionUpdate.Lost -> SessionUpdate.Lost(reason.message)
     }
 
 private fun dev.azuki.mu.core.ShellUpdate.toModel(): ShellUpdate =

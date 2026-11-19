@@ -24,6 +24,12 @@ class MainActivity : ComponentActivity() {
         setContent { App(core, platform, invite, onInviteHandled = { invite = null }) }
     }
 
+    // Ahead of anything resuming on a connection that died in the background.
+    override fun onStart() {
+        (application as MuApplication).core.nudge()
+        super.onStart()
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         intent.invite()?.let { invite = it }

@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -67,7 +68,7 @@ import dev.azuki.mu.design.Spinning
 import dev.azuki.mu.design.icon
 import dev.azuki.mu.design.lifted
 import dev.azuki.mu.design.scrim
-import dev.azuki.mu.label
+import dev.azuki.mu.reason
 import dev.azuki.mu.tilde
 import kotlin.math.absoluteValue
 import kotlinx.coroutines.launch
@@ -151,20 +152,15 @@ fun Sidebar(
                     HostHeader(
                         mu = mu,
                         host = host.id,
+                        enabled = mu.online(host.id),
                         onNew = { onNewIn(host.id) },
                         modifier = sides,
                     )
                 }
+                val reason = live?.connection?.reason
                 when {
-                    live?.connection == Connection.Offline ||
-                        live?.connection == Connection.Unpaired ->
-                        item(key = "empty.${host.id}") {
-                            Empty(
-                                live.error ?: "${live.connection.label()}.",
-                                sides,
-                                rounded = true,
-                            )
-                        }
+                    reason != null ->
+                        item(key = "empty.${host.id}") { Empty(reason, sides, rounded = true) }
 
                     sessions.isEmpty() && live?.connection == Connection.Online ->
                         item(key = "empty.${host.id}") {
@@ -222,7 +218,7 @@ private fun Carousel(pager: PagerState) {
     val scope = rememberCoroutineScope()
     val settle = remember { spring<Float>(dampingRatio = 0.68f, stiffness = 320f) }
     // The pager clips to its height, so it's given room for the selected fill's shadow out of
-    // the padding around it.
+    // the padding around it. The fill's fading layer clips too, so it gets the same room.
     val room = 12.dp
     BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 24.dp - room, bottom = 12.dp - room)) {
         val page = 92.dp
@@ -261,8 +257,9 @@ private fun Carousel(pager: PagerState) {
                 contentAlignment = Alignment.Center,
             ) {
                 Box(
-                    Modifier.size(88.dp)
+                    Modifier.requiredSize(88.dp + room * 2)
                         .graphicsLayer { alpha = near() }
+                        .padding(room)
                         .lifted(CircleShape)
                         .clip(CircleShape)
                         .background(MiuixTheme.colorScheme.surfaceContainer)
@@ -282,6 +279,7 @@ private fun Carousel(pager: PagerState) {
 private fun HostHeader(
     mu: Mu,
     host: String,
+    enabled: Boolean,
     onNew: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -297,7 +295,12 @@ private fun HostHeader(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
-        SmallIconButton(Solar.AddLinear, "New session on ${mu.name(host)}", onNew)
+        SmallIconButton(
+            Solar.AddLinear,
+            "New session on ${mu.name(host)}",
+            onNew,
+            enabled = enabled,
+        )
     }
 }
 

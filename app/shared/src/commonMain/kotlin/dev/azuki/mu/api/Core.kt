@@ -27,7 +27,7 @@ interface Remote {
     // Starts the session with its first message.
     suspend fun createSession(cwd: String, model: Model, text: String, skill: String?): String
 
-    suspend fun openSession(session: String, resume: Resume?): Session
+    fun openSession(session: String, resume: Resume?): Session
 
     suspend fun deleteSessions(): Deleted
 

@@ -41,7 +41,7 @@ data class SessionSummary(
 sealed interface HostUpdate {
     data class Host(val profile: HostProfile, val sessions: List<SessionSummary>) : HostUpdate
 
-    data object Lost : HostUpdate
+    data class Lost(val reason: String, val unpaired: Boolean) : HostUpdate
 }
 
 data class Deleted(val deleted: Long, val inUse: Long)
@@ -168,7 +168,7 @@ sealed interface SessionUpdate {
 
     data class Feedback(val block: Block) : SessionUpdate
 
-    data object Lost : SessionUpdate
+    data class Lost(val reason: String) : SessionUpdate
 }
 
 sealed interface ShellUpdate {

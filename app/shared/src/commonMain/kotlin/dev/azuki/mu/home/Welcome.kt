@@ -58,7 +58,7 @@ fun Welcome(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
                 if (host == null) {
-                    Chip("Add a Host", Solar.AddLinear, onAddHost)
+                    Chip("Add a Host", Solar.AddLinear, onClick = onAddHost)
                 } else {
                     var picking by remember { mutableStateOf(false) }
                     Box {
@@ -97,7 +97,8 @@ fun Welcome(
                         cwd?.let { if (tilde(it, mu.home(host)) == "~") "~" else baseName(it) }
                             ?: "~",
                         Solar.AltArrowRightLinear,
-                        onPickProject,
+                        enabled = mu.online(host),
+                        onClick = onPickProject,
                     )
                 }
             }
@@ -106,10 +107,15 @@ fun Welcome(
 }
 
 @Composable
-private fun Chip(text: String, icon: ImageVector, onClick: () -> Unit) {
+private fun Chip(text: String, icon: ImageVector, enabled: Boolean = true, onClick: () -> Unit) {
+    val tint =
+        MiuixTheme.colorScheme.onSurfaceVariantSummary.let {
+            if (enabled) it else it.copy(alpha = 0.4f)
+        }
     Floating {
         Button(
             onClick = onClick,
+            enabled = enabled,
             cornerRadius = 20.dp,
             minHeight = 36.dp,
             colors = ButtonDefaults.buttonColors(color = Color.Transparent),
@@ -119,15 +125,10 @@ private fun Chip(text: String, icon: ImageVector, onClick: () -> Unit) {
                 text,
                 fontFamily = Mono,
                 fontSize = 14.sp,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                color = tint,
                 maxLines = 1,
             )
-            Icon(
-                icon,
-                null,
-                Modifier.padding(start = 8.dp).size(14.dp),
-                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            )
+            Icon(icon, null, Modifier.padding(start = 8.dp).size(14.dp), tint = tint)
         }
     }
 }

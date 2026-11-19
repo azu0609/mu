@@ -47,7 +47,7 @@ fun App(core: Core, platform: Platform, invite: String?, onInviteHandled: () -> 
         val mu = remember { Mu(core, platform, scope) }
         val lifecycle = LocalLifecycleOwner.current.lifecycle
         val ids = mu.hosts.map { it.id }
-        LaunchedEffect(ids) {
+        LaunchedEffect(ids, mu.pairings) {
             lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
                 coroutineScope { ids.forEach { launch { mu.watch(it) } } }
             }

@@ -17,16 +17,22 @@ use rustls::pki_types::ServerName;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     fmt, io,
+    marker::PhantomData,
     os::unix::net::UnixStream as StdStream,
     path::{Path, PathBuf},
-    sync::{self, Arc},
+    pin::Pin,
+    sync::{
+        self, Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll, Waker},
     time::Duration,
 };
 use tokio::{
-    io::{AsyncRead, AsyncWrite},
+    io::{AsyncRead, AsyncWrite, ReadBuf},
     net::{TcpStream, UnixStream},
-    sync::Mutex,
-    time,
+    sync::{Mutex, Notify},
+    time::{self, Instant},
 };
 use tokio_rustls::TlsConnector;
 
@@ -39,6 +45,9 @@ const LIMIT: usize = 64 * 1024 * 1024;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
+const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
+
+#[derive(Clone)]
 pub enum Error {
     Unpaired(String),
     Other(String),
@@ -83,7 +92,19 @@ macro_rules! error_from {
     )*};
 }
 
-error_from!(io::Error, hyper::Error, serde_json::Error, rustls::Error, Box<dyn std::error::Error + Send + Sync>);
+error_from!(io::Error, serde_json::Error, rustls::Error, Box<dyn std::error::Error + Send + Sync>);
+
+impl From<hyper::Error> for Error {
+    fn from(error: hyper::Error) -> Self {
+        Self::Other(if error.is_timeout() {
+            "The mu host stopped answering".into()
+        } else if error.is_user() {
+            error.to_string()
+        } else {
+            "Lost the connection to the mu host".into()
+        })
+    }
+}
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -112,12 +133,42 @@ pub struct Client(Arc<Connection>);
 struct Connection {
     target: Target,
     authorization: Option<HeaderValue>,
-    sender: Mutex<Option<SendRequest<Full<Bytes>>>>,
+    link: Mutex<Link>,
     host: sync::Mutex<Option<HostInfo>>,
+    nudged: AtomicBool,
+    retry: Notify,
+}
+
+#[derive(Default)]
+struct Link {
+    sender: Option<SendRequest<Full<Bytes>>>,
+    socket: Option<Arc<Cut>>,
+    failures: u32,
+    cooldown: Option<(Instant, Error)>,
+}
+
+impl Link {
+    fn live(&self) -> Option<SendRequest<Full<Bytes>>> {
+        self.sender.clone().filter(|sender| !sender.is_closed())
+    }
+
+    fn hang_up(&mut self) {
+        self.sender = None;
+        if let Some(socket) = self.socket.take() {
+            socket.cut();
+        }
+    }
+}
+
+fn backoff(failures: u32) -> Duration {
+    match failures {
+        0 | 1 => Duration::ZERO,
+        n => Duration::from_secs(1 << (n - 2).min(3)),
+    }
 }
 
 impl Client {
-    pub async fn connect(endpoint: Endpoint) -> Result<Self> {
+    pub fn new(endpoint: Endpoint) -> Result<Self> {
         let (target, authorization) = match endpoint {
             Endpoint::Socket(path) => (Target::Socket(path), None),
             Endpoint::Stream(stream) => (Target::Stream(sync::Mutex::new(Some(stream))), None),
@@ -133,12 +184,18 @@ impl Client {
                 (Target::Remote { address: remote.address, tls }, authorization)
             }
         };
-        let client = Self(Arc::new(Connection {
+        Ok(Self(Arc::new(Connection {
             target,
             authorization,
-            sender: Mutex::new(None),
+            link: Mutex::default(),
             host: sync::Mutex::new(None),
-        }));
+            nudged: AtomicBool::new(false),
+            retry: Notify::new(),
+        })))
+    }
+
+    pub async fn connect(endpoint: Endpoint) -> Result<Self> {
+        let client = Self::new(endpoint)?;
         client.sender().await?;
         Ok(client)
     }
@@ -147,13 +204,53 @@ impl Client {
         self.0.host.lock().unwrap().clone()
     }
 
-    async fn sender(&self) -> Result<SendRequest<Full<Bytes>>> {
-        let mut slot = self.0.sender.lock().await;
-        if let Some(sender) = slot.as_ref().filter(|sender| !sender.is_closed()) {
-            return Ok(sender.clone());
+    // For when the connection may have died unnoticed, as while the app was frozen.
+    pub fn nudge(&self) -> impl Future<Output = ()> + Send + use<> {
+        self.0.nudged.store(true, Ordering::SeqCst);
+        self.0.retry.notify_waiters();
+        let client = self.clone();
+        async move { client.verify(&mut *client.0.link.lock().await).await }
+    }
+
+    async fn verify(&self, link: &mut Link) {
+        if !self.0.nudged.swap(false, Ordering::SeqCst) {
+            return;
         }
-        *slot = None;
-        let mut sender = match &self.0.target {
+        link.failures = 0;
+        link.cooldown = None;
+        let Some(mut sender) = link.live() else { return };
+        if !matches!(time::timeout(PROBE_TIMEOUT, call(&mut sender, None, &Hello {})).await, Ok(Ok(_))) {
+            link.hang_up();
+        }
+    }
+
+    async fn sender(&self) -> Result<SendRequest<Full<Bytes>>> {
+        let mut link = self.0.link.lock().await;
+        self.verify(&mut link).await;
+        if let Some(sender) = link.live() {
+            return Ok(sender);
+        }
+        link.hang_up();
+        if let Some((until, failure)) = &link.cooldown
+            && Instant::now() < *until
+        {
+            return Err(failure.clone());
+        }
+        match self.dial().await {
+            Ok((sender, socket)) => {
+                *link = Link { sender: Some(sender.clone()), socket: Some(socket), ..Link::default() };
+                Ok(sender)
+            }
+            Err(error) => {
+                link.failures += 1;
+                link.cooldown = Some((Instant::now() + backoff(link.failures + 1), error.clone()));
+                Err(error)
+            }
+        }
+    }
+
+    async fn dial(&self) -> Result<(SendRequest<Full<Bytes>>, Arc<Cut>)> {
+        let (mut sender, socket) = match &self.0.target {
             Target::Socket(path) => handshake(UnixStream::connect(path).await?).await?,
             Target::Stream(stream) => {
                 let stream = stream.lock().unwrap().take().ok_or("The mu host is gone")?;
@@ -181,19 +278,24 @@ impl Client {
                 handshake(stream).await?
             }
         };
-        let host = call(&mut sender, None, &Hello {}).await?;
-        if host.protocol != PROTOCOL {
-            return Err(format!(
-                "The mu host runs mu {} (protocol {}), this is mu {} (protocol {PROTOCOL}); update the older one",
-                host.version,
-                host.protocol,
-                env!("CARGO_PKG_VERSION")
-            )
-            .into());
+        let hello = time::timeout(CONNECT_TIMEOUT, hello(&mut sender)).await;
+        match hello.unwrap_or_else(|_| Err("The mu host did not answer".into())) {
+            Ok(host) => {
+                *self.0.host.lock().unwrap() = Some(host);
+                Ok((sender, socket))
+            }
+            Err(error) => {
+                socket.cut();
+                Err(error)
+            }
         }
-        *self.0.host.lock().unwrap() = Some(host);
-        *slot = Some(sender.clone());
-        Ok(sender)
+    }
+
+    async fn settle(&self, delay: Duration) {
+        let nudged = self.0.retry.notified();
+        let cooldown = self.0.link.lock().await.cooldown.as_ref().map(|(until, _)| *until);
+        let until = cooldown.map_or(Instant::now() + delay, |until| until.max(Instant::now() + delay));
+        let _ = time::timeout_at(until, nudged).await;
     }
 
     pub async fn call<C: Call + Sync>(&self, call: C) -> Result<C::Reply> {
@@ -218,18 +320,12 @@ impl Client {
         Ok(ShellRun { lines: Lines { body, buf: vec![], scanned: 0 } })
     }
 
-    pub async fn subscribe(&self, id: &str, resume: Option<Resume>) -> Result<Subscription> {
-        self.follow(Feed::Session { id: id.into(), resume }).await
+    pub fn subscribe(&self, id: &str, resume: Option<Resume>) -> Subscription {
+        Subscription::new(self, Feed::Session { id: id.into(), resume })
     }
 
-    pub async fn watch(&self) -> Result<Subscription<WatchEvent>> {
-        self.follow(Feed::Host).await
-    }
-
-    async fn follow<T: DeserializeOwned>(&self, feed: Feed) -> Result<Subscription<T>> {
-        let mut lines = self.open(&feed).await?;
-        let first = lines.next().await?.ok_or("The host closed the stream")?;
-        Ok(Subscription { client: self.clone(), feed, lines: Some(lines), first: Some(first) })
+    pub fn watch(&self) -> Subscription<WatchEvent> {
+        Subscription::new(self, Feed::Host)
     }
 
     async fn open(&self, feed: &Feed) -> Result<Lines> {
@@ -254,15 +350,102 @@ pub async fn pair(invite: &Invite, device: &str) -> Result<(Remote, HostInfo)> {
     Ok((Remote { token: Some(token), ..remote }, host))
 }
 
-async fn handshake(stream: impl AsyncRead + AsyncWrite + Unpin + Send + 'static) -> Result<SendRequest<Full<Bytes>>> {
+async fn handshake(
+    stream: impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
+) -> Result<(SendRequest<Full<Bytes>>, Arc<Cut>)> {
+    let cut = Arc::new(Cut::default());
+    let stream = Cuttable { stream, cut: cut.clone() };
     let (sender, connection) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
         .timer(TokioTimer::new())
-        .keep_alive_interval(Duration::from_secs(20))
-        .keep_alive_timeout(Duration::from_secs(10))
+        .keep_alive_interval(Duration::from_secs(15))
+        .keep_alive_timeout(Duration::from_secs(5))
         .handshake(TokioIo::new(stream))
         .await?;
     tokio::spawn(connection);
-    Ok(sender)
+    Ok((sender, cut))
+}
+
+// hyper drives a connection from tasks of its own, so aborting ours leaves a dead one hanging;
+// failing its socket ends it and every stream on it.
+#[derive(Default)]
+struct Cut {
+    done: AtomicBool,
+    reader: sync::Mutex<Option<Waker>>,
+    writer: sync::Mutex<Option<Waker>>,
+}
+
+impl Cut {
+    fn cut(&self) {
+        self.done.store(true, Ordering::SeqCst);
+        for waiting in [&self.reader, &self.writer] {
+            if let Some(waker) = waiting.lock().unwrap().take() {
+                waker.wake();
+            }
+        }
+    }
+
+    fn check(&self, waiting: &sync::Mutex<Option<Waker>>, cx: &Context) -> io::Result<()> {
+        waiting.lock().unwrap().replace(cx.waker().clone());
+        match self.done.load(Ordering::SeqCst) {
+            true => Err(io::ErrorKind::ConnectionAborted.into()),
+            false => Ok(()),
+        }
+    }
+}
+
+struct Cuttable<S> {
+    stream: S,
+    cut: Arc<Cut>,
+}
+
+impl<S: AsyncRead + Unpin> AsyncRead for Cuttable<S> {
+    fn poll_read(self: Pin<&mut Self>, cx: &mut Context, buf: &mut ReadBuf) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        this.cut.check(&this.cut.reader, cx)?;
+        Pin::new(&mut this.stream).poll_read(cx, buf)
+    }
+}
+
+impl<S: AsyncWrite + Unpin> AsyncWrite for Cuttable<S> {
+    fn poll_write(self: Pin<&mut Self>, cx: &mut Context, buf: &[u8]) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        this.cut.check(&this.cut.writer, cx)?;
+        Pin::new(&mut this.stream).poll_write(cx, buf)
+    }
+
+    fn poll_write_vectored(self: Pin<&mut Self>, cx: &mut Context, bufs: &[io::IoSlice]) -> Poll<io::Result<usize>> {
+        let this = self.get_mut();
+        this.cut.check(&this.cut.writer, cx)?;
+        Pin::new(&mut this.stream).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.stream.is_write_vectored()
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
+        let this = self.get_mut();
+        this.cut.check(&this.cut.writer, cx)?;
+        Pin::new(&mut this.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.get_mut().stream).poll_shutdown(cx)
+    }
+}
+
+async fn hello(sender: &mut SendRequest<Full<Bytes>>) -> Result<HostInfo> {
+    let host = call(sender, None, &Hello {}).await?;
+    if host.protocol != PROTOCOL {
+        return Err(format!(
+            "The mu host runs mu {} (protocol {}), this is mu {} (protocol {PROTOCOL}); update the older one",
+            host.version,
+            host.protocol,
+            env!("CARGO_PKG_VERSION")
+        )
+        .into());
+    }
+    Ok(host)
 }
 
 async fn post(
@@ -311,11 +494,11 @@ async fn call<C: Call + Sync>(
     Ok(serde_json::from_slice(&read(body).await?)?)
 }
 
-// A subscription outlives its connection: it says once that the host is lost,
-// then carries on with events when it is back.
+// A subscription outlives its connection: it says why it's lost, then carries on
+// with events when it is back.
 pub enum Update<T = Event> {
     Event(T),
-    Lost,
+    Lost(Error),
 }
 
 enum Feed {
@@ -327,26 +510,44 @@ pub struct Subscription<T = Event> {
     client: Client,
     feed: Feed,
     lines: Option<Lines>,
-    first: Option<T>,
+    failures: u32,
+    event: PhantomData<T>,
 }
 
 impl<T: DeserializeOwned> Subscription<T> {
-    async fn pull(&mut self) -> Update<T> {
-        if let Some(event) = self.first.take() {
-            return Update::Event(event);
+    fn new(client: &Client, feed: Feed) -> Self {
+        Self { client: client.clone(), feed, lines: None, failures: 0, event: PhantomData }
+    }
+
+    pub async fn open(&mut self) -> Result<()> {
+        if self.lines.is_none() {
+            self.lines = Some(self.client.open(&self.feed).await?);
         }
-        loop {
-            let Some(lines) = &mut self.lines else {
-                time::sleep(Duration::from_secs(1)).await;
-                self.lines = self.client.open(&self.feed).await.ok();
-                continue;
-            };
-            if let Ok(Some(event)) = lines.next().await {
+        Ok(())
+    }
+
+    async fn pull(&mut self) -> Update<T> {
+        if self.lines.is_none() {
+            if self.failures > 0 {
+                self.client.settle(backoff(self.failures)).await;
+            }
+            if let Err(error) = self.open().await {
+                self.failures += 1;
+                return Update::Lost(error);
+            }
+        }
+        let lines = self.lines.as_mut().expect("opened");
+        let lost = match lines.next().await {
+            Ok(Some(event)) => {
+                self.failures = 0;
                 return Update::Event(event);
             }
-            self.lines = None;
-            return Update::Lost;
-        }
+            Ok(None) => "The mu host ended the stream".into(),
+            Err(error) => error,
+        };
+        self.lines = None;
+        self.failures += 1;
+        Update::Lost(lost)
     }
 }
 

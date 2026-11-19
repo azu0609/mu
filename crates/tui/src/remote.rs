@@ -37,7 +37,8 @@ impl Remote {
         let client =
             runtime.block_on(Client::connect(endpoint)).map_err(|e| format!("Cannot reach the mu host{place}: {e}"))?;
         let (tx, rx) = mpsc::channel();
-        let mut watch = runtime.block_on(client.watch())?;
+        let mut watch = client.watch();
+        runtime.block_on(watch.open())?;
         let host = tx.clone();
         runtime.spawn(async move {
             loop {
@@ -63,7 +64,8 @@ impl Remote {
     }
 
     pub fn attach(&mut self, id: &str) -> Result<()> {
-        let mut subscription = self.wait(self.client.subscribe(id, None))?;
+        let mut subscription = self.client.subscribe(id, None);
+        self.wait(subscription.open())?;
         self.subscriptions += 1;
         let generation = self.subscriptions;
         let tx = self.tx.clone();
@@ -71,7 +73,7 @@ impl Remote {
             loop {
                 let incoming = match subscription.next().await {
                     Update::Event(event) => Incoming::Event(generation, event),
-                    Update::Lost => Incoming::Lost(generation),
+                    Update::Lost(_) => Incoming::Lost(generation),
                 };
                 if tx.send(incoming).is_err() {
                     return;

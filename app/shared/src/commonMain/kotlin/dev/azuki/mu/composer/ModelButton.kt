@@ -87,6 +87,7 @@ internal fun ModelButton(mu: Mu, destination: Destination) {
                     haptics.performHapticFeedback(HapticFeedbackType.ContextClick)
                 }
             },
+            enabled = destination.ready,
             holdDownState = held,
             minWidth = 36.dp,
             minHeight = 36.dp,
@@ -95,11 +96,14 @@ internal fun ModelButton(mu: Mu, destination: Destination) {
                 Solar.SpeedometerMaxBoldDuotone,
                 "Model and effort",
                 Modifier.size(24.dp),
-                tint = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                tint =
+                    MiuixTheme.colorScheme.onSurfaceVariantSummary.let {
+                        if (destination.ready) it else it.copy(alpha = 0.4f)
+                    },
             )
         }
         WindowCascadingListPopup(
-            show = open,
+            show = open && destination.ready,
             entries = listOf(entry),
             alignment = PopupPositionProvider.Align.Start,
             onDismissRequest = { open = false },

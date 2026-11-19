@@ -134,6 +134,12 @@ impl Core {
         Ok(Arc::new(Self { shared, _runtime: runtime }))
     }
 
+    pub fn nudge(&self) {
+        for client in self.shared.clients.lock().unwrap().values() {
+            self.shared.runtime.spawn(client.nudge());
+        }
+    }
+
     pub fn hosts(&self) -> Vec<Host> {
         self.shared.hosts.lock().unwrap().list().iter().map(Host::from).collect()
     }
@@ -168,20 +174,16 @@ pub struct Remote {
 }
 
 impl Remote {
-    fn connect(&self) -> Result<impl Future<Output = mu_client::Result<Client>> + use<>, MuError> {
-        let Shared { hosts, clients, .. } = &self.shared;
-        let cached = clients.lock().unwrap().get(&self.id).cloned();
-        let hosts = hosts.lock().unwrap();
+    fn client(&self) -> Result<Client, MuError> {
+        let mut clients = self.shared.clients.lock().unwrap();
+        if let Some(client) = clients.get(&self.id) {
+            return Ok(client.clone());
+        }
+        let hosts = self.shared.hosts.lock().unwrap();
         let paired = hosts.get(&self.id).ok_or_else(|| MuError::Failed("This host is not paired".into()))?;
-        let (remote, clients, id) = (paired.remote.clone(), clients.clone(), self.id.clone());
-        Ok(async move {
-            if let Some(client) = cached {
-                return Ok(client);
-            }
-            let client = Client::connect(Endpoint::Remote(remote)).await?;
-            clients.lock().unwrap().insert(id, client.clone());
-            Ok(client)
-        })
+        let client = Client::new(Endpoint::Remote(paired.remote.clone()))?;
+        clients.insert(self.id.clone(), client.clone());
+        Ok(client)
     }
 
     async fn on<T, F>(&self, run: impl FnOnce(Client) -> F + Send + 'static) -> Result<T, MuError>
@@ -189,8 +191,8 @@ impl Remote {
         T: Send + 'static,
         F: Future<Output = mu_client::Result<T>> + Send + 'static,
     {
-        let connect = self.connect()?;
-        spawn(&self.shared.runtime, async move { run(connect.await?).await }).await
+        let client = self.client()?;
+        spawn(&self.shared.runtime, run(client)).await
     }
 
     async fn call<C: Call + Send + Sync + 'static>(&self, call: C) -> Result<C::Reply, MuError>
@@ -203,15 +205,18 @@ impl Remote {
 
 #[uniffi::export]
 impl Remote {
-    pub async fn watch(&self, listener: Arc<dyn HostListener>) -> Result<Arc<Task>, MuError> {
-        let mut watch = self.on(|client| async move { client.watch().await }).await?;
+    pub fn watch(&self, listener: Arc<dyn HostListener>) -> Result<Arc<Task>, MuError> {
+        let mut watch = self.client()?.watch();
         let (hosts, id) = (self.shared.hosts.clone(), self.id.clone());
         let task = self.shared.runtime.spawn(async move {
             let mut view = HostView::default();
             loop {
-                let Update::Event(event) = watch.next().await else {
-                    listener.on_update(HostUpdate::Lost);
-                    continue;
+                let event = match watch.next().await {
+                    Update::Event(event) => event,
+                    Update::Lost(error) => {
+                        listener.on_update(HostUpdate::Lost { reason: error.into() });
+                        continue;
+                    }
                 };
                 view.apply(event);
                 let profile = &view.profile;
@@ -327,20 +332,15 @@ impl Remote {
         Ok(Arc::new(Task(task)))
     }
 
-    pub async fn open_session(
+    pub fn open_session(
         &self,
         session: String,
         resume: Option<Resume>,
         listener: Arc<dyn SessionListener>,
     ) -> Result<Arc<Session>, MuError> {
-        let (connect, id) = (self.connect()?, session.clone());
+        let client = self.client()?;
         let resume = resume.map(|resume| Resumed { epoch: resume.epoch, blocks: resume.blocks as usize });
-        let (client, mut subscription) = spawn(&self.shared.runtime, async move {
-            let client = connect.await?;
-            let subscription = client.subscribe(&id, resume).await?;
-            Ok((client, subscription))
-        })
-        .await?;
+        let mut subscription = client.subscribe(&session, resume);
         let task = self.shared.runtime.spawn(async move {
             let mut view = View::default();
             loop {
@@ -354,7 +354,7 @@ impl Remote {
                                 coalesce(&mut batch, update);
                             }
                         }
-                        Update::Lost => batch.push(SessionUpdate::Lost),
+                        Update::Lost(error) => batch.push(SessionUpdate::Lost { reason: error.into() }),
                     }
                     next = ready(subscription.next());
                 }
@@ -386,7 +386,7 @@ fn coalesce(batch: &mut Vec<SessionUpdate>, update: SessionUpdate) {
                 | SessionUpdate::LiveNotice { .. }
                 | SessionUpdate::State { .. }
                 | SessionUpdate::Feedback { .. } => (),
-                SessionUpdate::Reset { .. } | SessionUpdate::Committed { .. } | SessionUpdate::Lost => break,
+                SessionUpdate::Reset { .. } | SessionUpdate::Committed { .. } | SessionUpdate::Lost { .. } => break,
             }
         }
     }
@@ -503,7 +503,20 @@ pub trait HostListener: Send + Sync {
 #[derive(uniffi::Enum)]
 pub enum HostUpdate {
     Host { profile: Profile, sessions: Vec<SessionSummary> },
-    Lost,
+    Lost { reason: Reason },
+}
+
+#[derive(uniffi::Record)]
+pub struct Reason {
+    pub message: String,
+    pub unpaired: bool,
+}
+
+impl From<mu_client::Error> for Reason {
+    fn from(error: mu_client::Error) -> Self {
+        let unpaired = matches!(error, mu_client::Error::Unpaired(_));
+        Self { message: error.to_string(), unpaired }
+    }
 }
 
 #[uniffi::export(with_foreign)]
@@ -556,5 +569,5 @@ pub enum SessionUpdate {
     Live { index: u32, block: Block },
     LiveNotice { block: Block },
     Feedback { block: Block },
-    Lost,
+    Lost { reason: Reason },
 }

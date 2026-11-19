@@ -1,6 +1,7 @@
 package dev.azuki.mu
 
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -17,22 +18,23 @@ import dev.azuki.mu.chat.Destination
 import dev.azuki.mu.chat.Draft
 import dev.azuki.mu.platform.Platform
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.SnackbarHostState
 
-enum class Connection {
-    Connecting,
-    Online,
-    Offline,
-    Unpaired,
+sealed interface Connection {
+    data object Connecting : Connection
+
+    data object Online : Connection
+
+    data class Offline(val reason: String) : Connection
+
+    data class Unpaired(val reason: String) : Connection
 }
 
 data class HostLive(
     val profile: HostProfile? = null,
     val sessions: List<SessionSummary> = emptyList(),
     val connection: Connection = Connection.Connecting,
-    val error: String? = null,
 )
 
 data class ChatTarget(val host: String, val session: String)
@@ -44,6 +46,9 @@ class Mu(val core: Core, val platform: Platform, private val scope: CoroutineSco
         private set
 
     val live = mutableStateMapOf<String, HostLive>()
+
+    var pairings by mutableIntStateOf(0)
+        private set
 
     var selected by mutableStateOf(prefs[SELECTED]?.lines()?.toSet() ?: hosts.map { it.id }.toSet())
         private set
@@ -86,28 +91,34 @@ class Mu(val core: Core, val platform: Platform, private val scope: CoroutineSco
         }
     }
 
+    fun online(id: String?): Boolean = id != null && live[id]?.connection == Connection.Online
+
     suspend fun watch(id: String) {
-        while (true) {
-            try {
-                remote(id).watch().collect { update ->
-                    val known = live[id] ?: HostLive()
-                    live[id] =
-                        when (update) {
-                            is HostUpdate.Host ->
-                                HostLive(update.profile, update.sessions, Connection.Online)
-                            HostUpdate.Lost -> known.copy(connection = Connection.Offline)
+        revise(id) { it.copy(connection = Connection.Connecting) }
+        try {
+            remote(id).watch().collect { update ->
+                when (update) {
+                    is HostUpdate.Host -> {
+                        live[id] = HostLive(update.profile, update.sessions, Connection.Online)
+                        reloadHosts()
+                    }
+                    is HostUpdate.Lost ->
+                        revise(id) {
+                            it.copy(
+                                connection =
+                                    if (update.unpaired) Connection.Unpaired(update.reason)
+                                    else Connection.Offline(update.reason)
+                            )
                         }
-                    if (update is HostUpdate.Host) reloadHosts()
                 }
-            } catch (e: MuException) {
-                live[id] =
-                    (live[id] ?: HostLive()).copy(
-                        connection = if (e.unpaired) Connection.Unpaired else Connection.Offline,
-                        error = e.message,
-                    )
             }
-            delay(if (live[id]?.connection == Connection.Unpaired) 60_000 else 5_000)
+        } catch (e: MuException) {
+            revise(id) { it.copy(connection = Connection.Offline(e.message.orEmpty())) }
         }
+    }
+
+    private fun revise(id: String, change: (HostLive) -> HostLive) {
+        live[id] = change(live[id] ?: HostLive())
     }
 
     private fun reloadHosts() {
@@ -117,6 +128,7 @@ class Mu(val core: Core, val platform: Platform, private val scope: CoroutineSco
 
     suspend fun pair(invite: String): Host {
         val host = core.pair(invite)
+        pairings++
         reloadHosts()
         select(host.id, true)
         if (draft.host == null) draft.set(host.id, null)
@@ -175,6 +187,15 @@ fun Connection.label(): String =
     when (this) {
         Connection.Connecting -> "Connecting"
         Connection.Online -> "Online"
-        Connection.Offline -> "Offline"
-        Connection.Unpaired -> "Unpaired"
+        is Connection.Offline -> "Offline"
+        is Connection.Unpaired -> "Unpaired"
     }
+
+val Connection.reason: String?
+    get() =
+        when (this) {
+            is Connection.Offline -> reason
+            is Connection.Unpaired -> reason
+            Connection.Connecting,
+            Connection.Online -> null
+        }
