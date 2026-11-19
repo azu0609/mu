@@ -2,7 +2,7 @@ use crate::Result;
 use mu_client::Skill;
 use std::collections::BTreeMap;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum BuiltinKind {
     Model,
     New,

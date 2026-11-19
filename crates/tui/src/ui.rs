@@ -332,6 +332,8 @@ fn tool_lines(marker: &str, command: &str, tool: &Tool, width: usize, expanded: 
         ));
     } else if !expanded && hidden_input {
         result.push(Line::new("  │ … Ctrl+O to expand", GRAY));
+    } else if expanded && (hidden_input || lines.len() > 3) {
+        result.push(Line::new("  │ Ctrl+O to collapse", GRAY));
     }
     for line in &lines[start..] {
         result.push(Line::new(format!("  │ {line}"), GRAY));
@@ -398,7 +400,8 @@ fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
         return vec![];
     }
     let mut lines = wrap(&text, width.saturating_sub(2));
-    let collapsed = !expanded && lines.len() > limit;
+    let collapsible = lines.len() > limit;
+    let collapsed = !expanded && collapsible;
     if collapsed {
         lines.truncate(limit);
     }
@@ -410,6 +413,8 @@ fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
     }
     if collapsed {
         result.push(Line::styled("  … Ctrl+O to expand", style));
+    } else if collapsible {
+        result.push(Line::styled("  Ctrl+O to collapse", style));
     }
     result.push(Line::new("", GRAY));
     result
@@ -437,17 +442,12 @@ impl CachedLines {
 }
 
 struct Transcript {
-    welcome: Block,
     pending: Vec<Block>,
 }
 
 impl Transcript {
     fn new(app: &App) -> Self {
         Self {
-            welcome: Block::new(
-                Kind::Notice,
-                "mu · escape to interrupt · / for commands & skills · ! to run a command for the agent, !! just for you · ctrl+o to expand/collapse · ctrl+g to edit prompt",
-            ),
             pending: app
                 .view
                 .state
@@ -463,7 +463,7 @@ impl Transcript {
     }
 
     fn static_blocks<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = &'a Block> + 'a {
-        std::iter::once(&self.welcome).chain(app.view.blocks.iter())
+        app.view.blocks.iter()
     }
 
     fn dynamic_blocks<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = &'a Block> + 'a {
@@ -499,6 +499,18 @@ impl Transcript {
                 .dynamic_blocks(app)
                 .map(|block| block_lines(block, width.saturating_sub(1), app.expanded).len())
                 .sum::<usize>()
+    }
+}
+
+fn placeholder(app: &App) -> &'static str {
+    if app.shell.is_some() {
+        "Esc stops the command"
+    } else if app.view.running() {
+        "Queue a message · Esc to interrupt"
+    } else if app.model().is_none() {
+        "Pick a model with /model to start"
+    } else {
+        "Message mu · / commands & skills · @ files · ! run for the agent, !! just for you · Ctrl+G editor"
     }
 }
 
@@ -605,7 +617,9 @@ pub fn draw(app: &mut App) -> Result<()> {
             Print(if line == 0 { "› " } else { "  " }),
             SetForegroundColor(Color::Reset)
         )?;
-        if let Some(s) = input.get(line) {
+        if text.is_empty() && line == 0 {
+            queue!(out, SetForegroundColor(GRAY), Print(clip(placeholder(app), prompt_width)))?;
+        } else if let Some(s) = input.get(line) {
             queue!(out, Print(clip(s, prompt_width)))?;
         }
     }

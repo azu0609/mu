@@ -1,5 +1,8 @@
 use crate::Result;
-use mu_client::{Call, Client, CompleteMention, Endpoint, Event, MarkRead, Mention, ShellEvent, Update, WatchEvent};
+use mu_client::{
+    Call, Client, CompleteMention, Endpoint, Event, ListModels, MarkRead, Mention, ModelInfo, ShellEvent, Update,
+    WatchEvent,
+};
 use std::{future::Future, path::Path, sync::mpsc, time::Duration};
 use tokio::{runtime::Runtime, task::JoinHandle, time};
 
@@ -9,6 +12,7 @@ pub enum Incoming {
     Mention(u64, Result<Option<Mention>>),
     Host(WatchEvent),
     Shell(u64, Result<ShellEvent>),
+    Models(Result<Vec<ModelInfo>>),
 }
 
 pub struct Remote {
@@ -132,6 +136,15 @@ impl Remote {
         self.runtime.spawn(async move {
             let result = client.call(call).await;
             let _ = tx.send(Incoming::Mention(seq, result.map_err(Into::into)));
+        });
+    }
+
+    pub fn list_models(&self) {
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+        self.runtime.spawn(async move {
+            let result = client.call(ListModels {}).await;
+            let _ = tx.send(Incoming::Models(result.map_err(Into::into)));
         });
     }
 }

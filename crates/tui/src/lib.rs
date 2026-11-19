@@ -11,8 +11,8 @@ use crossterm::event::{
 pub use mu_client::Endpoint;
 use mu_client::{
     AppendShell, Block, Change, Checkout, CompleteMention, CreateSession, Edit, Event, GetTree, HostView, Kind,
-    ListSkills, Model, RecallQueued, SendMessage, SessionSummary, SetModel, ShellEvent, Stop, Tool, ToolOutput,
-    ToolStatus, TreeEntry, View, counts,
+    ListSkills, Model, ModelInfo, RecallQueued, SendMessage, SessionSummary, SetModel, ShellEvent, Stop, Tool,
+    ToolOutput, ToolStatus, TreeEntry, View, counts,
 };
 use remote::{Incoming, Remote};
 use std::{
@@ -122,6 +122,12 @@ impl Mentioning {
     }
 }
 
+enum Models {
+    Unasked,
+    Asked,
+    Listed(Vec<ModelInfo>),
+}
+
 // A conversation not started yet: the host only makes one with its first message.
 struct Draft {
     model: Option<Model>,
@@ -138,6 +144,7 @@ struct App {
     completion: Option<input::Menu>,
     dismissed: bool,
     mention: Mentioning,
+    models: Models,
     picker: Option<Picker>,
     shell: Option<Shell>,
     shell_seq: u64,
@@ -266,6 +273,13 @@ impl App {
                 }
             }
             Incoming::Shell(seq, result) => self.shell_update(seq, result),
+            Incoming::Models(result) => {
+                match result {
+                    Ok(models) => self.models = Models::Listed(models),
+                    Err(e) => self.warn(format!("Listing models: {e}")),
+                }
+                self.refresh_completion();
+            }
             _ => (),
         }
     }
@@ -534,6 +548,7 @@ impl App {
             None
         } else {
             input::command_menu(&text, cursor, &self.view.skills)
+                .or_else(|| self.model_menu(&text, cursor))
                 .or_else(|| input::shell_menu(&text, cursor, &self.host.profile.snippets))
         };
         if let Some(mut menu) = menu {
@@ -572,6 +587,19 @@ impl App {
                 }
             }
         }
+    }
+
+    fn model_menu(&mut self, text: &str, cursor: usize) -> Option<input::Menu> {
+        let argument = input::model_argument(text, cursor, &self.view.skills)?;
+        if let Models::Unasked = self.models {
+            self.remote.list_models();
+            self.models = Models::Asked;
+        }
+        let models = match &self.models {
+            Models::Listed(models) => models.as_slice(),
+            _ => &[],
+        };
+        input::model_menu(argument, models)
     }
 
     fn select(&mut self) -> Result<()> {
@@ -844,6 +872,7 @@ pub fn run(endpoint: Endpoint) -> Result<()> {
         completion: None,
         dismissed: false,
         mention: Mentioning::default(),
+        models: Models::Unasked,
         picker: None,
         shell: None,
         shell_seq: 0,
