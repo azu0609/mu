@@ -10,7 +10,6 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -22,11 +21,9 @@ import dev.azuki.mu.Mu
 import dev.azuki.mu.api.Directory
 import dev.azuki.mu.api.EntryKind
 import dev.azuki.mu.api.MuException
-import dev.azuki.mu.design.BackButton
 import dev.azuki.mu.design.Note
 import dev.azuki.mu.design.PrimaryButton
 import dev.azuki.mu.design.Sheet
-import dev.azuki.mu.design.SheetClose
 import dev.azuki.mu.design.Solar
 import dev.azuki.mu.design.icon
 import dev.azuki.mu.parentOf
@@ -50,10 +47,9 @@ fun ProjectPicker(
     onDismiss: () -> Unit,
     onDismissFinished: () -> Unit,
 ) {
-    val history = remember(show) { mutableStateListOf(start ?: "~") }
+    var path by remember(show) { mutableStateOf(start ?: "~") }
     var directory by remember { mutableStateOf<Directory?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-    val path = history.last()
     LaunchedEffect(show, host, path) {
         if (!show) return@LaunchedEffect
         directory = null
@@ -70,10 +66,6 @@ fun ProjectPicker(
         title = tilde(shown, mu.home(host)),
         onDismissRequest = onDismiss,
         onDismissFinished = onDismissFinished,
-        startAction = {
-            if (history.size > 1) BackButton(onClick = { history.removeAt(history.lastIndex) })
-            else SheetClose()
-        },
         bottomAction = {
             val dismiss = LocalDismissState.current
             PrimaryButton("Use Current Directory", enabled = directory != null) {
@@ -94,7 +86,7 @@ fun ProjectPicker(
                         ArrowPreference(
                             title = "..",
                             startAction = { EntryIcon(Solar.MultipleForwardLeftBoldDuotone) },
-                            onClick = { history.add(parentOf(shown)) },
+                            onClick = { path = parentOf(shown) },
                         )
                     }
                 }
@@ -130,9 +122,7 @@ fun ProjectPicker(
                                                 )
                                             },
                                             onClick = {
-                                                history.add(
-                                                    "${listed.path.trimEnd('/')}/${entry.name}"
-                                                )
+                                                path = "${listed.path.trimEnd('/')}/${entry.name}"
                                             },
                                         )
                                 }

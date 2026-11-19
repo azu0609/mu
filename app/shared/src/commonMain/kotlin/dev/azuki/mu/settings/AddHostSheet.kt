@@ -20,12 +20,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.azuki.mu.Mu
 import dev.azuki.mu.api.MuException
-import dev.azuki.mu.design.BackButton
 import dev.azuki.mu.design.Mono
 import dev.azuki.mu.design.Note
 import dev.azuki.mu.design.PrimaryButton
 import dev.azuki.mu.design.Sheet
-import dev.azuki.mu.design.SheetClose
 import dev.azuki.mu.design.SheetColumn
 import dev.azuki.mu.design.Solar
 import dev.azuki.mu.design.icon
@@ -64,9 +62,7 @@ fun AddHostSheet(show: Boolean, mu: Mu, onDismiss: () -> Unit, invite: String? =
         show = show,
         title = if (scanning) "Scan QR Code" else "Add New Host",
         onDismissRequest = onDismiss,
-        startAction = {
-            if (scanning) BackButton(onClick = { scanning = false }) else SheetClose()
-        },
+        onBack = if (scanning) ({ scanning = false }) else null,
         bottomAction =
             if (scanning) null
             else {

@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.dp
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
+import top.yukonga.miuix.kmp.nav.gesture.PredictiveBackHandler
 import top.yukonga.miuix.kmp.theme.LocalDismissState
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.utils.overScrollVertical
@@ -69,7 +70,10 @@ fun Sheet(
     title: String,
     onDismissRequest: () -> Unit,
     onDismissFinished: (() -> Unit)? = null,
-    startAction: @Composable () -> Unit = { SheetClose() },
+    onBack: (() -> Unit)? = null,
+    startAction: @Composable () -> Unit = {
+        if (onBack != null) BackButton(onClick = onBack) else SheetClose()
+    },
     endAction: @Composable () -> Unit = {},
     bottomAction: (@Composable () -> Unit)? = null,
     content: @Composable (PaddingValues) -> Unit,
@@ -80,6 +84,12 @@ fun Sheet(
         onDismissRequest = onDismissRequest,
         onDismissFinished = onDismissFinished,
     ) {
+        PredictiveBackHandler(
+            enabled = onBack != null,
+            onProgress = {},
+            onCommit = { onBack?.invoke() },
+            onCancel = {},
+        )
         SubcomposeLayout(
             // miuix keeps an empty title row's padding even without a title, which this takes
             // over so the body can scroll right up to the drag handle.
