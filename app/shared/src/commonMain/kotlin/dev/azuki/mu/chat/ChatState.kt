@@ -15,10 +15,9 @@ import dev.azuki.mu.api.SessionState
 import dev.azuki.mu.api.SessionUpdate
 import dev.azuki.mu.api.Skill
 import dev.azuki.mu.api.Status
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
 
-@Immutable data class Feedback(val id: Int, val block: Block)
+@Immutable
+data class Feedback(val id: Int, val block: Block)
 
 class ChatState(private val mu: Mu, val target: ChatTarget) : Destination {
     override val host
@@ -72,15 +71,7 @@ class ChatState(private val mu: Mu, val target: ChatTarget) : Destination {
             val resume = epoch?.let { Resume(it, transcript.size) }
             mu.remote(host).openSession(target.session, resume).use { session ->
                 this.session = session
-                coroutineScope {
-                    session.updates.collect { batch ->
-                        apply(batch)
-                        val settled = batch.any {
-                            it is SessionUpdate.Reset || it is SessionUpdate.State
-                        }
-                        if (settled && !running) launch { runCatching { session.markRead() } }
-                    }
-                }
+                session.updates.collect(::apply)
             }
         } catch (e: MuException) {
             error = e.message
@@ -105,23 +96,28 @@ class ChatState(private val mu: Mu, val target: ChatTarget) : Destination {
                     connected = true
                     error = null
                 }
+
                 is SessionUpdate.State -> {
                     state = update.state
                     if (update.started) feedback = emptyList()
                 }
+
                 is SessionUpdate.Committed -> {
                     transcript.commit(update.nodes)
                     path = transcript.path
                     live.clear()
                     notice = null
                 }
+
                 is SessionUpdate.Live -> {
                     if (update.index < live.size) live[update.index] = update.block
                     else live.add(update.block)
                 }
+
                 is SessionUpdate.LiveNotice -> notice = update.block
                 is SessionUpdate.Feedback ->
                     feedback = (feedback + Feedback(feedbacks++, update.block)).takeLast(20)
+
                 is SessionUpdate.Lost -> {
                     connected = false
                     error = update.reason
@@ -131,10 +127,21 @@ class ChatState(private val mu: Mu, val target: ChatTarget) : Destination {
         rows = transcript.rows(live + listOfNotNull(notice), running)
     }
 
+    fun unread(node: Long) = node >= (state?.unreadFrom ?: 0)
+
+    fun read() {
+        val session = session ?: return
+        if (path.none { it.finished != null && unread(it.id) }) return
+        mu.launch { runCatching { session.markRead() } }
+    }
+
     private fun connected(): Session =
         session ?: throw MuException("Not connected to ${mu.name(host)}")
 
-    suspend fun send(text: String, skill: String?) = connected().send(text, skill)
+    suspend fun send(text: String, skill: String?) {
+        read()
+        connected().send(text, skill)
+    }
 
     override suspend fun stop(children: Boolean) = connected().stop(children)
 

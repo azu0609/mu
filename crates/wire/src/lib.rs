@@ -13,7 +13,7 @@ uniffi::custom_type!(PathBuf, String, {
 });
 
 // Bump on any change an older peer cannot read; peers refuse a mismatch.
-pub const PROTOCOL: u32 = 12;
+pub const PROTOCOL: u32 = 13;
 
 pub trait Call: Serialize + DeserializeOwned {
     const PATH: &'static str;
@@ -168,6 +168,7 @@ pub struct State {
     pub model: Model,
     pub stats: Stats,
     pub queued: Vec<String>,
+    pub unread_from: u64,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -194,6 +195,7 @@ pub struct Node {
     // Itself included, oldest first.
     pub siblings: Vec<u64>,
     pub blocks: Vec<Block>,
+    pub finished: Option<u64>,
 }
 
 #[derive(Clone, Copy, Serialize, Deserialize)]

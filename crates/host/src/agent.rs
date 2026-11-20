@@ -72,12 +72,18 @@ impl Inner {
                 context_used: last.input.saturating_add(last.output),
             },
             queued: self.queued.iter().map(|message| message.text.clone()).collect(),
+            unread_from: self.session.unread_from(),
         }
     }
 
     fn node(&self, (id, siblings): (usize, Vec<usize>)) -> Node {
-        let blocks = self.session.node(id).blocks.clone();
-        Node { id: id as u64, siblings: siblings.into_iter().map(|id| id as u64).collect(), blocks }
+        let node = self.session.node(id);
+        Node {
+            id: id as u64,
+            siblings: siblings.into_iter().map(|id| id as u64).collect(),
+            blocks: node.blocks.clone(),
+            finished: node.end.as_ref().and(node.span).map(|span| span.finished),
+        }
     }
 
     fn snapshot(&self, resume: Option<Resume>) -> Vec<Event> {
@@ -348,7 +354,7 @@ impl Agent {
         let mut inner = self.inner();
         if inner.session.mark_read()? {
             inner.session.save()?;
-            (inner.changed)(&inner.session.header().id);
+            inner.emit_state();
         }
         Ok(())
     }

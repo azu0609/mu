@@ -8,6 +8,8 @@ interface Core {
 
     fun compact(n: Long): String
 
+    fun stamp(millis: Long): String
+
     fun mentions(text: String): List<Written>
 
     fun hosts(): List<Host>

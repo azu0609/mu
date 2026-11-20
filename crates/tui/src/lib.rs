@@ -202,9 +202,6 @@ impl App {
 
     fn apply(&mut self, event: Event) {
         let change = self.view.apply(event);
-        if matches!(change, Change::Reset { .. } | Change::State { .. }) && !self.view.running() {
-            self.remote.mark_read(&self.view.id);
-        }
         match change {
             Change::Reset { .. } => {
                 self.connected = true;
@@ -221,6 +218,12 @@ impl App {
             }
             Change::Committed { .. } | Change::Live(_) => (),
             Change::Feedback(block) => self.push_feedback(block),
+        }
+    }
+
+    fn read(&mut self) {
+        if self.draft.is_none() && self.view.has_unread() {
+            self.remote.mark_read(&self.view.id);
         }
     }
 
@@ -793,14 +796,27 @@ impl App {
                             && k.code == Key::Char('g')
                             && self.picker.is_none() =>
                     {
+                        self.read();
                         self.edit_prompt(&mut terminal)?;
                         title.clear();
                     }
-                    Input::Key(k) => self.key(k),
-                    Input::Paste(s) if self.picker.is_none() => self.editor.insert(&s),
+                    Input::Key(k) => {
+                        self.read();
+                        self.key(k);
+                    }
+                    Input::Paste(s) if self.picker.is_none() => {
+                        self.read();
+                        self.editor.insert(&s);
+                    }
                     Input::Mouse(m) => match m.kind {
-                        MouseEventKind::ScrollUp => self.scroll_up(3),
-                        MouseEventKind::ScrollDown => self.scroll_down(3),
+                        MouseEventKind::ScrollUp => {
+                            self.read();
+                            self.scroll_up(3);
+                        }
+                        MouseEventKind::ScrollDown => {
+                            self.read();
+                            self.scroll_down(3);
+                        }
                         _ => (),
                     },
                     _ => (),

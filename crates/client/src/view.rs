@@ -17,6 +17,7 @@ pub struct PathNode {
     pub id: u64,
     pub siblings: Vec<u64>,
     pub blocks: Range<usize>,
+    pub finished: Option<u64>,
 }
 
 pub enum Change {
@@ -30,6 +31,14 @@ pub enum Change {
 impl View {
     pub fn running(&self) -> bool {
         self.state.status == Status::Running
+    }
+
+    pub fn unread(&self, node: &PathNode) -> bool {
+        node.finished.is_some() && node.id >= self.state.unread_from
+    }
+
+    pub fn has_unread(&self) -> bool {
+        self.path.iter().any(|node| self.unread(node))
     }
 
     pub fn last_text(&self, kind: Kind) -> Option<String> {
@@ -66,7 +75,12 @@ impl View {
                 for node in nodes {
                     let start = self.blocks.len();
                     self.blocks.extend(node.blocks);
-                    self.path.push(PathNode { id: node.id, siblings: node.siblings, blocks: start..self.blocks.len() });
+                    self.path.push(PathNode {
+                        id: node.id,
+                        siblings: node.siblings,
+                        blocks: start..self.blocks.len(),
+                        finished: node.finished,
+                    });
                 }
                 self.live.clear();
                 Change::Committed { from }

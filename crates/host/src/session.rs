@@ -331,6 +331,10 @@ impl Session {
         self.records.iter().rposition(|r| matches!(r, Record::Cursor { .. })).map_or(0, |i| i as u64 + 1)
     }
 
+    pub fn unread_from(&self) -> u64 {
+        self.records.iter().rposition(|r| matches!(r, Record::Read)).map_or(0, |i| i as u64)
+    }
+
     pub fn mark_read(&mut self) -> Result<bool> {
         let unread = self.records.iter().rev().find_map(|r| match r {
             Record::Node(_) => Some(true),

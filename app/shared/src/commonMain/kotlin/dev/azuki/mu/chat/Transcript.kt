@@ -14,16 +14,20 @@ sealed interface Row {
     val key: Any
         get() = at
 
-    @Immutable data class User(override val at: Int, val text: String) : Row
+    @Immutable
+    data class User(override val at: Int, val text: String) : Row
 
     @Immutable
     data class AgentMessage(override val at: Int, val text: String, val from: Sender?) : Row
 
-    @Immutable data class Agent(override val at: Int, val text: String) : Row
+    @Immutable
+    data class Agent(override val at: Int, val text: String) : Row
 
-    @Immutable data class Thought(override val at: Int, val block: Block) : Row
+    @Immutable
+    data class Thought(override val at: Int, val block: Block) : Row
 
-    @Immutable data class Call(override val at: Int, val block: Block) : Row
+    @Immutable
+    data class Call(override val at: Int, val block: Block) : Row
 
     @Immutable
     data class Work(
@@ -42,16 +46,32 @@ sealed interface Row {
             get() = "working"
     }
 
-    @Immutable data class Shell(override val at: Int, val block: Block) : Row
+    @Immutable
+    data class Shell(override val at: Int, val block: Block) : Row
 
-    @Immutable data class Notice(override val at: Int, val block: Block) : Row
+    @Immutable
+    data class Notice(override val at: Int, val block: Block) : Row
+
+    @Immutable
+    data class Ended(override val at: Int, val node: Long, val finished: Long) : Row {
+        override val key
+            get() = "ended.$at"
+    }
 }
 
-@Immutable data class PathNode(val id: Long, val siblings: List<Long>, val blocks: IntRange)
+@Immutable
+data class PathNode(
+    val id: Long,
+    val siblings: List<Long>,
+    val blocks: IntRange,
+    val finished: Long?,
+)
 
 class Transcript {
     private val blocks = mutableListOf<Block>()
     private val nodes = mutableListOf<PathNode>()
+
+    private val endings = mutableMapOf<Int, PathNode>()
     private val settled = mutableListOf<Row>()
     private var last = 0
 
@@ -63,6 +83,7 @@ class Transcript {
 
     fun reset(keep: Int) {
         nodes.removeAll { it.blocks.first >= keep }
+        endings.keys.removeAll { it >= keep }
         if (keep >= blocks.size) return
         blocks.subList(keep, blocks.size).clear()
         settled.clear()
@@ -75,7 +96,10 @@ class Transcript {
         for (node in committed) {
             val start = blocks.size
             blocks += node.blocks
-            nodes += PathNode(node.id, node.siblings, start until blocks.size)
+            val added = PathNode(node.id, node.siblings, start until blocks.size, node.finished)
+            nodes += added
+            if (added.finished != null && !added.blocks.isEmpty())
+                endings[added.blocks.last] = added
         }
         settle(from)
     }
@@ -90,14 +114,14 @@ class Transcript {
             }
         val all = ArrayList<Row>(settled.size + 8)
         all += settled
-        turn(joined, last, joined.size, running, all)
+        turn(joined, last, joined.size, running, all, endings)
         return all
     }
 
     private fun settle(from: Int) {
         for (i in from until blocks.size) {
             if (blocks[i].kind.opens && i > last) {
-                turn(blocks, last, i, false, settled)
+                turn(blocks, last, i, false, settled, endings)
                 last = i
             }
         }
@@ -116,6 +140,7 @@ private fun turn(
     end: Int,
     running: Boolean,
     into: MutableList<Row>,
+    endings: Map<Int, PathNode>,
 ) {
     var i = start
     val opening = blocks.getOrNull(start)?.takeIf { start < end && it.kind.opens }
@@ -148,6 +173,8 @@ private fun turn(
             )
     }
     for (j in i + folded until end) single(blocks[j], j, into)
+    val ending = (end - 1 downTo start).firstNotNullOfOrNull { endings[it] } ?: return
+    into += Row.Ended(ending.blocks.last, ending.id, ending.finished ?: return)
 }
 
 private fun single(block: Block, at: Int, into: MutableList<Row>) {
@@ -158,6 +185,7 @@ private fun single(block: Block, at: Int, into: MutableList<Row>) {
         BlockKind.Shell -> into += Row.Shell(at, block)
         BlockKind.Notice,
         BlockKind.Warning -> into += Row.Notice(at, block)
+
         BlockKind.User,
         BlockKind.AgentMessage -> Unit
     }

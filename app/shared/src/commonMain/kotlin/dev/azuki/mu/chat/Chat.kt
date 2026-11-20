@@ -9,6 +9,8 @@ import androidx.compose.animation.scaleOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +26,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -53,6 +56,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontStyle
@@ -144,7 +149,14 @@ fun Chat(
         if (fold >= 0) list.requestScrollToItem(fold)
     }
 
-    Box(Modifier.fillMaxSize()) {
+    Box(
+        Modifier.fillMaxSize().pointerInput(chat) {
+            awaitEachGesture {
+                awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                chat.read()
+            }
+        }
+    ) {
         LazyColumn(
             state = list,
             modifier =
@@ -165,8 +177,12 @@ fun Chat(
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
             items(rows, key = { it.key }, contentType = { it::class }) { row ->
-                RowView(row, expanded, onExpand) { session ->
-                    mu.open(chat.target.host, session)
+                if (row is Row.Ended) {
+                    EndedView(mu.core.stamp(row.finished), chat.unread(row.node))
+                } else {
+                    RowView(row, expanded, onExpand) { session ->
+                        mu.open(chat.target.host, session)
+                    }
                 }
             }
             items(feedback, key = { "feedback.${it.id}" }) { NoticeView(it.block) }
@@ -235,6 +251,25 @@ private fun RowView(
         is Row.Working -> WorkingView(row)
         is Row.Shell -> ShellCard(row.block, onExpand)
         is Row.Notice -> NoticeView(row.block)
+        is Row.Ended -> Unit
+    }
+}
+
+@Composable
+private fun EndedView(stamp: String, unread: Boolean) {
+    Row(
+        Modifier.fillMaxWidth().padding(horizontal = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            stamp,
+            Modifier.weight(1f),
+            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+            style = MiuixTheme.textStyles.footnote2,
+        )
+        if (unread) {
+            Box(Modifier.size(7.dp).clip(CircleShape).background(MiuixTheme.colorScheme.primary))
+        }
     }
 }
 

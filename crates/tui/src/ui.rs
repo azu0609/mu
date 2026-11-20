@@ -12,7 +12,7 @@ use crossterm::{
     style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use mu_client::{Block, Kind, Status, Tool, ToolStatus, counts};
+use mu_client::{Block, Kind, Status, Tool, ToolStatus, clock, counts};
 use std::io::{self, Write};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -420,6 +420,36 @@ fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
     result
 }
 
+struct Ending {
+    finished: u64,
+    unread: bool,
+}
+
+struct Item<'a> {
+    block: &'a Block,
+    ending: Option<Ending>,
+}
+
+impl<'a> From<&'a Block> for Item<'a> {
+    fn from(block: &'a Block) -> Self {
+        Self { block, ending: None }
+    }
+}
+
+fn item_lines(item: &Item, width: usize, expanded: bool) -> Vec<Line> {
+    let mut lines = block_lines(item.block, width, expanded);
+    if let Some(ending) = &item.ending {
+        let stamp = format!("  {}", clock::stamp(ending.finished));
+        let mut line = Line::new(&stamp, GRAY);
+        if ending.unread {
+            line.push(&format!("{:>1$}", "•", width.saturating_sub(stamp.width())), Style::new(ACCENT));
+        }
+        lines.push(line);
+        lines.push(Line::new("", GRAY));
+    }
+    lines
+}
+
 #[derive(Clone, Copy)]
 pub struct ScrollAnchor {
     pub width: usize,
@@ -462,11 +492,21 @@ impl Transcript {
         }
     }
 
-    fn static_blocks<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = &'a Block> + 'a {
-        app.view.blocks.iter()
+    fn static_items<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = Item<'a>> + 'a {
+        let view = &app.view;
+        view.path.iter().flat_map(move |node| {
+            let last = node.blocks.end.saturating_sub(1);
+            view.blocks[node.blocks.clone()].iter().zip(node.blocks.clone()).map(move |(block, i)| Item {
+                block,
+                ending: node
+                    .finished
+                    .filter(|_| i == last)
+                    .map(|finished| Ending { finished, unread: view.unread(node) }),
+            })
+        })
     }
 
-    fn dynamic_blocks<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = &'a Block> + 'a {
+    fn dynamic_items<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = Item<'a>> + 'a {
         app.view
             .live
             .blocks
@@ -475,10 +515,11 @@ impl Transcript {
             .chain(app.feedback.iter())
             .chain(app.shell.iter().map(|shell| &shell.block))
             .chain(self.pending.iter())
+            .map(Item::from)
     }
 
-    fn blocks<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = &'a Block> + 'a {
-        self.static_blocks(app).chain(self.dynamic_blocks(app))
+    fn items<'a>(&'a self, app: &'a App) -> impl DoubleEndedIterator<Item = Item<'a>> + 'a {
+        self.static_items(app).chain(self.dynamic_items(app))
     }
 
     fn line_count(&self, app: &mut App, width: usize) -> usize {
@@ -487,8 +528,8 @@ impl Transcript {
             Some(cached) if cached.matches(width, app.expanded, blocks) => cached.lines,
             _ => {
                 let lines = self
-                    .static_blocks(app)
-                    .map(|block| block_lines(block, width.saturating_sub(1), app.expanded).len())
+                    .static_items(app)
+                    .map(|item| item_lines(&item, width.saturating_sub(1), app.expanded).len())
                     .sum();
                 app.transcript_static = Some(CachedLines { width, expanded: app.expanded, blocks, lines });
                 lines
@@ -496,8 +537,8 @@ impl Transcript {
         };
         static_lines
             + self
-                .dynamic_blocks(app)
-                .map(|block| block_lines(block, width.saturating_sub(1), app.expanded).len())
+                .dynamic_items(app)
+                .map(|item| item_lines(&item, width.saturating_sub(1), app.expanded).len())
                 .sum::<usize>()
     }
 }
@@ -567,8 +608,8 @@ pub fn draw(app: &mut App) -> Result<()> {
         }
         let need = transcript_height.saturating_add(app.scroll);
         let mut reversed = vec![];
-        for block in transcript.blocks(app).rev() {
-            reversed.extend(block_lines(block, width - 1, app.expanded).into_iter().rev());
+        for item in transcript.items(app).rev() {
+            reversed.extend(item_lines(&item, width - 1, app.expanded).into_iter().rev());
             if reversed.len() >= need {
                 break;
             }

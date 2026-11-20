@@ -54,6 +54,8 @@ class FfiCore(private val core: Ffi, private val device: String) : Core {
 
     override fun compact(n: Long): String = dev.azuki.mu.core.compact(n.toULong())
 
+    override fun stamp(millis: Long): String = dev.azuki.mu.core.stamp(millis.toULong())
+
     override fun mentions(text: String): List<Written> =
         dev.azuki.mu.core.mentions(text).map {
             Written(it.start.toInt(), it.end.toInt(), it.path, it.closed)
@@ -315,6 +317,7 @@ private fun dev.azuki.mu.wire.State.toModel() =
         stats.uncachedInput.toLong(),
         stats.output.toLong(),
         queued,
+        unreadFrom.toLong(),
     )
 
 private fun dev.azuki.mu.core.SessionUpdate.toModel(): SessionUpdate =
@@ -335,6 +338,7 @@ private fun dev.azuki.mu.core.SessionUpdate.toModel(): SessionUpdate =
                         node.id.toLong(),
                         node.siblings.map { it.toLong() },
                         node.blocks.map { it.toModel() },
+                        node.finished?.toLong(),
                     )
                 }
             )

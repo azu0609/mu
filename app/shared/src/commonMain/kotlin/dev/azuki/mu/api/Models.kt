@@ -83,6 +83,7 @@ data class Model(val name: String, val effort: String?, val context: Long? = nul
 
 enum class BlockKind {
     User,
+
     // From another session, which the block's `from` names.
     AgentMessage,
     Agent,
@@ -132,10 +133,17 @@ data class SessionState(
     val uncachedInput: Long,
     val output: Long,
     val queued: List<String>,
+    val unreadFrom: Long,
 )
 
-// `siblings` includes itself, oldest first.
-data class Node(val id: Long, val siblings: List<Long>, val blocks: List<Block>)
+// `siblings` includes itself, oldest first. `finished` is when it ended a turn, in milliseconds
+// since the Unix epoch.
+data class Node(
+    val id: Long,
+    val siblings: List<Long>,
+    val blocks: List<Block>,
+    val finished: Long?,
+)
 
 data class TreeEntry(
     val node: Long,
