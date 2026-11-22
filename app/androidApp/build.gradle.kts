@@ -2,6 +2,7 @@ import javax.inject.Inject
 
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.compose.compiler)
 }
 
@@ -13,7 +14,7 @@ val rustAbis =
     }
 
 android {
-    namespace = "dev.azuki.mu.android"
+    namespace = "dev.azuki.mu"
     compileSdk = 37
     // What the flake's dev shell provides; AGP cannot install into the Nix store.
     buildToolsVersion = "37.0.0"
@@ -40,15 +41,26 @@ android {
         }
     }
 
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_21
+        targetCompatibility = JavaVersion.VERSION_21
+    }
+
     buildFeatures {
         compose = true
     }
 }
 
 dependencies {
-    implementation(project(":shared"))
-    implementation(libs.androidx.activity.compose)
+    implementation(libs.compose.runtime)
     implementation(libs.compose.foundation)
+    implementation(libs.compose.ui)
+    implementation(libs.lifecycle.runtime.compose)
+    implementation(libs.miuix.ui)
+    implementation(libs.miuix.preference)
+    implementation(libs.miuix.nav)
+    implementation(libs.markdown.renderer)
+    implementation(libs.androidx.activity.compose)
     implementation(libs.androidx.annotation)
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.jna) { artifact { type = "aar" } }
