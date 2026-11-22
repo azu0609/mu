@@ -76,7 +76,7 @@ sealed interface Attached {
     data class Text(val lines: Int, val head: String) : Attached
 }
 
-data class ModelInfo(val name: String, val context: Long?)
+data class ModelInfo(val name: String, val context: Long?, val efforts: List<String>)
 
 // A null effort is the endpoint's own default; the host fills in a null context when it can.
 data class Model(val name: String, val effort: String?, val context: Long? = null)

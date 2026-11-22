@@ -97,7 +97,6 @@ pub fn command_menu(text: &str, cursor: usize, skills: &[Skill]) -> Option<Menu>
     Some(Menu::new(start..end, trimmed.into(), entries))
 }
 
-const EFFORTS: &[&str] = &["minimal", "low", "medium", "high", "xhigh"];
 const CONTEXTS: &[u64] = &[128_000, 200_000, 256_000, 400_000, 1_000_000];
 
 // The argument of /model under the cursor, after the ones already typed.
@@ -144,8 +143,14 @@ pub fn model_menu(argument: ModelArgument, models: &[ModelInfo]) -> Option<Menu>
                 entry(model.name.clone(), format!("{}{context}", model.name))
             })
             .collect(),
-        [_] => std::iter::once(entry("-".into(), "-  endpoint default".into()))
-            .chain(EFFORTS.iter().map(|&effort| entry(effort.into(), effort.into())))
+        [name] => std::iter::once(entry("-".into(), "-  endpoint default".into()))
+            .chain(
+                models
+                    .iter()
+                    .filter(|model| model.name == *name)
+                    .flat_map(|model| &model.efforts)
+                    .map(|effort| entry(effort.clone(), effort.clone())),
+            )
             .filter(|entry| entry.text.starts_with(&query))
             .collect(),
         [name, _] => {

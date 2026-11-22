@@ -28,31 +28,25 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.window.WindowCascadingListPopup
 import top.yukonga.miuix.kmp.window.WindowDialog
 
-val Efforts = listOf("minimal", "low", "medium", "high", "xhigh")
-
 @Composable
 internal fun ModelButton(mu: Mu, destination: Destination) {
-    var custom by remember { mutableStateOf(false) }
+    var otherModel by remember { mutableStateOf(false) }
+    var otherEffort by remember { mutableStateOf(false) }
     val model = destination.model
     val effort = destination.effort
-    val pick = { picked: String -> destination.use(picked, effort) }
     val models = destination.host?.let { mu.models[it] }.orEmpty()
-    val modelItems = buildList {
-        if (model != null && models.none { it.name == model }) {
-            add(DropdownItem(model, selected = true, onClick = {}))
-        }
-        models.forEach {
-            add(
-                DropdownItem(
-                    it.name,
-                    summary = it.context?.let(mu.core::compact),
-                    selected = it.name == model,
-                    onClick = { pick(it.name) },
-                )
+    val efforts = models.find { it.name == model }?.efforts.orEmpty()
+    val customModel = model?.takeIf { models.none { known -> known.name == it } }
+    val customEffort = effort?.takeIf { it !in efforts }
+    val modelItems =
+        models.map {
+            DropdownItem(
+                it.name,
+                summary = it.context?.let(mu.core::compact),
+                selected = it.name == model,
+                onClick = { destination.use(it.name, effort) },
             )
-        }
-        add(DropdownItem("Other…", onClick = { custom = true }))
-    }
+        } + otherItem(customModel) { otherModel = true }
     val effortItems =
         listOf(
             DropdownItem(
@@ -61,9 +55,10 @@ internal fun ModelButton(mu: Mu, destination: Destination) {
                 onClick = { destination.use(model, null) },
             )
         ) +
-            Efforts.map {
+            efforts.map {
                 DropdownItem(it, selected = it == effort, onClick = { destination.use(model, it) })
-            }
+            } +
+            otherItem(customEffort) { otherEffort = true }
     val entry =
         DropdownEntry(
             listOf(
@@ -110,23 +105,44 @@ internal fun ModelButton(mu: Mu, destination: Destination) {
             onDismissFinished = { held = false },
         )
     }
-    ModelDialog(custom, onDismiss = { custom = false }, onPick = pick)
+    OtherDialog(
+        otherModel,
+        "Model",
+        "Any model the host's endpoint serves",
+        customModel,
+        onDismiss = { otherModel = false },
+        onPick = { destination.use(it, effort) },
+    )
+    OtherDialog(
+        otherEffort,
+        "Effort",
+        "Any effort the model takes",
+        customEffort,
+        onDismiss = { otherEffort = false },
+        onPick = { destination.use(model, it) },
+    )
 }
 
+private fun otherItem(custom: String?, onClick: () -> Unit) =
+    if (custom == null) DropdownItem("Other…", onClick = onClick)
+    else DropdownItem(custom, summary = "Other", selected = true, onClick = onClick)
+
 @Composable
-private fun ModelDialog(show: Boolean, onDismiss: () -> Unit, onPick: (String) -> Unit) {
-    var name by remember(show) { mutableStateOf("") }
-    WindowDialog(
-        show = show,
-        title = "Model",
-        summary = "Any model the host's endpoint serves",
-        onDismissRequest = onDismiss,
-    ) {
+private fun OtherDialog(
+    show: Boolean,
+    title: String,
+    summary: String,
+    current: String?,
+    onDismiss: () -> Unit,
+    onPick: (String) -> Unit,
+) {
+    var name by remember(show) { mutableStateOf(current.orEmpty()) }
+    WindowDialog(show = show, title = title, summary = summary, onDismissRequest = onDismiss) {
         val dismiss = LocalDismissState.current
         TextField(
             value = name,
             onValueChange = { name = it },
-            label = "Model",
+            label = title,
             useLabelAsPlaceholder = true,
             singleLine = true,
             textStyle = MiuixTheme.textStyles.main.copy(fontFamily = Mono),

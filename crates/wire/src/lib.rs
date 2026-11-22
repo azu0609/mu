@@ -148,6 +148,7 @@ pub struct Model {
 pub struct ModelInfo {
     pub name: String,
     pub context: Option<u64>,
+    pub efforts: Vec<String>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]

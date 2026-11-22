@@ -159,7 +159,7 @@ private class FfiRemote(private val remote: dev.azuki.mu.core.Remote) : Remote {
     }
 
     override suspend fun listModels(): List<ModelInfo> = mapped {
-        remote.listModels().map { ModelInfo(it.name, it.context?.toLong()) }
+        remote.listModels().map { ModelInfo(it.name, it.context?.toLong(), it.efforts) }
     }
 
     override suspend fun setIcon(icon: String?) = mapped { remote.setIcon(icon) }

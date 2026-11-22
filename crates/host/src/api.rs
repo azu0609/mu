@@ -143,6 +143,8 @@ fn curl(path: &str, max_time: u64) -> Result<Command> {
     Ok(curl)
 }
 
+const EFFORTS: [&str; 5] = ["minimal", "low", "medium", "high", "xhigh"];
+
 // Asks for Anthropic's shape of the list even though mu speaks Responses: it is the only spec
 // that says how much context a model takes.
 pub fn models() -> Result<Vec<ModelInfo>> {
@@ -174,6 +176,7 @@ pub fn models() -> Result<Vec<ModelInfo>> {
             Some(ModelInfo {
                 name: model["id"].as_str()?.to_owned(),
                 context: model["max_input_tokens"].as_u64().filter(|&n| n > 0),
+                efforts: EFFORTS.map(Into::into).into(),
             })
         })
         .collect())
