@@ -295,9 +295,17 @@ pub struct SessionSummary {
 pub struct Profile {
     pub name: String,
     pub home: PathBuf,
-    pub icon: Option<String>,
+    pub pictogram: Option<Pictogram>,
     pub description: String,
     pub snippets: Vec<Snippet>,
+}
+
+// An Iconify icon as `prefix:name`, tinted ARGB or else in the client's accent.
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
+pub struct Pictogram {
+    pub name: String,
+    pub tint: Option<u32>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -306,7 +314,7 @@ pub struct Snippet {
     pub id: String,
     pub name: String,
     pub command: String,
-    pub icon: Option<String>,
+    pub pictogram: Option<Pictogram>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -545,9 +553,9 @@ calls! {
         => "/complete_mention" -> Option<Mention>;
     AppendShell { session_id: String, run: String } => "/append_shell" -> ();
     DeleteSessions {} => "/delete_sessions" -> Deleted;
-    SetIcon { icon: Option<String> } => "/set_icon" -> ();
+    SetPictogram { pictogram: Option<Pictogram> } => "/set_pictogram" -> ();
     SetDescription { description: String } => "/set_description" -> ();
-    SaveSnippet { id: Option<String>, name: String, command: String, icon: Option<String> }
+    SaveSnippet { id: Option<String>, name: String, command: String, pictogram: Option<Pictogram> }
         => "/save_snippet" -> String;
     DeleteSnippet { id: String } => "/delete_snippet" -> ();
     ListDirectory { path: PathBuf } => "/list_directory" -> Directory;

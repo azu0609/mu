@@ -130,6 +130,10 @@
               ANDROID_SDK_ROOT = sdk;
               ANDROID_NDK_HOME = "${sdk}/ndk/${ndk}";
               JAVA_HOME = jdk.home;
+              SOLAR_ICONS = pkgs.fetchzip {
+                url = "https://registry.npmjs.org/@iconify-json/solar/-/solar-1.2.17.tgz";
+                hash = "sha256-gGhymGsI0P6QXeBfaQasVbLN4Y8DNTUsF4WIA/KAkc4=";
+              };
               GRADLE_OPTS = "-Dorg.gradle.project.android.aapt2FromMavenOverride=${sdk}/build-tools/${buildTools}/aapt2";
             };
         }

@@ -3,8 +3,8 @@
 use mu_client::{
     AppendShell, Block, Call, Change, Checkout, Client, CompleteMention, CreateSession, DeleteSessions, DeleteSnippet,
     Deleted, Directory, Edit, Endpoint, GetTree, HostView, Invite, ListDirectory, ListModels, ListSkills, MarkRead,
-    Mention, Model, ModelInfo, Node, Profile, RecallQueued, ResolveMentions, Resolved, Resume, SaveSnippet,
-    SendMessage, SessionSummary, SetDescription, SetIcon, SetModel, ShellEvent, Skill, State, Stop, SwitchBranch,
+    Mention, Model, ModelInfo, Node, Pictogram, Profile, RecallQueued, ResolveMentions, Resolved, Resume, SaveSnippet,
+    SendMessage, SessionSummary, SetDescription, SetModel, SetPictogram, ShellEvent, Skill, State, Stop, SwitchBranch,
     ToolOutput, ToolStatus, Touched, TreeEntry, Update, View, Written,
     hosts::{Hosts, Paired},
 };
@@ -91,7 +91,7 @@ impl Drop for Task {
 pub struct Host {
     pub id: String,
     pub name: String,
-    pub icon: Option<String>,
+    pub pictogram: Option<Pictogram>,
     pub description: String,
     pub address: String,
 }
@@ -101,7 +101,7 @@ impl From<&Paired> for Host {
         Self {
             id: host.remote.cert.clone(),
             name: host.name.clone(),
-            icon: host.icon.clone(),
+            pictogram: host.pictogram.clone(),
             description: host.description.clone(),
             address: host.remote.address.clone(),
         }
@@ -151,7 +151,7 @@ impl Core {
         let invite: Invite = invite.parse().map_err(MuError::Failed)?;
         let (remote, info) =
             spawn(&self.shared.runtime, async move { mu_client::pair(&invite, &device).await }).await?;
-        let paired = Paired { name: info.name, icon: None, description: String::new(), remote };
+        let paired = Paired { name: info.name, pictogram: None, description: String::new(), remote };
         self.shared.hosts.lock().unwrap().add(paired.clone())?;
         // A connection made with an older token would keep presenting it.
         self.shared.clients.lock().unwrap().remove(&paired.remote.cert);
@@ -225,7 +225,7 @@ impl Remote {
                 let profile = &view.profile;
                 let _ = hosts.lock().unwrap().update(&id, |paired| {
                     paired.name = profile.name.clone();
-                    paired.icon = profile.icon.clone();
+                    paired.pictogram = profile.pictogram.clone();
                     paired.description = profile.description.clone();
                 });
                 listener.on_update(HostUpdate::Host { profile: profile.clone(), sessions: view.sessions.clone() });
@@ -253,8 +253,8 @@ impl Remote {
         self.call(DeleteSessions {}).await
     }
 
-    pub async fn set_icon(&self, icon: Option<String>) -> Result<(), MuError> {
-        self.call(SetIcon { icon }).await
+    pub async fn set_pictogram(&self, pictogram: Option<Pictogram>) -> Result<(), MuError> {
+        self.call(SetPictogram { pictogram }).await
     }
 
     pub async fn set_description(&self, description: String) -> Result<(), MuError> {
@@ -266,9 +266,9 @@ impl Remote {
         id: Option<String>,
         name: String,
         command: String,
-        icon: Option<String>,
+        pictogram: Option<Pictogram>,
     ) -> Result<String, MuError> {
-        self.call(SaveSnippet { id, name, command, icon }).await
+        self.call(SaveSnippet { id, name, command, pictogram }).await
     }
 
     pub async fn delete_snippet(&self, id: String) -> Result<(), MuError> {

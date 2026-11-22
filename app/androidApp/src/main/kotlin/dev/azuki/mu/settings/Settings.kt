@@ -21,7 +21,8 @@ import dev.azuki.mu.Connection
 import dev.azuki.mu.Mu
 import dev.azuki.mu.core.version
 import dev.azuki.mu.design.BackButton
-import dev.azuki.mu.design.Pictograms
+import dev.azuki.mu.design.HostIcon
+import dev.azuki.mu.design.PictogramIcon
 import dev.azuki.mu.design.SectionTitle
 import dev.azuki.mu.design.SmallIconButton
 import dev.azuki.mu.design.Solar
@@ -29,7 +30,6 @@ import dev.azuki.mu.design.TopBar
 import dev.azuki.mu.label
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
-import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.Text
@@ -79,17 +79,11 @@ fun SettingsPage(mu: Mu, onBack: () -> Unit, onHost: (String) -> Unit) {
                         )
                     }
                     mu.hosts.forEach { host ->
-                        val pictogram = Pictograms.host(host.icon)
                         ArrowPreference(
                             title = mu.name(host.id),
                             summary = host.description.takeIf(String::isNotBlank)?.let { "“$it”" },
                             startAction = {
-                                Icon(
-                                    pictogram.vector,
-                                    null,
-                                    Modifier.size(28.dp),
-                                    tint = pictogram.tint,
-                                )
+                                PictogramIcon(host.pictogram, HostIcon, Modifier.size(28.dp))
                             },
                             endActions = {
                                 Text(

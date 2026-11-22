@@ -1,4 +1,4 @@
-use crate::{Remote, Result};
+use crate::{Pictogram, Remote, Result};
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
@@ -10,7 +10,7 @@ use std::{
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub struct Paired {
     pub name: String,
-    pub icon: Option<String>,
+    pub pictogram: Option<Pictogram>,
     pub description: String,
     #[serde(flatten)]
     pub remote: Remote,

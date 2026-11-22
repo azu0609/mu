@@ -1,11 +1,11 @@
 use crate::{Result, devices::short_id, home, store};
-use mu_wire::{self as wire, Snippet};
+use mu_wire::{self as wire, Pictogram, Snippet};
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Mutex};
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Stored {
-    icon: Option<String>,
+    pictogram: Option<Pictogram>,
     description: String,
     snippets: Vec<Snippet>,
 }
@@ -26,16 +26,16 @@ impl Profile {
         wire::Profile {
             name: self.name.clone(),
             home: home(),
-            icon: stored.icon,
+            pictogram: stored.pictogram,
             description: stored.description,
             snippets: stored.snippets,
         }
     }
 
-    pub fn set_icon(&self, icon: Option<String>) -> Result<()> {
-        let icon = icon_name(icon)?;
+    pub fn set_pictogram(&self, pictogram: Option<Pictogram>) -> Result<()> {
+        let pictogram = valid(pictogram)?;
         self.update(|stored| {
-            stored.icon = icon;
+            stored.pictogram = pictogram;
             Ok(())
         })
     }
@@ -57,7 +57,8 @@ impl Profile {
         if command.len() > 16 * 1024 || command.contains('\0') {
             return Err("A snippet's command must be text under 16 KiB".into());
         }
-        let mut snippet = Snippet { id: String::new(), name, command: command.into(), icon: icon_name(call.icon)? };
+        let mut snippet =
+            Snippet { id: String::new(), name, command: command.into(), pictogram: valid(call.pictogram)? };
         self.update(|stored| {
             match call.id {
                 Some(id) => {
@@ -98,14 +99,13 @@ impl Profile {
     }
 }
 
-fn icon_name(icon: Option<String>) -> Result<Option<String>> {
-    let Some(icon) = icon.filter(|icon| !icon.is_empty()) else {
-        return Ok(None);
-    };
-    if icon.len() > 64 || !icon.chars().all(|c| c.is_ascii_alphanumeric() || "-_:".contains(c)) {
-        return Err(format!("Not an icon name: {icon}").into());
+fn valid(pictogram: Option<Pictogram>) -> Result<Option<Pictogram>> {
+    if let Some(Pictogram { name, .. }) = &pictogram
+        && (name.is_empty() || name.len() > 64 || !name.chars().all(|c| c.is_ascii_alphanumeric() || "-_:".contains(c)))
+    {
+        return Err(format!("Not an icon name: {name}").into());
     }
-    Ok(Some(icon))
+    Ok(pictogram)
 }
 
 fn line(what: &str, text: &str, limit: usize) -> Result<String> {

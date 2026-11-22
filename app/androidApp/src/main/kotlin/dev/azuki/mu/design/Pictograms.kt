@@ -14,81 +14,61 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import dev.azuki.mu.wire.Pictogram
 import top.yukonga.miuix.kmp.basic.Icon
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-// Hosts and snippets name their icon, as "solar:<name>", for every client to draw.
-class Pictogram(val name: String, val vector: ImageVector, private val hue: Color? = null) {
-    val tint: Color
-        @Composable @ReadOnlyComposable get() = hue ?: MiuixTheme.colorScheme.primary
+const val HostIcon = "solar:server-2-bold-duotone"
+const val SnippetIcon = "solar:file-terminal-bold-duotone"
+
+// Solar's bold duotone icons, by the Iconify id hosts and snippets name them with.
+object Pictograms {
+    class Entry(val name: String, val category: String, private val paths: List<String>) {
+        val label = name.removePrefix("solar:").removeSuffix("-bold-duotone").replace('-', ' ')
+        val words = "$category $label".lowercase()
+
+        val vector: ImageVector by lazy {
+            icon(name) {
+                paths.forEach { path ->
+                    val (alpha, rule, data) = path.split(' ', limit = 3)
+                    fill(data, alpha.toFloat(), evenOdd = rule == "evenodd")
+                }
+            }
+        }
+    }
+
+    val all: List<Entry> =
+        Pictograms::class.java.getResourceAsStream("pictograms.tsv")!!.bufferedReader().useLines {
+            lines ->
+            lines
+                .map { line ->
+                    val fields = line.split('\t')
+                    Entry(fields[1], fields[0], fields.drop(2))
+                }
+                .toList()
+        }
+
+    private val byName = all.associateBy(Entry::name)
+
+    // Falls back on `default` for names from icon sets this client lacks.
+    fun vector(name: String?, default: String): ImageVector =
+        (name?.let(byName::get) ?: byName.getValue(default)).vector
 }
 
-object Pictograms {
-    val all =
-        listOf(
-            Pictogram("solar:server-2-bold-duotone", Solar.Server2BoldDuotone, Color(0xFF7D99A3)),
-            Pictogram(
-                "solar:box-minimalistic-bold-duotone",
-                Solar.BoxMinimalisticBoldDuotone,
-                Color(0xFF6E8C93),
-            ),
-            Pictogram(
-                "solar:laptop-minimalistic-bold-duotone",
-                Solar.LaptopMinimalisticBoldDuotone,
-                Color(0xFF2CCB9C),
-            ),
-            Pictogram(
-                "solar:smartphone-bold-duotone",
-                Solar.SmartphoneBoldDuotone,
-                Color(0xFFFF9F43),
-            ),
-            Pictogram("solar:database-bold-duotone", Solar.DatabaseBoldDuotone),
-            Pictogram(
-                "solar:star-shine-bold-duotone",
-                Solar.StarShineBoldDuotone,
-                Color(0xFF9B7BF7),
-            ),
-            Pictogram(
-                "solar:crown-star-bold-duotone",
-                Solar.CrownStarBoldDuotone,
-                Color(0xFF5AB4F0),
-            ),
-            Pictogram("solar:cat-bold-duotone", Solar.CatBoldDuotone),
-            Pictogram("solar:git-branch-bold-duotone", Solar.GitBranchBoldDuotone),
-            Pictogram("solar:folder-git-bold-duotone", Solar.FolderGitBoldDuotone),
-            Pictogram("solar:file-stack-bold-duotone", Solar.FileStackBoldDuotone),
-            Pictogram("solar:file-terminal-bold-duotone", Solar.FileTerminalBoldDuotone),
-            Pictogram("solar:file-text-bold-duotone", Solar.FileTextBoldDuotone),
-            Pictogram("solar:toolbox-bold-duotone", Solar.ToolboxBoldDuotone),
-            Pictogram(
-                "solar:magic-wand-2-bold-duotone",
-                Solar.MagicWand2BoldDuotone,
-                Color(0xFF9B7BF7),
-            ),
-            Pictogram("solar:settings-bold-duotone", Solar.SettingsBoldDuotone, Color(0xFF7D99A3)),
-            Pictogram("solar:mailbox-bold-duotone", Solar.MailboxBoldDuotone),
-            Pictogram("solar:keyboard-bold-duotone", Solar.KeyboardBoldDuotone, Color(0xFF7D99A3)),
-            Pictogram(
-                "solar:camera-minimalistic-bold-duotone",
-                Solar.CameraMinimalisticBoldDuotone,
-            ),
-            Pictogram("solar:album-bold-duotone", Solar.AlbumBoldDuotone),
-        )
+val Pictogram?.color: Color
+    @Composable
+    @ReadOnlyComposable
+    get() = this?.tint?.let { Color(it.toInt()) } ?: MiuixTheme.colorScheme.primary
 
-    private val byName = all.associateBy { it.name }
-
-    fun host(name: String?): Pictogram = name?.let(byName::get) ?: all[0]
-
-    // Snippets take the accent whatever the icon, so a list of them reads as one.
-    fun snippet(name: String?): Pictogram {
-        val found = name?.let(byName::get) ?: byName.getValue("solar:file-terminal-bold-duotone")
-        return Pictogram(found.name, found.vector)
-    }
+@Composable
+fun PictogramIcon(pictogram: Pictogram?, default: String, modifier: Modifier = Modifier) {
+    Icon(Pictograms.vector(pictogram?.name, default), null, modifier, tint = pictogram.color)
 }
 
 @Composable
 fun PictogramBadge(
-    pictogram: Pictogram,
+    pictogram: Pictogram?,
+    default: String,
     modifier: Modifier = Modifier,
     size: Dp = 96.dp,
     onClick: (() -> Unit)? = null,
@@ -101,6 +81,6 @@ fun PictogramBadge(
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
-        Icon(pictogram.vector, null, Modifier.size(size * 0.55f), tint = pictogram.tint)
+        PictogramIcon(pictogram, default, Modifier.size(size * 0.55f))
     }
 }

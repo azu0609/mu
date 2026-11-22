@@ -33,15 +33,16 @@ import dev.azuki.mu.Mu
 import dev.azuki.mu.design.BackButton
 import dev.azuki.mu.design.CircleButton
 import dev.azuki.mu.design.DialogButtons
+import dev.azuki.mu.design.HostIcon
 import dev.azuki.mu.design.Mono
 import dev.azuki.mu.design.PictogramBadge
-import dev.azuki.mu.design.Pictograms
+import dev.azuki.mu.design.PictogramIcon
 import dev.azuki.mu.design.Presented
 import dev.azuki.mu.design.SectionTitle
 import dev.azuki.mu.design.SmallIconButton
+import dev.azuki.mu.design.SnippetIcon
 import dev.azuki.mu.design.Solar
 import dev.azuki.mu.design.TopBar
-import dev.azuki.mu.design.icon
 import dev.azuki.mu.label
 import dev.azuki.mu.reason
 import dev.azuki.mu.wire.Snippet
@@ -71,7 +72,7 @@ fun HostPage(mu: Mu, id: String, onBack: () -> Unit) {
     var choosingIcon by remember { mutableStateOf(false) }
     val snippet = remember { Presented<Editing>() }
     val deleting = remember { Presented<String>() }
-    val icon = host?.icon
+    val pictogram = host?.pictogram
     val description = host?.description.orEmpty()
     val gray = MiuixTheme.colorScheme.onSurfaceVariantSummary
 
@@ -107,7 +108,8 @@ fun HostPage(mu: Mu, id: String, onBack: () -> Unit) {
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     PictogramBadge(
-                        Pictograms.host(icon),
+                        pictogram,
+                        HostIcon,
                         onClick = if (online) ({ choosingIcon = true }) else null,
                     )
                     Text(
@@ -256,9 +258,9 @@ fun HostPage(mu: Mu, id: String, onBack: () -> Unit) {
     }
     IconPicker(
         choosingIcon,
-        icon,
-        snippet = false,
-        onPick = { name -> mu.launch { mu.remote(id).setIcon(name) } },
+        pictogram,
+        HostIcon,
+        onPick = { mu.launch { mu.remote(id).setPictogram(it) } },
         onDismiss = { choosingIcon = false },
     )
     snippet.value?.let { editing ->
@@ -278,17 +280,9 @@ private class Editing(val snippet: Snippet?)
 
 @Composable
 private fun SnippetRow(snippet: Snippet, onClick: () -> Unit) {
-    val pictogram = Pictograms.snippet(snippet.icon)
     BasicComponent(
         onClick = onClick,
-        startAction = {
-            Icon(
-                pictogram.vector,
-                null,
-                Modifier.size(24.dp),
-                tint = pictogram.tint,
-            )
-        },
+        startAction = { PictogramIcon(snippet.pictogram, SnippetIcon, Modifier.size(24.dp)) },
         endActions = {
             Image(
                 MiuixIcons.Basic.ArrowRight,

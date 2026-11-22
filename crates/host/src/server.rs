@@ -206,8 +206,11 @@ pub async fn handle(host: Arc<Host>, peer: Peer, request: Request<Incoming>) -> 
             })
             .await
         }
-        wire::SetIcon::PATH => {
-            call(host, body, |host, call: wire::SetIcon| host.edit(|profile| profile.set_icon(call.icon))).await
+        wire::SetPictogram::PATH => {
+            call(host, body, |host, call: wire::SetPictogram| {
+                host.edit(|profile| profile.set_pictogram(call.pictogram))
+            })
+            .await
         }
         wire::SetDescription::PATH => {
             call(host, body, |host, call: wire::SetDescription| {

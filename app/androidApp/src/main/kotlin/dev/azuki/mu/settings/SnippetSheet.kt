@@ -18,12 +18,11 @@ import dev.azuki.mu.design.CircleButton
 import dev.azuki.mu.design.Mono
 import dev.azuki.mu.design.Note
 import dev.azuki.mu.design.PictogramBadge
-import dev.azuki.mu.design.Pictograms
 import dev.azuki.mu.design.PrimaryButton
 import dev.azuki.mu.design.Sheet
 import dev.azuki.mu.design.SheetColumn
+import dev.azuki.mu.design.SnippetIcon
 import dev.azuki.mu.design.Solar
-import dev.azuki.mu.design.icon
 import dev.azuki.mu.wire.Snippet
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.TextField
@@ -41,10 +40,7 @@ fun SnippetSheet(
 ) {
     var name by remember(snippet, show) { mutableStateOf(snippet?.name.orEmpty()) }
     var command by remember(snippet, show) { mutableStateOf(snippet?.command.orEmpty()) }
-    var icon by
-        remember(snippet, show) {
-            mutableStateOf(snippet?.icon ?: "solar:box-minimalistic-bold-duotone")
-        }
+    var pictogram by remember(snippet, show) { mutableStateOf(snippet?.pictogram) }
     var picking by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -82,7 +78,8 @@ fun SnippetSheet(
                 saving = true
                 scope.launch {
                     try {
-                        mu.remote(host).saveSnippet(snippet?.id, name.trim(), command.trim(), icon)
+                        mu.remote(host)
+                            .saveSnippet(snippet?.id, name.trim(), command.trim(), pictogram)
                         dismiss?.invoke()
                     } catch (e: MuException) {
                         mu.toast(e.message)
@@ -95,7 +92,8 @@ fun SnippetSheet(
     ) { padding ->
         SheetColumn(padding) {
             PictogramBadge(
-                Pictograms.snippet(icon),
+                pictogram,
+                SnippetIcon,
                 Modifier.align(Alignment.CenterHorizontally).padding(vertical = 8.dp),
                 size = 88.dp,
                 onClick = { picking = true },
@@ -122,9 +120,9 @@ fun SnippetSheet(
     }
     IconPicker(
         picking,
-        icon,
-        snippet = true,
-        onPick = { icon = it },
+        pictogram,
+        SnippetIcon,
+        onPick = { pictogram = it },
         onDismiss = { picking = false },
     )
 }

@@ -39,6 +39,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -60,7 +61,9 @@ import dev.azuki.mu.core.mentions
 import dev.azuki.mu.design.Glyphs
 import dev.azuki.mu.design.Mono
 import dev.azuki.mu.design.Pictograms
+import dev.azuki.mu.design.SnippetIcon
 import dev.azuki.mu.design.Solar
+import dev.azuki.mu.design.color
 import dev.azuki.mu.design.icon
 import dev.azuki.mu.design.lifted
 import dev.azuki.mu.wire.Mention
@@ -131,7 +134,12 @@ fun Composer(
             if (state.shell && state.snippets && snippets.isNotEmpty()) {
                 Suggestions(
                     snippets.map {
-                        Suggestion(Pictograms.snippet(it.icon).vector, it.name, it.command)
+                        Suggestion(
+                            Pictograms.vector(it.pictogram?.name, SnippetIcon),
+                            it.name,
+                            it.command,
+                            it.pictogram.color,
+                        )
                     }
                 ) { index ->
                     state.field.setTextAndPlaceCursorAtEnd(snippets[index].command)
@@ -473,7 +481,12 @@ private fun RoundAction(
     }
 }
 
-private class Suggestion(val icon: ImageVector, val title: String, val detail: String?)
+private class Suggestion(
+    val icon: ImageVector,
+    val title: String,
+    val detail: String?,
+    val tint: Color? = null,
+)
 
 @Composable
 private fun Suggestions(items: List<Suggestion>, onPick: (Int) -> Unit) {
@@ -494,7 +507,7 @@ private fun Suggestions(items: List<Suggestion>, onPick: (Int) -> Unit) {
                         item.icon,
                         null,
                         Modifier.size(22.dp),
-                        tint = MiuixTheme.colorScheme.primary,
+                        tint = item.tint ?: MiuixTheme.colorScheme.primary,
                     )
                     Text(
                         item.title,
