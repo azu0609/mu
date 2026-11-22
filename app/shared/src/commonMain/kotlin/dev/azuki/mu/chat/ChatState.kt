@@ -16,8 +16,7 @@ import dev.azuki.mu.api.SessionUpdate
 import dev.azuki.mu.api.Skill
 import dev.azuki.mu.api.Status
 
-@Immutable
-data class Feedback(val id: Int, val block: Block)
+@Immutable data class Feedback(val id: Int, val block: Block)
 
 class ChatState(private val mu: Mu, val target: ChatTarget) : Destination {
     override val host

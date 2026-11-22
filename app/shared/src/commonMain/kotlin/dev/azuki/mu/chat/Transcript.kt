@@ -14,20 +14,16 @@ sealed interface Row {
     val key: Any
         get() = at
 
-    @Immutable
-    data class User(override val at: Int, val text: String) : Row
+    @Immutable data class User(override val at: Int, val text: String) : Row
 
     @Immutable
     data class AgentMessage(override val at: Int, val text: String, val from: Sender?) : Row
 
-    @Immutable
-    data class Agent(override val at: Int, val text: String) : Row
+    @Immutable data class Agent(override val at: Int, val text: String) : Row
 
-    @Immutable
-    data class Thought(override val at: Int, val block: Block) : Row
+    @Immutable data class Thought(override val at: Int, val block: Block) : Row
 
-    @Immutable
-    data class Call(override val at: Int, val block: Block) : Row
+    @Immutable data class Call(override val at: Int, val block: Block) : Row
 
     @Immutable
     data class Work(
@@ -46,11 +42,9 @@ sealed interface Row {
             get() = "working"
     }
 
-    @Immutable
-    data class Shell(override val at: Int, val block: Block) : Row
+    @Immutable data class Shell(override val at: Int, val block: Block) : Row
 
-    @Immutable
-    data class Notice(override val at: Int, val block: Block) : Row
+    @Immutable data class Notice(override val at: Int, val block: Block) : Row
 
     @Immutable
     data class Ended(override val at: Int, val node: Long, val finished: Long) : Row {

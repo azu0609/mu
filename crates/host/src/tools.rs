@@ -69,7 +69,7 @@ impl Capture {
 
     fn preview(&self) -> ToolOutput {
         let truncated = self.total > PREVIEW_LIMIT;
-        let mut bytes = self.head.clone();
+        let mut bytes = plain(self.head.iter().copied());
         if truncated {
             // Count an unfinished line too: even output without newlines can
             // lose part of a line between the retained head and tail.
@@ -84,12 +84,58 @@ impl Capture {
                 .as_bytes(),
             );
         }
-        bytes.extend(&self.tail);
+        bytes.extend(plain(self.tail.iter().copied()));
         ToolOutput {
             text: String::from_utf8_lossy(&bytes).into_owned(),
             log: self.log.as_ref().map(|(path, _)| path.clone()),
             truncated,
         }
+    }
+}
+
+// Renders what a terminal would leave behind: escape sequences vanish and a carriage return lets
+// the next text overwrite its line, so progress bars collapse to their final state.
+fn plain(bytes: impl IntoIterator<Item = u8>) -> Vec<u8> {
+    let mut out = Vec::new();
+    let mut bytes = bytes.into_iter();
+    let mut overwrite = false;
+    while let Some(byte) = bytes.next() {
+        match byte {
+            0x1b => skip_escape(&mut bytes),
+            b'\r' => overwrite = true,
+            b'\n' => {
+                overwrite = false;
+                out.push(byte);
+            }
+            _ if byte == b'\t' || !byte.is_ascii_control() => {
+                if std::mem::take(&mut overwrite) {
+                    out.truncate(out.iter().rposition(|&b| b == b'\n').map_or(0, |i| i + 1));
+                }
+                out.push(byte);
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn skip_escape(bytes: &mut impl Iterator<Item = u8>) {
+    match bytes.next() {
+        Some(b'[') => {
+            bytes.find(|b| (0x40..0x7f).contains(b));
+        }
+        Some(b']' | b'P' | b'X' | b'^' | b'_') => {
+            let mut esc = false;
+            bytes.find(|&b| {
+                let end = b == 0x07 || esc && b == b'\\';
+                esc = b == 0x1b;
+                end
+            });
+        }
+        Some(0x20..0x30) => {
+            bytes.find(|b| (0x30..0x7f).contains(b));
+        }
+        _ => {}
     }
 }
 
@@ -170,6 +216,7 @@ fn execute(
     let mut bash = Command::new("bash");
     // Keep the command out of argv so `pkill -f` and friends can't match their own shell.
     bash.args(["-c", PREAMBLE]).current_dir(cwd).env("MU_COMMAND", command).envs(run.env());
+    bash.envs([("TERM", "dumb"), ("NO_COLOR", "1")]).env_remove("FORCE_COLOR").env_remove("CLICOLOR_FORCE");
     match user {
         true => bash.env("MU_USER_TRIGGERED", "1"),
         false => bash.env_remove("MU_USER_TRIGGERED"),
