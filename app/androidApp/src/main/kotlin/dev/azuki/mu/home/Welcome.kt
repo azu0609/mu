@@ -72,6 +72,10 @@ fun Welcome(
                                         mu.hosts.map { known ->
                                             DropdownItem(
                                                 mu.name(known.id),
+                                                summary =
+                                                    known.description
+                                                        .takeIf(String::isNotBlank)
+                                                        ?.let { "“$it”" },
                                                 selected = known.id == host,
                                                 onClick = {
                                                     mu.draft.set(
