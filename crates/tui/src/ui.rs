@@ -360,7 +360,8 @@ fn tool_lines(marker: &str, command: &str, tool: &Tool, width: usize, expanded: 
     result
 }
 
-fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
+fn block_lines(block: &Block, app: &App, width: usize) -> Vec<Line> {
+    let expanded = app.expanded;
     let (first_prefix, color, limit) = match (block.kind, &block.tool) {
         (Kind::Call, Some(tool)) => return tool_lines("●", &block.text, tool, width, expanded),
         (Kind::Shell, Some(tool)) => return tool_lines("$", &block.text, tool, width, expanded),
@@ -388,7 +389,8 @@ fn block_lines(block: &Block, width: usize, expanded: bool) -> Vec<Line> {
         (Kind::Thought, _) => ("  ", GRAY, 2),
     };
     if block.kind == Kind::Agent {
-        let mut lines = markdown::render(&block.text, width.saturating_sub(2));
+        let width = width.saturating_sub(2);
+        let mut lines = markdown::render(&block.text, width, |png| app.images.lines(app.view.cwd.join(png), width));
         for line in &mut lines {
             line.spans.insert(0, Span { text: "  ".into(), style: Style::new(Color::Reset) });
         }
@@ -436,8 +438,8 @@ impl<'a> From<&'a Block> for Item<'a> {
     }
 }
 
-fn item_lines(item: &Item, width: usize, expanded: bool) -> Vec<Line> {
-    let mut lines = block_lines(item.block, width, expanded);
+fn item_lines(item: &Item, app: &App, width: usize) -> Vec<Line> {
+    let mut lines = block_lines(item.block, app, width);
     if let Some(ending) = &item.ending {
         let stamp = format!("  {}", clock::stamp(ending.finished));
         let mut line = Line::new(&stamp, GRAY);
@@ -527,19 +529,14 @@ impl Transcript {
         let static_lines = match app.transcript_static {
             Some(cached) if cached.matches(width, app.expanded, blocks) => cached.lines,
             _ => {
-                let lines = self
-                    .static_items(app)
-                    .map(|item| item_lines(&item, width.saturating_sub(1), app.expanded).len())
-                    .sum();
+                let lines =
+                    self.static_items(app).map(|item| item_lines(&item, app, width.saturating_sub(1)).len()).sum();
                 app.transcript_static = Some(CachedLines { width, expanded: app.expanded, blocks, lines });
                 lines
             }
         };
         static_lines
-            + self
-                .dynamic_items(app)
-                .map(|item| item_lines(&item, width.saturating_sub(1), app.expanded).len())
-                .sum::<usize>()
+            + self.dynamic_items(app).map(|item| item_lines(&item, app, width.saturating_sub(1)).len()).sum::<usize>()
     }
 }
 
@@ -562,6 +559,7 @@ pub fn transcript_line_count(app: &mut App, width: usize) -> usize {
 pub fn draw(app: &mut App) -> Result<()> {
     let (w, h) = terminal::size()?;
     let width = w as usize;
+    app.images.measure();
     if w < 4 || h < 5 {
         return Ok(());
     }
@@ -609,7 +607,7 @@ pub fn draw(app: &mut App) -> Result<()> {
         let need = transcript_height.saturating_add(app.scroll);
         let mut reversed = vec![];
         for item in transcript.items(app).rev() {
-            reversed.extend(item_lines(&item, width - 1, app.expanded).into_iter().rev());
+            reversed.extend(item_lines(&item, app, width - 1).into_iter().rev());
             if reversed.len() >= need {
                 break;
             }
@@ -619,6 +617,7 @@ pub fn draw(app: &mut App) -> Result<()> {
         lines.reverse();
         lines
     };
+    app.images.flush(&app.remote, &mut out)?;
     for row in 0..transcript_height {
         queue!(out, cursor::MoveTo(0, row as u16), Clear(ClearType::CurrentLine))?;
         if let Some(line) = lines.get(row) {

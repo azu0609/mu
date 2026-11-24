@@ -10,6 +10,11 @@ struct Table {
     rows: Vec<Vec<Range<usize>>>,
 }
 
+struct Figure {
+    end: usize,
+    path: String,
+}
+
 struct Source<'a> {
     text: &'a str,
     styles: Vec<(Range<usize>, Style)>,
@@ -34,12 +39,14 @@ impl Source<'_> {
     }
 }
 
-fn parse(text: &str) -> (Source<'_>, Vec<Table>) {
+fn parse(text: &str) -> (Source<'_>, Vec<Table>, Vec<Figure>) {
     let plain = Style::new(Color::Reset);
     let mut source = Source { text, styles: vec![], cursor: 0 };
     let mut stack = vec![];
     let mut tables = vec![];
     let mut table: Option<Table> = None;
+    let mut blocks = vec![];
+    let mut figures = vec![];
     for (event, range) in Parser::new_ext(text, Options::ENABLE_TABLES).into_offset_iter() {
         let (parent, base) = stack.last().copied().unwrap_or((TagEnd::Paragraph, plain));
         let accent = Style { color: ACCENT, bold: true, ..base };
@@ -54,6 +61,15 @@ fn parse(text: &str) -> (Source<'_>, Vec<Table>) {
                     Tag::CodeBlock(_) => Style::new(GRAY),
                     _ => base,
                 };
+                match &tag {
+                    Tag::Paragraph | Tag::Heading { .. } | Tag::Item | Tag::Table(_) => blocks.push(range.clone()),
+                    Tag::Image { dest_url, .. } if dest_url.to_ascii_lowercase().ends_with(".png") => {
+                        let end = blocks.last().map_or(text.len(), |block: &Range<usize>| block.end);
+                        let path = dest_url.strip_prefix("file://").unwrap_or(dest_url).into();
+                        figures.push(Figure { end: text[..end].trim_end_matches('\n').len(), path });
+                    }
+                    _ => (),
+                }
                 match &tag {
                     // Nested tables stay source-visible so list/quote prefixes aren't lost.
                     Tag::Table(alignment) if stack.is_empty() => {
@@ -76,6 +92,9 @@ fn parse(text: &str) -> (Source<'_>, Vec<Table>) {
             Event::End(tag) => {
                 source.highlight_to(range.end, base);
                 stack.pop();
+                if matches!(tag, TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::Item | TagEnd::Table) {
+                    blocks.pop();
+                }
                 if tag == TagEnd::Table
                     && let Some(table) = table.take()
                 {
@@ -94,7 +113,7 @@ fn parse(text: &str) -> (Source<'_>, Vec<Table>) {
         }
     }
     source.highlight_to(text.len(), plain);
-    (source, tables)
+    (source, tables, figures)
 }
 
 fn table_lines(source: &Source<'_>, table: &Table, width: usize) -> Option<Vec<Line>> {
@@ -172,14 +191,12 @@ fn table_lines(source: &Source<'_>, table: &Table, width: usize) -> Option<Vec<L
     Some(result)
 }
 
-pub(crate) fn render(text: &str, width: usize) -> Vec<Line> {
-    let text = clean(text);
-    let (source, tables) = parse(&text);
+fn render_range(source: &Source<'_>, tables: &[Table], range: Range<usize>, width: usize) -> Vec<Line> {
     let mut output = Line { spans: vec![] };
-    let mut cursor = 0;
-    for table in tables {
-        let Some(lines) = table_lines(&source, &table, width) else { continue };
-        let start = text[..table.range.start].rfind('\n').map_or(0, |i| i + 1);
+    let mut cursor = range.start;
+    for table in tables.iter().filter(|table| range.contains(&table.range.start)) {
+        let Some(lines) = table_lines(source, table, width) else { continue };
+        let start = source.text[..table.range.start].rfind('\n').map_or(0, |i| i + 1);
         output.spans.extend(source.spans(cursor..start));
         for (i, line) in lines.into_iter().enumerate() {
             if i > 0 {
@@ -187,18 +204,40 @@ pub(crate) fn render(text: &str, width: usize) -> Vec<Line> {
             }
             output.spans.extend(line.spans);
         }
-        if text[table.range.clone()].ends_with('\n') {
+        cursor = table.range.end.min(range.end);
+        if source.text[table.range.start..cursor].ends_with('\n') {
             output.push("\n", Style::new(Color::Reset));
         }
-        cursor = table.range.end;
     }
-    output.spans.extend(source.spans(cursor..text.len()));
+    output.spans.extend(source.spans(cursor..range.end));
     wrap_spans(output.spans, width)
+}
+
+pub(crate) fn render(text: &str, width: usize, image: impl Fn(&str) -> Vec<Line>) -> Vec<Line> {
+    let text = clean(text);
+    let (source, tables, figures) = parse(&text);
+    let mut lines = vec![];
+    let mut start = 0;
+    for figure in figures {
+        if start <= figure.end {
+            lines.extend(render_range(&source, &tables, start..figure.end, width));
+            start = figure.end + 1;
+        }
+        lines.extend(image(&figure.path));
+    }
+    if start <= text.len() {
+        lines.extend(render_range(&source, &tables, start..text.len(), width));
+    }
+    lines
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn render(text: &str, width: usize) -> Vec<Line> {
+        super::render(text, width, |_| vec![])
+    }
 
     fn plain(lines: &[Line]) -> Vec<String> {
         lines.iter().map(|line| line.spans.iter().map(|span| span.text.as_str()).collect()).collect()

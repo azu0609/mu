@@ -48,6 +48,8 @@ class ChatState(private val mu: Mu, val target: ChatTarget) : Destination {
     var error by mutableStateOf<String?>(null)
         private set
 
+    val images = HostImages(mu, target.host) { cwd }
+
     override val running
         get() = state?.status == Status.RUNNING
 

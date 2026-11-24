@@ -1,9 +1,14 @@
 use crate::Result;
 use mu_client::{
-    Call, Client, CompleteMention, Endpoint, Event, ListModels, MarkRead, Mention, ModelInfo, ShellEvent, Update,
-    WatchEvent,
+    Call, Client, CompleteMention, Endpoint, Event, ListModels, MarkRead, Mention, ModelInfo, ReadImage, ShellEvent,
+    Update, WatchEvent,
 };
-use std::{future::Future, path::Path, sync::mpsc, time::Duration};
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+    sync::mpsc,
+    time::Duration,
+};
 use tokio::{runtime::Runtime, task::JoinHandle, time};
 
 pub enum Incoming {
@@ -13,6 +18,7 @@ pub enum Incoming {
     Host(WatchEvent),
     Shell(u64, Result<ShellEvent>),
     Models(Result<Vec<ModelInfo>>),
+    Image(PathBuf, Result<String>),
 }
 
 pub struct Remote {
@@ -147,6 +153,15 @@ impl Remote {
         self.runtime.spawn(async move {
             let result = client.call(ListModels {}).await;
             let _ = tx.send(Incoming::Models(result.map_err(Into::into)));
+        });
+    }
+
+    pub fn read_image(&self, path: PathBuf) {
+        let client = self.client.clone();
+        let tx = self.tx.clone();
+        self.runtime.spawn(async move {
+            let result = client.call(ReadImage { path: path.clone() }).await;
+            let _ = tx.send(Incoming::Image(path, result.map_err(Into::into)));
         });
     }
 }

@@ -2,6 +2,7 @@ package dev.azuki.mu.design
 
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
@@ -15,10 +16,14 @@ import androidx.compose.ui.unit.sp
 import com.mikepenz.markdown.compose.Markdown
 import com.mikepenz.markdown.model.DefaultMarkdownColors
 import com.mikepenz.markdown.model.DefaultMarkdownTypography
+import com.mikepenz.markdown.model.ImageTransformer
+import com.mikepenz.markdown.model.NoOpImageTransformerImpl
 import com.mikepenz.markdown.model.markdownAlertColors
 import com.mikepenz.markdown.model.markdownAnimations
 import com.mikepenz.markdown.model.markdownPadding
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+
+val LocalImages = staticCompositionLocalOf<ImageTransformer> { NoOpImageTransformerImpl() }
 
 @Composable
 fun Markdown(
@@ -72,6 +77,7 @@ fun Markdown(
             ),
         modifier = modifier.fillMaxWidth(),
         padding = markdownPadding(block = 4.dp),
+        imageTransformer = LocalImages.current,
         animations = markdownAnimations(animateTextSize = { this }),
         retainState = true,
         immediate = true,

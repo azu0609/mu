@@ -29,6 +29,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.derivedStateOf
@@ -71,6 +72,7 @@ import dev.azuki.mu.core.compact
 import dev.azuki.mu.core.stamp
 import dev.azuki.mu.design.CircleButton
 import dev.azuki.mu.design.Glyphs
+import dev.azuki.mu.design.LocalImages
 import dev.azuki.mu.design.Markdown
 import dev.azuki.mu.design.Mono
 import dev.azuki.mu.design.SmallIconButton
@@ -159,42 +161,44 @@ fun Chat(
             }
         }
     ) {
-        LazyColumn(
-            state = list,
-            modifier =
-                Modifier.fillMaxSize().nestedScroll(pull).graphicsLayer {
-                    val gone = (pull.flight / pull.travel).coerceIn(0f, 1f)
-                    translationY = -(pull.offset + pull.flight)
-                    alpha = 1f - gone
-                    scaleX = 1f - 0.06f * gone
-                    scaleY = scaleX
-                },
-            contentPadding =
-                PaddingValues(
-                    top = padding.calculateTopPadding() + 8.dp,
-                    bottom = padding.calculateBottomPadding(),
-                    start = 16.dp,
-                    end = 16.dp,
-                ),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
-        ) {
-            items(rows, key = { it.key }, contentType = { it::class }) { row ->
-                if (row is Row.Ended) {
-                    EndedView(stamp(row.finished), chat.unread(row.node))
-                } else {
-                    RowView(row, expanded, onExpand) { session ->
-                        mu.open(chat.target.host, session)
+        CompositionLocalProvider(LocalImages provides chat.images) {
+            LazyColumn(
+                state = list,
+                modifier =
+                    Modifier.fillMaxSize().nestedScroll(pull).graphicsLayer {
+                        val gone = (pull.flight / pull.travel).coerceIn(0f, 1f)
+                        translationY = -(pull.offset + pull.flight)
+                        alpha = 1f - gone
+                        scaleX = 1f - 0.06f * gone
+                        scaleY = scaleX
+                    },
+                contentPadding =
+                    PaddingValues(
+                        top = padding.calculateTopPadding() + 8.dp,
+                        bottom = padding.calculateBottomPadding(),
+                        start = 16.dp,
+                        end = 16.dp,
+                    ),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                items(rows, key = { it.key }, contentType = { it::class }) { row ->
+                    if (row is Row.Ended) {
+                        EndedView(stamp(row.finished), chat.unread(row.node))
+                    } else {
+                        RowView(row, expanded, onExpand) { session ->
+                            mu.open(chat.target.host, session)
+                        }
                     }
                 }
+                items(feedback, key = { "feedback.${it.id}" }) { NoticeView(it.block) }
+                if (error != null) {
+                    item(key = "error") { NoticeView(Block(Kind.WARNING, error, null, null, null)) }
+                }
+                itemsIndexed(queued, key = { index, _ -> "queued.$index" }) { index, text ->
+                    QueuedBubble(text, onRecall = { onRecall(index, text) })
+                }
+                item(key = "end") { Spacer(Modifier.height(2.dp)) }
             }
-            items(feedback, key = { "feedback.${it.id}" }) { NoticeView(it.block) }
-            if (error != null) {
-                item(key = "error") { NoticeView(Block(Kind.WARNING, error, null, null, null)) }
-            }
-            itemsIndexed(queued, key = { index, _ -> "queued.$index" }) { index, text ->
-                QueuedBubble(text, onRecall = { onRecall(index, text) })
-            }
-            item(key = "end") { Spacer(Modifier.height(2.dp)) }
         }
         PullIndicator(
             pull,

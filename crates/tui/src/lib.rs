@@ -1,4 +1,5 @@
 mod commands;
+mod image;
 mod input;
 mod markdown;
 mod remote;
@@ -152,6 +153,7 @@ struct App {
     scroll: usize,
     scroll_layout: Option<ui::ScrollAnchor>,
     transcript_static: Option<ui::CachedLines>,
+    images: image::Images,
     quitting: bool,
     // When an Esc stopped a session that has subagents.
     escaped: Option<Instant>,
@@ -282,6 +284,10 @@ impl App {
                     Err(e) => self.warn(format!("Listing models: {e}")),
                 }
                 self.refresh_completion();
+            }
+            Incoming::Image(path, result) => {
+                self.images.loaded(path, result);
+                self.transcript_static = None;
             }
             _ => (),
         }
@@ -798,6 +804,7 @@ impl App {
                     {
                         self.read();
                         self.edit_prompt(&mut terminal)?;
+                        self.images.forget();
                         title.clear();
                     }
                     Input::Key(k) => {
@@ -896,6 +903,7 @@ pub fn run(endpoint: Endpoint) -> Result<()> {
         scroll: 0,
         scroll_layout: None,
         transcript_static: None,
+        images: image::Images::new(),
         quitting: false,
         escaped: None,
     };
