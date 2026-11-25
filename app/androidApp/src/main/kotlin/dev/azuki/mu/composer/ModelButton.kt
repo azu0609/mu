@@ -16,8 +16,8 @@ import dev.azuki.mu.Mu
 import dev.azuki.mu.chat.Destination
 import dev.azuki.mu.core.compact
 import dev.azuki.mu.design.DialogButtons
+import dev.azuki.mu.design.Glyphs
 import dev.azuki.mu.design.Mono
-import dev.azuki.mu.design.Solar
 import top.yukonga.miuix.kmp.basic.DropdownEntry
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.Icon
@@ -39,6 +39,14 @@ internal fun ModelButton(mu: Mu, destination: Destination) {
     val efforts = models.find { it.name == model }?.efforts.orEmpty()
     val customModel = model?.takeIf { models.none { known -> known.name == it } }
     val customEffort = effort?.takeIf { it !in efforts }
+    val level =
+        efforts
+            .indexOf(effort)
+            .takeIf { it >= 0 && efforts.size > 1 }
+            ?.let {
+                it / (efforts.size - 1f)
+            } ?: 0.5f
+    val speedometer = remember(level) { Glyphs.speedometer(level) }
     val modelItems =
         models.map {
             DropdownItem(
@@ -89,7 +97,7 @@ internal fun ModelButton(mu: Mu, destination: Destination) {
             minHeight = 36.dp,
         ) {
             Icon(
-                Solar.SpeedometerMaxBoldDuotone,
+                speedometer,
                 "Model and effort",
                 Modifier.size(24.dp),
                 tint =

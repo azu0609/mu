@@ -29,7 +29,6 @@ multiple-forward-left-bold-duotone
 palette-bold-duotone
 restart-bold-duotone
 round-alt-arrow-left-bold-duotone
-speedometer-max-bold-duotone
 toolbox-bold-duotone
 trash-bin-trash-bold-duotone
 unlink-bold-duotone
