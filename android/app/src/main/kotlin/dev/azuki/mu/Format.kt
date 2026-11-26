@@ -1,5 +1,10 @@
 package dev.azuki.mu
 
+import android.content.Context
+import android.text.format.DateUtils
+import android.text.format.DateUtils.FORMAT_ABBREV_MONTH
+import android.text.format.DateUtils.FORMAT_SHOW_DATE
+import android.text.format.DateUtils.FORMAT_SHOW_TIME
 import dev.azuki.mu.wire.ToolStatus
 
 fun duration(millis: Long): String {
@@ -10,6 +15,14 @@ fun duration(millis: Long): String {
         else -> "${seconds / 3600}h ${seconds % 3600 / 60}m"
     }
 }
+
+fun stamp(context: Context, millis: Long): String =
+    DateUtils.formatDateTime(
+        context,
+        millis,
+        FORMAT_SHOW_TIME or
+                if (DateUtils.isToday(millis)) 0 else FORMAT_SHOW_DATE or FORMAT_ABBREV_MONTH,
+    )
 
 // `~/…` for paths under the host's home.
 fun tilde(path: String, home: String?): String =

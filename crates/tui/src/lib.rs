@@ -1,3 +1,4 @@
+mod clock;
 mod commands;
 mod image;
 mod input;

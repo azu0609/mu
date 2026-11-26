@@ -34,11 +34,6 @@ pub fn compact(n: u64) -> String {
 }
 
 #[uniffi::export]
-pub fn stamp(millis: u64) -> String {
-    mu_client::clock::stamp(millis)
-}
-
-#[uniffi::export]
 pub fn mentions(text: String) -> Vec<Written> {
     mu_client::mentions(&text)
 }

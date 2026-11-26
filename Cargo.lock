@@ -610,7 +610,6 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "libc",
  "mu-wire",
  "percent-encoding",
  "ring",
@@ -657,6 +656,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "crossterm",
+ "libc",
  "mu-client",
  "pulldown-cmark",
  "tokio",

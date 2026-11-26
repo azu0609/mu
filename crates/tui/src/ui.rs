@@ -1,5 +1,5 @@
 use crate::{
-    App, Result, markdown,
+    App, Result, clock, markdown,
     text::{ACCENT, GRAY, Line, Span, Style, clean, clip, wrap},
 };
 use crossterm::{
@@ -12,7 +12,7 @@ use crossterm::{
     style::{Attribute, Color, Print, ResetColor, SetAttribute, SetForegroundColor},
     terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
 };
-use mu_client::{Block, Kind, Status, Tool, ToolStatus, clock, counts};
+use mu_client::{Block, Kind, Status, Tool, ToolStatus, counts};
 use std::io::{self, Write};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 

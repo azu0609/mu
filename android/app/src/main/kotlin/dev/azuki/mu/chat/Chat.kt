@@ -59,6 +59,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontStyle
@@ -69,7 +70,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.azuki.mu.Mu
 import dev.azuki.mu.core.compact
-import dev.azuki.mu.core.stamp
 import dev.azuki.mu.design.CircleButton
 import dev.azuki.mu.design.Glyphs
 import dev.azuki.mu.design.LocalImages
@@ -80,6 +80,7 @@ import dev.azuki.mu.design.Solar
 import dev.azuki.mu.design.Spinning
 import dev.azuki.mu.duration
 import dev.azuki.mu.ending
+import dev.azuki.mu.stamp
 import dev.azuki.mu.wire.Block
 import dev.azuki.mu.wire.Kind
 import dev.azuki.mu.wire.ToolStatus
@@ -183,7 +184,7 @@ fun Chat(
             ) {
                 items(rows, key = { it.key }, contentType = { it::class }) { row ->
                     if (row is Row.Ended) {
-                        EndedView(stamp(row.finished), chat.unread(row.node))
+                        EndedView(row.finished, chat.unread(row.node))
                     } else {
                         RowView(row, expanded, onExpand) { session ->
                             mu.open(chat.target.host, session)
@@ -259,13 +260,13 @@ private fun RowView(
 }
 
 @Composable
-private fun EndedView(stamp: String, unread: Boolean) {
+private fun EndedView(finished: ULong, unread: Boolean) {
     Row(
         Modifier.fillMaxWidth().padding(horizontal = 2.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            stamp,
+            stamp(LocalContext.current, finished.toLong()),
             Modifier.weight(1f),
             color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
             style = MiuixTheme.textStyles.footnote2,
