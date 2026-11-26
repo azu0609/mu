@@ -16,4 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "mu"
 
-include(":androidApp")
+include(":app")
