@@ -39,14 +39,9 @@ internal fun ModelButton(mu: Mu, destination: Destination) {
     val efforts = models.find { it.name == model }?.efforts.orEmpty()
     val customModel = model?.takeIf { models.none { known -> known.name == it } }
     val customEffort = effort?.takeIf { it !in efforts }
-    val level =
-        efforts
-            .indexOf(effort)
-            .takeIf { it >= 0 && efforts.size > 1 }
-            ?.let {
-                it / (efforts.size - 1f)
-            } ?: 0.5f
-    val speedometer = remember(level) { Glyphs.speedometer(level) }
+    val setting = efforts.indexOf(effort) + 1
+    val speedometer =
+        remember(setting, efforts.size) { Glyphs.speedometer(setting, efforts.size + 1) }
     val modelItems =
         models.map {
             DropdownItem(

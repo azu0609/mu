@@ -143,7 +143,7 @@ fn curl(path: &str, max_time: u64) -> Result<Command> {
     Ok(curl)
 }
 
-const EFFORTS: [&str; 5] = ["minimal", "low", "medium", "high", "xhigh"];
+const EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
 // Asks for Anthropic's shape of the list even though mu speaks Responses: it is the only spec
 // that says how much context a model takes.
