@@ -37,7 +37,6 @@ impl Remote {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build()?;
         let place = match &endpoint {
             Endpoint::Socket(path) => format!(" at {}", path.display()),
-            Endpoint::Stream(_) => String::new(),
             Endpoint::Remote(remote) => format!(" at {}", remote.address),
         };
         let client =

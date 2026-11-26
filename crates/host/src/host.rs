@@ -69,7 +69,7 @@ pub struct Host {
     pub profile: Profile,
     // The last commands run for the user, for a session to take in.
     runs: Mutex<VecDeque<(String, tools::Run)>>,
-    pub devices: Option<Devices>,
+    pub devices: Devices,
     network: Option<Network>,
     pub bridge: Arc<Bridge>,
     models: Mutex<Option<Vec<wire::ModelInfo>>>,
@@ -78,7 +78,7 @@ pub struct Host {
 }
 
 impl Host {
-    pub fn new(devices: Option<Devices>, network: Option<Network>, bridge: Arc<Bridge>) -> Result<Arc<Self>> {
+    pub fn new(devices: Devices, network: Option<Network>, bridge: Arc<Bridge>) -> Result<Arc<Self>> {
         let name = net::hostname();
         let profile = Profile::load(config::dir().join("host.json"), name.clone())?;
         Ok(Arc::new(Self {
@@ -117,19 +117,12 @@ impl Host {
         Ok(result)
     }
 
-    pub fn devices(&self) -> Rpc<&Devices> {
-        self.devices
-            .as_ref()
-            .ok_or_else(|| failed("This host is private to one terminal; run `mu serve` to pair devices"))
-    }
-
     pub fn invite(&self) -> Rpc<wire::Invitation> {
-        let devices = self.devices()?;
         let network = self.network.as_ref().ok_or_else(|| {
             failed("This host does not listen on the network; set MU_LISTEN, like MU_LISTEN=0.0.0.0:7337")
         })?;
         Ok(wire::Invitation {
-            code: devices.invite().map_err(internal)?,
+            code: self.devices.invite().map_err(internal)?,
             cert: network.cert.clone(),
             port: network.bound.port(),
             addresses: net::addresses(network.bound.ip()),
@@ -137,13 +130,13 @@ impl Host {
     }
 
     pub fn pair(&self, call: wire::Pair) -> Rpc<String> {
-        self.devices()?.pair(&call.code, &call.device).map_err(internal)?.ok_or_else(|| {
+        self.devices.pair(&call.code, &call.device).map_err(internal)?.ok_or_else(|| {
             Failure(StatusCode::FORBIDDEN, "This invite was already used or has expired; make a new one".into())
         })
     }
 
     pub fn unpair(&self, call: wire::Unpair) -> Rpc<()> {
-        match self.devices()?.unpair(&call.device_id).map_err(internal)? {
+        match self.devices.unpair(&call.device_id).map_err(internal)? {
             true => Ok(()),
             false => Err(Failure(StatusCode::NOT_FOUND, format!("No device {}", call.device_id))),
         }

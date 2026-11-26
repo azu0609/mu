@@ -22,7 +22,7 @@ mod summary;
 mod tools;
 mod upload;
 
-pub use listen::{listen_address, serve, serve_stream, socket_path};
+pub use listen::{listen_address, serve, socket_path};
 use std::{
     env, fs,
     io::Read,

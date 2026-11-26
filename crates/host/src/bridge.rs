@@ -21,7 +21,6 @@ use std::{
 const IMAGES: usize = 8;
 
 pub struct Bridge {
-    socket: PathBuf,
     bin: PathBuf,
     commands: Vec<&'static str>,
     runs: Mutex<HashMap<String, Open>>,
@@ -33,14 +32,14 @@ struct Open {
 }
 
 impl Bridge {
-    pub fn new(socket: &Path, dir: &Path, commands: Vec<&'static str>) -> Result<Arc<Self>> {
-        let bin = dir.join("bin");
-        fs::DirBuilder::new().recursive(true).mode(0o700).create(&bin)?;
+    pub fn new(bin: &Path, commands: Vec<&'static str>) -> Result<Arc<Self>> {
+        let _ = fs::remove_dir_all(bin);
+        fs::DirBuilder::new().recursive(true).mode(0o700).create(bin)?;
         let exe = env::current_exe()?;
         for name in &commands {
             symlink(&exe, bin.join(name))?;
         }
-        Ok(Arc::new(Self { socket: socket.into(), bin, commands, runs: Mutex::default() }))
+        Ok(Arc::new(Self { bin: bin.into(), commands, runs: Mutex::default() }))
     }
 
     pub fn commands(&self) -> &[&'static str] {
@@ -85,12 +84,8 @@ pub struct Run {
 
 impl Run {
     // MU_BIN is where the commands are linked, for the shell to put first on PATH.
-    pub fn env(&self) -> [(&'static str, OsString); 3] {
-        [
-            ("MU_BIN", self.bridge.bin.clone().into()),
-            ("MU_HOST", self.bridge.socket.clone().into()),
-            ("MU_RUN", self.token.clone().into()),
-        ]
+    pub fn env(&self) -> [(&'static str, OsString); 2] {
+        [("MU_BIN", self.bridge.bin.clone().into()), ("MU_RUN", self.token.clone().into())]
     }
 
     pub fn images(&self) -> Vec<Value> {

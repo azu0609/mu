@@ -1,5 +1,5 @@
 use crate::connect;
-use mu_client::{CreateInvite, Endpoint, Invite, ListDevices, Unpair};
+use mu_client::{CreateInvite, Invite, ListDevices, Unpair};
 use mu_host::Result;
 use qrcode::{QrCode, render::unicode::Dense1x2};
 use std::{
@@ -7,8 +7,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-pub async fn pair(endpoint: Endpoint, address: Option<&str>) -> Result<()> {
-    let invitation = connect(endpoint).await?.call(CreateInvite {}).await?;
+pub async fn pair(address: Option<&str>) -> Result<()> {
+    let invitation = connect().await?.call(CreateInvite {}).await?;
     let chosen = match address {
         Some(address) => with_port(address, invitation.port),
         None => match invitation.addresses.first() {
@@ -43,8 +43,8 @@ fn with_port(address: &str, port: u16) -> String {
     }
 }
 
-pub async fn devices(endpoint: Endpoint) -> Result<()> {
-    let devices = connect(endpoint).await?.call(ListDevices {}).await?;
+pub async fn devices() -> Result<()> {
+    let devices = connect().await?.call(ListDevices {}).await?;
     if devices.is_empty() {
         println!("No devices are paired. `mu pair` pairs one.");
         return Ok(());
@@ -62,8 +62,8 @@ pub async fn devices(endpoint: Endpoint) -> Result<()> {
     Ok(())
 }
 
-pub async fn unpair(endpoint: Endpoint, id: &str) -> Result<()> {
-    connect(endpoint).await?.call(Unpair { device_id: id.into() }).await?;
+pub async fn unpair(id: &str) -> Result<()> {
+    connect().await?.call(Unpair { device_id: id.into() }).await?;
     println!("Unpaired {id}. It can no longer reach this host.");
     Ok(())
 }

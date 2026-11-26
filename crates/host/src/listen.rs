@@ -14,18 +14,14 @@ use std::{
     convert::Infallible,
     env, fs,
     net::SocketAddr,
-    os::unix::{
-        fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
-        net::UnixStream as StdStream,
-    },
+    os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    pin::pin,
     sync::Arc,
     time::Duration,
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
-    net::{TcpListener, UnixListener, UnixStream},
+    net::{TcpListener, UnixListener},
     signal::unix::{SignalKind, signal},
     time,
 };
@@ -42,26 +38,6 @@ pub fn socket_path() -> PathBuf {
     match env::var_os("MU_SOCKET").filter(|path| !path.is_empty()) {
         Some(path) => path.into(),
         None => runtime_dir().join("mu.sock"),
-    }
-}
-
-fn bind(socket: &Path) -> Result<UnixListener> {
-    if let Some(dir) = socket.parent() {
-        fs::DirBuilder::new().recursive(true).mode(0o700).create(dir)?;
-    }
-    let _ = fs::remove_file(socket);
-    let listener = UnixListener::bind(socket)?;
-    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
-    Ok(listener)
-}
-
-async fn local(host: &Arc<Host>, accepted: std::io::Result<(UnixStream, tokio::net::unix::SocketAddr)>) {
-    match accepted {
-        Ok((stream, _)) => {
-            let host = host.clone();
-            tokio::spawn(async move { connection(&host, Peer::Local, stream).await });
-        }
-        Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
     }
 }
 
@@ -108,49 +84,10 @@ async fn shutdown(host: &Host) {
     }
 }
 
-// What only this process uses: its special commands' links, and a private host's socket.
-struct Own(PathBuf);
-
-impl Own {
-    fn new() -> Self {
-        let dir = runtime_dir().join(format!("mu-{}", std::process::id()));
-        // Left by a crashed process that had this pid.
-        let _ = fs::remove_dir_all(&dir);
-        Self(dir)
-    }
-}
-
-impl Drop for Own {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
-
 // `commands` are the special commands the host's bash runs get: names this binary answers to.
 pub fn serve(socket: &Path, address: Option<SocketAddr>, commands: Vec<&'static str>) -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
     runtime.block_on(listen(socket, address, commands))
-}
-
-// The terminal's private host. Only its own bash runs' commands use its socket.
-pub fn serve_stream(stream: StdStream, commands: Vec<&'static str>) -> Result<()> {
-    let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build()?;
-    runtime.block_on(async {
-        stream.set_nonblocking(true)?;
-        let own = Own::new();
-        let socket = own.0.join("mu.sock");
-        let listener = bind(&socket)?;
-        let host = Host::new(None, None, Bridge::new(&socket, &own.0, commands)?)?;
-        let mut terminal = pin!(connection(&host, Peer::Local, UnixStream::from_std(stream)?));
-        loop {
-            tokio::select! {
-                () = &mut terminal => break,
-                accepted = listener.accept() => local(&host, accepted).await,
-            }
-        }
-        shutdown(&host).await;
-        Ok(())
-    })
 }
 
 async fn listen(socket: &Path, address: Option<SocketAddr>, commands: Vec<&'static str>) -> Result<()> {
@@ -159,7 +96,8 @@ async fn listen(socket: &Path, address: Option<SocketAddr>, commands: Vec<&'stat
     }
     // The lock, not the socket file, says whether a server is alive: a stale
     // socket can be replaced, and two starting servers cannot both win.
-    let lock = fs::OpenOptions::new().write(true).create(true).truncate(false).mode(0o600).open(lock_path(socket))?;
+    let lock =
+        fs::OpenOptions::new().write(true).create(true).truncate(false).mode(0o600).open(beside(socket, ".lock"))?;
     match lock.try_lock() {
         Ok(()) => (),
         Err(fs::TryLockError::WouldBlock) => {
@@ -167,7 +105,9 @@ async fn listen(socket: &Path, address: Option<SocketAddr>, commands: Vec<&'stat
         }
         Err(fs::TryLockError::Error(e)) => return Err(e.into()),
     }
-    let listener = bind(socket)?;
+    let _ = fs::remove_file(socket);
+    let listener = UnixListener::bind(socket)?;
+    fs::set_permissions(socket, fs::Permissions::from_mode(0o600))?;
 
     let devices = Devices::load(config::state_dir().join("devices.json"))?;
     let (network, tcp) = match address {
@@ -180,13 +120,19 @@ async fn listen(socket: &Path, address: Option<SocketAddr>, commands: Vec<&'stat
         }
         None => (None, None),
     };
-    let own = Own::new();
-    let host = Host::new(Some(devices), network, Bridge::new(socket, &own.0, commands)?)?;
+    let bin = beside(socket, ".bin");
+    let host = Host::new(devices, network, Bridge::new(&bin, commands)?)?;
     let mut terminate = signal(SignalKind::terminate())?;
     let mut interrupt = signal(SignalKind::interrupt())?;
     loop {
         tokio::select! {
-            accepted = listener.accept() => local(&host, accepted).await,
+            accepted = listener.accept() => match accepted {
+                Ok((stream, _)) => {
+                    let host = host.clone();
+                    tokio::spawn(async move { connection(&host, Peer::Local, stream).await });
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            },
             accepted = accept(&tcp) => match accepted {
                 Ok(stream) => {
                     let host = host.clone();
@@ -201,6 +147,7 @@ async fn listen(socket: &Path, address: Option<SocketAddr>, commands: Vec<&'stat
     }
     let _ = fs::remove_file(socket);
     shutdown(&host).await;
+    let _ = fs::remove_dir_all(&bin);
     Ok(())
 }
 
@@ -211,8 +158,8 @@ async fn accept(tcp: &Option<(TcpListener, TlsAcceptor)>) -> std::io::Result<tok
     }
 }
 
-fn lock_path(socket: &Path) -> PathBuf {
+fn beside(socket: &Path, suffix: &str) -> PathBuf {
     let mut path = socket.as_os_str().to_owned();
-    path.push(".lock");
+    path.push(suffix);
     path.into()
 }

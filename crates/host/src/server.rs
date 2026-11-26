@@ -93,7 +93,7 @@ fn admit(host: &Host, peer: Peer, request: &Request<Incoming>) -> Rpc<()> {
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.strip_prefix("Bearer "));
-    if !token.is_some_and(|token| host.devices.as_ref().is_some_and(|devices| devices.authorized(token))) {
+    if !token.is_some_and(|token| host.devices.authorized(token)) {
         return Err(Failure(StatusCode::UNAUTHORIZED, format!("This device is not paired with {}", host.name)));
     }
     if [wire::CreateInvite::PATH, wire::ListDevices::PATH, wire::Unpair::PATH].contains(&path) {
@@ -225,7 +225,7 @@ pub async fn handle(host: Arc<Host>, peer: Peer, request: Request<Incoming>) -> 
         }
         wire::Pair::PATH => call(host, body, |host, call| host.pair(call)).await,
         wire::CreateInvite::PATH => call(host, body, |host, wire::CreateInvite {}| host.invite()).await,
-        wire::ListDevices::PATH => call(host, body, |host, wire::ListDevices {}| Ok(host.devices()?.list())).await,
+        wire::ListDevices::PATH => call(host, body, |host, wire::ListDevices {}| Ok(host.devices.list())).await,
         wire::Unpair::PATH => call(host, body, |host, call| host.unpair(call)).await,
         wire::ListSessions::PATH => call(host, body, |host, wire::ListSessions {}| host.sessions()).await,
         wire::RunSession::PATH => call(host, body, |host, call: wire::RunSession| host.bridge.session(&call.run)).await,

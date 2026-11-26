@@ -19,7 +19,6 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
     fmt, io,
     marker::PhantomData,
-    os::unix::net::UnixStream as StdStream,
     path::{Path, PathBuf},
     pin::{Pin, pin},
     sync::{
@@ -111,7 +110,6 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 pub enum Endpoint {
     Socket(PathBuf),
-    Stream(StdStream),
     Remote(Remote),
 }
 
@@ -124,7 +122,6 @@ pub struct Remote {
 
 enum Target {
     Socket(PathBuf),
-    Stream(sync::Mutex<Option<StdStream>>),
     Remote { address: String, tls: TlsConnector },
 }
 
@@ -172,7 +169,6 @@ impl Client {
     pub fn new(endpoint: Endpoint) -> Result<Self> {
         let (target, authorization) = match endpoint {
             Endpoint::Socket(path) => (Target::Socket(path), None),
-            Endpoint::Stream(stream) => (Target::Stream(sync::Mutex::new(Some(stream))), None),
             Endpoint::Remote(remote) => {
                 let authorization = match remote.token {
                     Some(token) => Some(
@@ -252,11 +248,9 @@ impl Client {
 
     async fn dial(&self) -> Result<(SendRequest<Full<Bytes>>, Arc<Cut>)> {
         let (mut sender, socket) = match &self.0.target {
-            Target::Socket(path) => handshake(UnixStream::connect(path).await?).await?,
-            Target::Stream(stream) => {
-                let stream = stream.lock().unwrap().take().ok_or("The mu host is gone")?;
-                stream.set_nonblocking(true)?;
-                handshake(UnixStream::from_std(stream)?).await?
+            Target::Socket(path) => {
+                let stream = UnixStream::connect(path).await.map_err(|e| format!("{e}; is `mu serve` running?"))?;
+                handshake(stream).await?
             }
             Target::Remote { address, tls } => {
                 let stream = time::timeout(CONNECT_TIMEOUT, TcpStream::connect(address.as_str()))
