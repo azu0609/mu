@@ -21,7 +21,7 @@ fun stamp(context: Context, millis: Long): String =
         context,
         millis,
         FORMAT_SHOW_TIME or
-                if (DateUtils.isToday(millis)) 0 else FORMAT_SHOW_DATE or FORMAT_ABBREV_MONTH,
+            if (DateUtils.isToday(millis)) 0 else FORMAT_SHOW_DATE or FORMAT_ABBREV_MONTH,
     )
 
 // `~/…` for paths under the host's home.

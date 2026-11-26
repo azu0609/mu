@@ -498,6 +498,7 @@ private fun ThoughtView(block: Block, open: Boolean, onToggle: () -> Unit) {
 @Composable
 private fun CallView(block: Block, open: Boolean, onToggle: () -> Unit) {
     val tool = block.tool
+    val pending = tool?.status == ToolStatus.Pending
     val gray = MiuixTheme.colorScheme.onSurfaceVariantSummary
     Column(
         Modifier.fillMaxWidth()
@@ -514,13 +515,20 @@ private fun CallView(block: Block, open: Boolean, onToggle: () -> Unit) {
                 tint = MiuixTheme.colorScheme.primary,
             )
             Text(
-                block.text,
+                if (pending)
+                    block.text.trimEnd().lines().joinToString(" ↵ ", transform = String::trim)
+                else block.text,
                 Modifier.weight(1f).padding(horizontal = 8.dp),
                 fontFamily = Mono,
                 fontSize = 12.sp,
                 lineHeight = 17.sp,
-                maxLines = if (open) Int.MAX_VALUE else 2,
-                overflow = TextOverflow.Ellipsis,
+                maxLines =
+                    when {
+                        open -> Int.MAX_VALUE
+                        pending -> 1
+                        else -> 2
+                    },
+                overflow = if (pending) TextOverflow.StartEllipsis else TextOverflow.Ellipsis,
             )
             when (val status = tool?.status) {
                 ToolStatus.Running,
