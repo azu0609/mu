@@ -138,7 +138,12 @@ fn curl(path: &str, max_time: u64) -> Result<Command> {
         if key.contains(['\r', '\n']) {
             return Err("API key contains a newline".into());
         }
-        curl.args(["--header", &format!("Authorization: Bearer {key}")]);
+        curl.env("MU_API_KEY", key).args([
+            "--variable",
+            "%MU_API_KEY",
+            "--expand-header",
+            "Authorization: Bearer {{MU_API_KEY}}",
+        ]);
     }
     Ok(curl)
 }
